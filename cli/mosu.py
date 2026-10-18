@@ -577,6 +577,38 @@ def cmd_report(args, ds: Dataset):
     print()
 
 
+# ---------------------------------------------------------------- bot（数字分身服务）
+def cmd_bot(args, ds: Dataset):
+    from core.bot import BotService, run_server
+    corpus = Path(args.corpus) if args.corpus else ROOT / "persona" / "corpus.jsonl"
+    if not corpus.exists():
+        sys.exit(f"[x] 语料不存在：{corpus}\n    先跑 `mosu persona --output persona/` 生成")
+    sub = args.bot_cmd or "serve"
+    if sub == "serve":
+        print(f"  [i] 语料 {corpus}，启动 bot 服务…", file=sys.stderr)
+        return run_server(corpus, port=args.port)
+    if sub == "test":
+        bot = BotService(corpus)
+        q = " ".join(args.query) or "在吗"
+        if args.dry:
+            pv = bot.preview_prompt(q)
+            print(json.dumps(pv, ensure_ascii=False, indent=2))
+            return
+        r = bot.chat(q)
+        if args.format in ("json", "jsonl"):
+            emit(r, args.format)
+            return
+        print(f"\n  问: {q}")
+        print(f"  检索参考:")
+        for c in r["retrieved"]:
+            print(f"    [{c['session']}] {c['text'][:50]}")
+        print(f"  回复: {r['reply']}")
+        print(f"  校验: {'通过' if r['passed'] else '未过 ' + str(r['problems'])}"
+              f"（{r['tries']} 次尝试，{r['cost']}s）\n")
+        return
+    not_implemented("bot", "可用: serve | test")
+
+
 # ---------------------------------------------------------------- persona（个人 bot 语料）
 def cmd_persona(args, ds: Dataset):
     from core.persona import build_persona
@@ -968,6 +1000,15 @@ def build_parser():
     p.add_argument("--from", dest="from")
     p.add_argument("--to", dest="to")
     p.set_defaults(func=cmd_moments)
+
+    p = sub.add_parser("bot", help="数字分身：云端 LLM + RAG 风格锚点 + 规则硬校验",
+                       parents=[common])
+    p.add_argument("bot_cmd", nargs="?", choices=["serve", "test"], default="serve")
+    p.add_argument("query", nargs="*", help="test 模式的问题")
+    p.add_argument("--corpus", help="语料 jsonl 路径，默认 persona/corpus.jsonl")
+    p.add_argument("--port", type=int, default=int(os.environ.get("MOSU_BOT_PORT", "8787")))
+    p.add_argument("--dry", action="store_true", help="只看 prompt 组装，不调 LLM")
+    p.set_defaults(func=cmd_bot)
 
     p = sub.add_parser("persona", help="个人 bot 素材：本人发言语料 + 风格画像",
                        parents=[common])

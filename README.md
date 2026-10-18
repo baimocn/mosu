@@ -37,7 +37,8 @@ python cli/mosu.py sessions
 - **全文搜索**：逐条解压后匹配，搜得到压缩消息体里的词
 - **统计**：全局概览、联系榜、小时/星期/月分布、单人统计、关键词、群成员榜
 - **画像蒸馏**：全库个人画像 + 单联系人深度画像（作息/社交图谱/话题/情感曲线/亲密度信号）
-- **个人 bot 素材**：本人发言语料包（jsonl + 按会话分段）+ 风格画像（含 LLM system prompt 草稿）
+- **个人 bot 素材**：本人发言语料包（jsonl + 按会话分段）+ 风格画像
+- **数字分身服务**（`mosu bot`）：云端 LLM（OpenAI 兼容，任意后端可换）+ RAG 从你的历史发言检索风格参考 + 规则硬校验（AI 腔禁词/长度/感叹号/照抄检测，不达标自动带反馈重生成）
 - **导出**：HTML（微信气泡式，图片视频内嵌）/ JSON / CSV / TXT，可全量
 - **朋友圈**：正文、图片、点赞、评论
 - **MCP Server**：12 个工具，AI 客户端可直接调用，图片能直接"看"
@@ -116,6 +117,8 @@ python cli/mosu.py stats global                    # 全局统计
 python cli/mosu.py profile                         # 全库个人画像
 python cli/mosu.py profile "张三"                # 单联系人深度画像
 python cli/mosu.py persona --output persona/     # 个人 bot 素材：语料包 + 风格画像
+python cli/mosu.py bot test "在吗"               # 数字分身试一句（先配好 key）
+python cli/mosu.py bot serve                     # 起服务：POST 127.0.0.1:8787/chat
 python cli/mosu.py moments --limit 10              # 朋友圈
 python cli/mosu.py export "张三" --output out/   # HTML 导出（含图片/语音/视频）
 python cli/mosu.py export "张三" --incremental    # 之后只导新消息（秒级）

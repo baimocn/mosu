@@ -84,6 +84,19 @@ mosu export --all --output D:\导出 [--max-sessions 20]  # 全量，按会话�
 # 个人 bot 素材（本人发言语料 + 风格画像）
 mosu persona --output persona/
 
+# 数字分身服务（云端 LLM + RAG + 规则硬校验）
+export MOSU_BOT_API_KEY=<key>
+export MOSU_BOT_BASE_URL=https://api.openai.com/v1   # 任意 OpenAI 兼容端点
+export MOSU_BOT_MODEL=gpt-4o-mini
+mosu bot test "明天要不要去图书馆"          # 命令行试一句（--dry 只看 prompt）
+mosu bot test "在吗" --corpus persona/corpus.jsonl
+mosu bot serve --port 8787                 # HTTP 服务：POST /chat {message, conversation_id?}
+```
+bot 环境变量：MOSU_BOT_API_KEY / MOSU_BOT_BASE_URL / MOSU_BOT_MODEL /
+MOSU_BOT_PORT / MOSU_BOT_CORPUS。RAG 检索样本只作风格锚点（prompt 明确要求
+不照抄），回复超长/AI 腔/感叹号过多/疑似照抄都会被规则打回重生成（最多 3 次）。
+发给云端的只有「当前对话 + 几条参考样本」，语料库本身不出本机。
+
 # 画像蒸馏（不给会话名=全库个人画像）
 mosu profile                              # 全库：作息/社交图谱/话题/风格/月度/侧写
 mosu profile 张三                        # 单联系人：互动/发起回复/话题对比/情感/信号/时间线

@@ -14,3 +14,8 @@ core/__pycache__/
 
 # 内部规划/开发过程产物（不进公开仓库）
 .planning/
+
+# 个人语料与 bot 数据（真实聊天记录，绝不入库）
+persona/
+corpus.jsonl
+*.jsonl
