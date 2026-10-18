@@ -1,0 +1,16 @@
+# 缓存与隐私数据（绝不入库）
+.cache/
+node_modules/
+*.db
+*_plain.db
+key*.txt
+.env
+export/
+scripts/__pycache__/
+core/__pycache__/
+
+# 本地工作记忆（含本机路径，不进公开仓库）
+.workbuddy/
+
+# 内部规划/开发过程产物（不进公开仓库）
+.planning/

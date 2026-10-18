@@ -1,0 +1,255 @@
+"""
+墨溯 · 微信 4.x 消息体解析
+
+实测环境：微信 Windows 4.1.15.13
+
+核心事实（踩坑得来，勿改）：
+  1. 消息体 message_content 是 **zstd 压缩的 protobuf/XML**（魔数 28 B5 2F FD），
+     不再是 3.x 时代的裸 XML。纯文本消息(type=1)仍是明文。
+  2. local_type 高位是 flag，**真实类型 = local_type & 0xFFFFFFFF**
+     （例如 25769803825 的真实类型是 49）。
+  3. 本地文件定位靠 packed_info_data 里的 id，**不是** XML 里的 md5：
+       - 图片: field3 -> field4  (32 位 hex md5)
+       - 视频: field4 -> field8  (32 位 ASCII id)
+       - 语音: field5 -> field2  (UTF-8 转文字，音频本体不落本地)
+"""
+from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
+
+try:
+    import zstandard
+except ImportError:  # pragma: no cover
+    zstandard = None
+
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+# 真实消息类型（local_type & 0xFFFFFFFF）
+T_TEXT = 1
+T_IMAGE = 3
+T_VOICE = 34
+T_VIDEO = 43
+T_EMOJI = 47
+T_APPMSG = 49
+T_SYS = 10000
+
+TYPE_NAMES = {
+    T_TEXT: "文本",
+    T_IMAGE: "图片",
+    T_VOICE: "语音",
+    T_VIDEO: "视频",
+    T_EMOJI: "表情",
+    T_APPMSG: "分享/文件",
+    T_SYS: "系统消息",
+}
+
+
+# --------------------------------------------------------------------------
+# 极简 protobuf 解析（只依赖标准库）
+# --------------------------------------------------------------------------
+def _read_varint(b: bytes, i: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        x = b[i]
+        i += 1
+        result |= (x & 0x7F) << shift
+        if not x & 0x80:
+            return result, i
+        shift += 7
+        if shift > 63:
+            raise ValueError("varint 过长")
+
+
+def parse_pb(data: bytes) -> dict[int, list]:
+    """解析 protobuf 为 {field_no: [values]}，value 为 int 或 bytes。"""
+    out: dict[int, list] = {}
+    i = 0
+    n = len(data)
+    while i < n:
+        try:
+            key, i = _read_varint(data, i)
+        except (IndexError, ValueError):
+            break
+        field_no, wire = key >> 3, key & 7
+        try:
+            if wire == 0:
+                v, i = _read_varint(data, i)
+                out.setdefault(field_no, []).append(v)
+            elif wire == 2:
+                ln, i = _read_varint(data, i)
+                out.setdefault(field_no, []).append(data[i : i + ln])
+                i += ln
+            elif wire == 5:
+                out.setdefault(field_no, []).append(data[i : i + 4])
+                i += 4
+            elif wire == 1:
+                out.setdefault(field_no, []).append(data[i : i + 8])
+                i += 8
+            else:
+                break  # 未知 wire type，停止
+        except (IndexError, ValueError):
+            break
+    return out
+
+
+def decompress(blob: bytes, max_size: int = 8 << 20) -> bytes | None:
+    """zstd 解压；非 zstd 数据原样返回。"""
+    if not isinstance(blob, (bytes, bytearray)):
+        return None
+    blob = bytes(blob)
+    if blob[:4] != ZSTD_MAGIC:
+        return blob
+    if zstandard is None:
+        return None
+    try:
+        return zstandard.ZstdDecompressor().decompress(blob, max_output_size=max_size)
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------------------
+# packed_info_data -> 媒体定位信息
+# --------------------------------------------------------------------------
+_HEX32 = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+def parse_packed(blob) -> dict:
+    """从 packed_info_data 提取媒体定位信息。"""
+    if not isinstance(blob, (bytes, bytearray)) or not blob:
+        return {}
+    info: dict = {}
+    top = parse_pb(bytes(blob))
+
+    def _sub(field: int, sub_field: int) -> list[str]:
+        """取 top.field 内嵌消息的 sub_field，只保留 bytes 载荷。"""
+        out = []
+        for b in top.get(field, []):
+            if not isinstance(b, (bytes, bytearray)):
+                continue
+            for s in parse_pb(bytes(b)).get(sub_field, []):
+                if isinstance(s, (bytes, bytearray)) and s:
+                    out.append(bytes(s).decode("latin1"))
+        return out
+
+    # 图片：field3 内嵌 field4 = 32 位 hex md5
+    for t in _sub(3, 4):
+        if _HEX32.match(t):
+            info["img_md5"] = t.lower()
+            break
+
+    # 视频：field4 内嵌 field8 = 32 位 ASCII id
+    for t in _sub(4, 8):
+        if len(t) == 32:
+            info["video_id"] = t
+            break
+
+    # 语音转文字：field5 内嵌 field2
+    for t in _sub(5, 2):
+        txt = t.encode("latin1").decode("utf-8", "ignore").strip()
+        if txt:
+            info["voice_text"] = txt
+            break
+
+    # 文件类（appmsg）可能带 md5
+    if "img_md5" not in info:
+        for t in _sub(3, 1):
+            if _HEX32.match(t):
+                info["file_md5"] = t.lower()
+                break
+    return info
+
+
+# --------------------------------------------------------------------------
+# 消息体 -> 结构化
+# --------------------------------------------------------------------------
+def _xml_attr(xml: str, tag: str, attr: str) -> str | None:
+    m = re.search(r"<%s\b[^>]*\b%s=\"([^\"]*)\"" % (tag, attr), xml)
+    return m.group(1) if m else None
+
+
+def parse_message(local_type: int, content, packed=None) -> dict:
+    """把一行消息解析成结构化 dict。"""
+    real = local_type & 0xFFFFFFFF
+    msg: dict = {
+        "type": real,
+        "type_name": TYPE_NAMES.get(real, f"未知({real})"),
+        "text": "",
+        "img_md5": None,
+        "video_id": None,
+        "voice_text": None,
+        "voice_ms": 0,
+        "emoji_md5": None,
+        "title": None,
+        "url": None,
+        "file_name": None,
+    }
+
+    pinfo = parse_packed(packed)
+    msg["img_md5"] = pinfo.get("img_md5")
+    msg["video_id"] = pinfo.get("video_id")
+    msg["voice_text"] = pinfo.get("voice_text")
+
+    raw = content
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "ignore")
+    body = decompress(raw) if isinstance(raw, (bytes, bytearray)) else None
+    xml = body.decode("utf-8", "ignore") if body else ""
+
+    if real == T_TEXT:
+        msg["text"] = (body.decode("utf-8", "ignore") if body else (content or ""))
+        if isinstance(msg["text"], bytes):
+            msg["text"] = msg["text"].decode("utf-8", "ignore")
+
+    elif real == T_IMAGE:
+        msg["img_md5"] = pinfo.get("img_md5")
+        if xml:
+            msg["file_name"] = _xml_attr(xml, "img", "md5") or None
+
+    elif real == T_VOICE:
+        if xml:
+            v = _xml_attr(xml, "voicemsg", "voicelength")
+            if v and v.isdigit():
+                msg["voice_ms"] = int(v)
+            msg["voice_format"] = _xml_attr(xml, "voicemsg", "voiceformat")
+
+    elif real == T_VIDEO:
+        msg["video_id"] = pinfo.get("video_id")
+        if xml:
+            pl = _xml_attr(xml, "videomsg", "playlength")
+            msg["video_sec"] = int(pl) if pl and pl.isdigit() else 0
+
+    elif real == T_EMOJI:
+        if xml:
+            msg["emoji_md5"] = _xml_attr(xml, "emoji", "md5")
+            msg["text"] = _xml_attr(xml, "emoji", "productid") or ""
+
+    elif real == T_APPMSG:
+        if xml:
+            try:
+                root = ET.fromstring(xml[xml.find("<msg>") : xml.rfind("</msg>") + 6])
+                app = root.find("appmsg")
+                if app is not None:
+                    t = app.findtext("title")
+                    msg["title"] = t
+                    msg["text"] = t or ""
+                    msg["url"] = app.findtext("url")
+                    at = app.find(".//appattach")
+                    if at is not None:
+                        msg["file_name"] = at.findtext("filename") or at.findtext("fileext")
+                        msg["app_type"] = app.findtext("type")
+                    else:
+                        msg["app_type"] = app.findtext("type")
+            except Exception:
+                msg["text"] = _xml_attr(xml, "appmsg", "title") or ""
+
+    elif real == T_SYS:
+        msg["text"] = xml or (content if isinstance(content, str) else "")
+
+    else:
+        msg["text"] = (xml or "")[:200] if xml else (
+            content.decode("utf-8", "ignore") if isinstance(content, (bytes, bytearray)) else str(content or "")
+        )
+
+    return msg

@@ -1,0 +1,9 @@
+{
+  "name": "mosu",
+  "version": "0.1.0",
+  "description": "语音 SILK 转码的 Node 依赖（仅 export --with-media 需要）",
+  "private": true,
+  "dependencies": {
+    "silk-wasm": "^3.7.1"
+  }
+}

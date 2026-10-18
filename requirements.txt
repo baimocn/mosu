@@ -1,0 +1,19 @@
+# 墨溯 mosu —— 运行时依赖
+#
+#   pip install -r requirements.txt
+#
+# 可选依赖（缺失时自动降级，不影响核心功能）：
+#   jieba      —— 中文分词；没有则关键词统计退化为 2-gram
+#   Pillow     —— 图片缩放/格式嗅探；没有则原样输出解密字节
+#
+# 系统依赖（不进 pip）：
+#   Python >= 3.10
+#   Node.js    —— 仅"语音 SILK → MP3 转码"需要（scripts/silk_batch.cjs）
+#   ffmpeg     —— 可选，仅导出语音为 mp3 时需要
+
+pycryptodome>=3.19        # AES/HMAC，SQLCipher4 解密核心
+zstandard>=0.21           # 消息体 zstd 解压
+
+# ---- 可选 ----
+jieba>=0.42.1             # 中文分词（关键词/画像）
+Pillow>=10.0              # 图片处理
