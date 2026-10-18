@@ -81,6 +81,9 @@ mosu export "张三" --with-media                       # 额外做语音转码�
 mosu export "张三" --export-format json|csv|txt
 mosu export --all --output D:\导出 [--max-sessions 20]  # 全量，按会话名建子目录
 
+# 个人 bot 素材（本人发言语料 + 风格画像）
+mosu persona --output persona/
+
 # 画像蒸馏（不给会话名=全库个人画像）
 mosu profile                              # 全库：作息/社交图谱/话题/风格/月度/侧写
 mosu profile 张三                        # 单联系人：互动/发起回复/话题对比/情感/信号/时间线

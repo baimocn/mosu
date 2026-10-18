@@ -577,6 +577,21 @@ def cmd_report(args, ds: Dataset):
     print()
 
 
+# ---------------------------------------------------------------- persona（个人 bot 语料）
+def cmd_persona(args, ds: Dataset):
+    from core.persona import build_persona
+    out = Path(args.output) if args.output else ROOT / "persona"
+    print(f"  [i] 正在收集本人发言语料（全库扫描，约 1-2 分钟）…", file=sys.stderr)
+    r = build_persona(ds, out)
+    if args.format in ("json", "jsonl"):
+        emit(r, args.format)
+        return
+    print(f"\n[\u2713] 个人语料包已生成 → {out}")
+    print(f"    语料 {r['corpus']['corpus']:,} 条 / {r['corpus']['sessions']} 个会话")
+    print(f"    平均长度 {r['profile']['avgLen']} 字")
+    print(f"    风格画像: {r['styleProfile']}\n")
+
+
 # ---------------------------------------------------------------- profile（画像蒸馏）
 def cmd_profile(args, ds: Dataset):
     from core.profile import ProfileDistiller
@@ -953,6 +968,11 @@ def build_parser():
     p.add_argument("--from", dest="from")
     p.add_argument("--to", dest="to")
     p.set_defaults(func=cmd_moments)
+
+    p = sub.add_parser("persona", help="个人 bot 素材：本人发言语料 + 风格画像",
+                       parents=[common])
+    p.add_argument("--output", help="输出目录，默认 <项目>/persona")
+    p.set_defaults(func=cmd_persona)
 
     p = sub.add_parser("profile", help="画像蒸馏（不给会话名=全库个人画像）",
                        parents=[common])
