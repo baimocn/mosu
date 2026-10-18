@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.bot import (  # noqa: E402
-    AI_CLICHES, BotService, StyleChecker, StyleRetriever,
+    BotService, StyleChecker, StyleRetriever,
 )
+from core.bot.checker import AI_CLICHES  # noqa: E402
 
 
 def _write_corpus(td: Path, items) -> Path:
@@ -160,6 +161,13 @@ class TestBotService(unittest.TestCase):
         bot.chat("在吗", conv_id="c1")
         bot.chat("还在吗", conv_id="c1")
         self.assertEqual(len(bot.history["c1"]), 4)   # 2 轮 × user+assistant
+
+    def test_sample_mode(self):
+        bot = self._bot(["嗯"])
+        bot.sample_mode = True
+        r = bot.chat("随便一句")
+        self.assertTrue(r["retrieved"])
+        self.assertEqual(r["tries"], 1)
 
     def test_prompt_structure(self):
         bot = self._bot([])
