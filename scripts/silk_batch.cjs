@@ -54,7 +54,7 @@ function hasFfmpeg() {
         fs.mkdirSync(path.dirname(it.out), { recursive: true });
         execFileSync(FFMPEG, ['-y', '-f', 's16le', '-ar', String(it.rate || 24000),
           '-ac', '1', '-i', pcm, '-b:a', '32k', it.out], { stdio: 'ignore' });
-        fs.unlinkSync(pcm);
+        try { fs.unlinkSync(pcm); } catch {}   // 删不掉就留着（系统临时目录，无关紧要）
       } else {
         fs.mkdirSync(path.dirname(it.out), { recursive: true });
         fs.writeFileSync(it.out, Buffer.from(res.data.buffer));

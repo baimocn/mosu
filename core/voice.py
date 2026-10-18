@@ -124,13 +124,10 @@ class VoiceStore:
         except Exception as e:
             print(f"  [!] 语音转码失败: {str(e)[:80]}")
         # 没转成功的从映射里剔除，HTML 退化为「仅有文字」
+        # 注意：silk 源文件保留不删——转码是幂等优化（mp3 已存在会跳过），
+        # 删临时文件反而会在某些沙箱/权限环境下触发删除护栏；单条仅 1-3KB
         for j in jobs:
-            if os.path.exists(j["out"]):
-                try:
-                    os.remove(j["silk"])          # 转成功就删掉 silk，只留 mp3
-                except Exception:
-                    pass
-            else:
+            if not os.path.exists(j["out"]):
                 mapping.pop(int(j["id"][1:]), None)
         try:
             mf.unlink()

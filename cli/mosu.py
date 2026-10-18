@@ -723,11 +723,26 @@ def cmd_export(args, ds: Dataset):
         media = MediaStore(ds.user_dir, ROOT / ".cache").build()
         print(f"  [i] 媒体索引 {media.stats()}", file=sys.stderr)
 
+    # 同名会话（不同 wxid）必须落不同目录，否则互相覆盖/屏蔽
+    used_dirs: dict[str, str] = {}
+
+    def _unique_dir(base: Path, sess: dict) -> Path:
+        key = str(base)
+        clash = key in used_dirs and used_dirs[key] != sess["sessionId"]
+        if not clash and base.exists():
+            st = es.load_state(base)
+            clash = bool(st and st.get("sessionId") and st["sessionId"] != sess["sessionId"])
+        if clash:
+            base = base.parent / f"{base.name}_{sess['sessionId'][-6:]}"
+        used_dirs[str(base)] = sess["sessionId"]
+        return base
+
     for i, sess in enumerate(targets, 1):
         name = _safe_dirname(sess["displayName"])
         if fmt == "html":
             # 单会话：直接输出到 --output；--all：按会话名建子目录
             out_dir = out_root / name if (args.all or len(targets) > 1) else out_root
+            out_dir = _unique_dir(out_dir, sess)
             out_dir.mkdir(parents=True, exist_ok=True)
             state = es.load_state(out_dir) if inc else None
             if state:
