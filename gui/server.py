@@ -513,6 +513,250 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         return (bytes.fromhex(res["data"]), "application/octet-stream",
                 f"{res['session']}.{res['ext']}")
 
+    # ---------------------------------------------------------------- 联系人
+    def api_contacts(q) -> dict:
+        with _ds_lock:
+            ds = get_ds()
+            cons = list(ds.contacts().values())
+            counts = {s["sessionId"]: s["messageCount"] for s in ds.sessions()}
+            t = q.get("type")
+            if t:
+                cons = [c for c in cons if ds.contact_type(c["wxid"]) == t]
+            if not (q.get("all") == "1"):
+                cons = [c for c in cons
+                        if (c.get("remark") or c.get("nickname") or "").strip()]
+            kw = (q.get("q") or "").strip().lower()
+            if kw:
+                cons = [c for c in cons
+                        if kw in (c.get("remark") or "").lower()
+                        or kw in (c.get("nickname") or "").lower()
+                        or kw in c["wxid"].lower()]
+            if (q.get("sort") or "messages") == "name":
+                cons.sort(key=lambda c: (c.get("remark") or c.get("nickname")
+                                         or c["wxid"]).lower())
+            else:
+                cons.sort(key=lambda c: (-counts.get(c["wxid"], 0),
+                                         (c.get("remark") or c.get("nickname")
+                                          or c["wxid"]).lower()))
+            total = len(cons)
+            offset = max(0, int(q.get("offset", 0)))
+            limit = max(1, min(int(q.get("limit", 100)), 500))
+            page = cons[offset:offset + limit]
+            return {
+                "total": total, "hasMore": total > offset + len(page),
+                "contacts": [{
+                    "wxid": c["wxid"],
+                    "displayName": ds.display_name(c["wxid"]),
+                    "type": ds.contact_type(c["wxid"]),
+                    "remark": c.get("remark") or "",
+                    "nickname": c.get("nickname") or "",
+                    "messageCount": counts.get(c["wxid"], 0),
+                } for c in page],
+            }
+
+    def api_contact(q) -> dict:
+        wxid = (q.get("wxid") or "").strip()
+        if not wxid:
+            raise ValueError("缺少 wxid 参数")
+        with _ds_lock:
+            ds = get_ds()
+            cons = ds.contacts()
+            c = cons.get(wxid)
+            if not c:
+                # 联系人表没有（如群成员未存好友）也允许看，用 wxid 兜底
+                cand = [v for k, v in cons.items()
+                        if wxid.lower() in k.lower()]
+                c = cand[0] if cand else {"wxid": wxid}
+            real = c["wxid"]
+            out = {
+                "wxid": real,
+                "displayName": ds.display_name(real),
+                "type": ds.contact_type(real),
+                "remark": c.get("remark") or "",
+                "nickname": c.get("nickname") or "",
+                "alias": c.get("alias") or "",
+                "sessions": [],
+                "groupTop": [],
+            }
+            for s in ds.find_sessions(real):
+                entry = {
+                    "sessionId": s["sessionId"],
+                    "displayName": s["displayName"],
+                    "type": s["type"],
+                    "messageCount": s["messageCount"],
+                    "lastTime": s["lastTime"],
+                }
+                try:
+                    from core.analytics import Analytics
+                    # session_stats 收字符串（内部再 find_session），不能传 dict
+                    entry["stats"] = Analytics(ds).session_stats(s["sessionId"])
+                except SystemExit:
+                    entry["stats"] = None
+                out["sessions"].append(entry)
+            # 群聊：成员发言榜
+            if out["type"] == "group" and out["sessions"]:
+                try:
+                    from core.analytics import Analytics
+                    g = Analytics(ds).group_stats(out["sessions"][0]["sessionId"])
+                    out["groupTop"] = g.get("topMembers", [])
+                    out["groupTotal"] = g.get("totalMessages", 0)
+                except SystemExit:
+                    pass
+            return out
+
+    # ---------------------------------------------------------------- 画像/年报
+    def api_profile(q) -> dict:
+        sess = (q.get("session") or "").strip()
+        with _ds_lock:
+            from core.profile import ProfileDistiller
+            pd = ProfileDistiller(get_ds())
+            if sess:
+                return pd.contact_profile(sess)
+            return pd.self_profile()
+
+    def api_report(q) -> dict:
+        year = q.get("year")
+        with _ds_lock:
+            from core.analytics import Analytics
+            an = Analytics(get_ds())
+            if year:
+                return an.report(year=int(year))
+            return an.report(all_time=True)
+
+    def _persona_task():
+        """TaskHub worker：全库扫描生成本人语料包（1-2 分钟，必须异步）。"""
+        def run(tid):
+            with _ds_lock:
+                from core.persona import build_persona
+                r = build_persona(get_ds(), ROOT / "persona")
+                return {"corpus": r["corpus"]["corpus"],
+                        "sessions": r["corpus"]["sessions"],
+                        "avgLen": r["profile"]["avgLen"],
+                        "styleProfile": r["styleProfile"]}
+        return run
+
+    def api_persona(payload: dict) -> dict:
+        tid = tasks.submit("persona", _persona_task())
+        return {"taskId": tid, "status": "running"}
+
+    # ---------------------------------------------------------------- 账号/密钥/配置
+    def api_accounts() -> dict:
+        from core.dataset import load_accounts, KEYVAULT
+        accounts, current = load_accounts()
+        return {
+            "current": current,
+            "configPath": str(KEYVAULT),
+            "accounts": [{
+                "name": name,
+                "dbPath": acc.get("dbPath") or "",
+                "hasKey": bool(acc.get("keyHex")),
+                "keyPreview": (acc.get("keyHex") or "")[:8] + "…" if acc.get("keyHex") else "—",
+                "hasImgKey": bool(acc.get("imgKeyHex")),
+                "current": name == current,
+            } for name, acc in accounts.items()],
+        }
+
+    def api_account_action(payload: dict) -> dict:
+        import re as _re
+        from core.dataset import load_accounts, save_accounts
+        action = (payload.get("action") or "").strip()
+        accounts, current = load_accounts()
+        if action == "add":
+            name = (payload.get("name") or "").strip()
+            if not name:
+                raise ValueError("账号名不能为空")
+            acc = dict(accounts.get(name) or {})
+            acc["wxid"] = name
+            db_path = (payload.get("dbPath") or "").strip()
+            if db_path:
+                acc["dbPath"] = db_path
+            key = (payload.get("key") or "").strip().lower()
+            if key:
+                if not _re.fullmatch(r"[0-9a-fA-F]{64}", key):
+                    raise ValueError("密钥必须是 64 位十六进制字符串")
+                acc["keyHex"] = key
+            img_key = (payload.get("imgKey") or "").strip().lower()
+            if img_key:
+                acc["imgKeyHex"] = img_key
+            acc["addedAt"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            accounts[name] = acc
+            if len(accounts) == 1:
+                current = name          # 第一个账号自动设为当前
+            save_accounts(accounts, current=current)
+            return {"saved": True, "account": name, "current": current}
+        if action == "use":
+            name = (payload.get("name") or "").strip()
+            if name not in accounts:
+                raise LookupError(f"没有账号「{name}」")
+            save_accounts(accounts, current=name)
+            return {"current": name}
+        if action == "remove":
+            name = (payload.get("name") or "").strip()
+            if name not in accounts:
+                raise LookupError(f"没有账号「{name}」")
+            del accounts[name]
+            if current == name:
+                current = next(iter(accounts), "")
+            save_accounts(accounts, current=current)
+            return {"removed": name, "current": current}
+        raise ValueError("action 只支持 add/use/remove")
+
+    def api_key_action(payload: dict) -> dict:
+        action = (payload.get("action") or "").strip()
+        if action == "set":
+            k = (payload.get("keyHex") or "").strip().lower()
+            if not k:
+                raise ValueError("密钥不能为空")
+            if len(k) != 64 or any(c not in "0123456789abcdef" for c in k):
+                raise ValueError("密钥必须是 64 位十六进制字符串")
+            from core.dataset import load_keyvault, save_keyvault
+            data = load_keyvault()
+            data["keyHex"] = k
+            save_keyvault(data)
+            return {"saved": True, "keyPreview": k[:8] + "…"}
+        if action == "test":
+            with _ds_lock:
+                ds = get_ds()
+            from core.sqlcipher4 import verify_password
+            src = ds.db_root / "session" / "session.db"
+            if not src.exists():
+                return {"hmacOk": False, "db": str(src),
+                        "note": "session.db 不存在（目录没配好？）"}
+            ok, detail = verify_password(ds.key, str(src))
+            return {"hmacOk": ok, "db": str(src), "salt": detail.get("salt")}
+        raise ValueError("action 只支持 set/test")
+
+    def api_config() -> dict:
+        from core.dataset import (KEYVAULT, LEGACY_VAULT, load_accounts,
+                                  load_keyvault, find_user_dir, load_key_hex)
+        accounts, current = load_accounts()
+        vault = load_keyvault()
+        # 多账号形态下密钥在各账号条目里，顶层 keyHex 是旧单账号格式——
+        # 以 load_key_hex（当前账号解析链）为准
+        try:
+            key_hex = load_key_hex(current) or ""
+        except SystemExit:
+            key_hex = ""
+        img_key = ""
+        if current and current in accounts:
+            img_key = accounts[current].get("imgKeyHex") or ""
+        return {
+            "mosuHome": str(KEYVAULT.parent),
+            "configPath": str(KEYVAULT),
+            "legacyVaultExists": LEGACY_VAULT.exists(),
+            "current": current,
+            "accountCount": len(accounts),
+            "hasKey": bool(key_hex),
+            "keyPreview": (key_hex[:8] + "…") if key_hex else "—",
+            "hasImgKey": bool(img_key),
+            "dbPath": str(find_user_dir(None, current)) if current else "",
+            "envOverrides": {
+                "MOSU_DB_PATH": bool(os.environ.get("MOSU_DB_PATH")),
+                "MOSU_KEY_HEX": bool(os.environ.get("MOSU_KEY_HEX")),
+                "MOSU_IMG_KEY_HEX": bool(os.environ.get("MOSU_IMG_KEY_HEX")),
+            },
+        }
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -609,6 +853,24 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
+            if path == "/api/contacts":
+                self._guard(api_contacts, self._params())
+                return
+            if path == "/api/contact":
+                self._guard(api_contact, self._params())
+                return
+            if path == "/api/profile":
+                self._guard(api_profile, self._params())
+                return
+            if path == "/api/report":
+                self._guard(api_report, self._params())
+                return
+            if path == "/api/accounts":
+                self._guard(api_accounts)
+                return
+            if path == "/api/config":
+                self._guard(api_config)
+                return
             if path == "/api/moments":
                 self._guard(api_moments, self._params())
                 return
@@ -670,6 +932,15 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/stats/keywords":
                 self._guard(api_stats_keywords, payload)
+                return
+            if path == "/api/persona":
+                self._guard(api_persona, payload)
+                return
+            if path == "/api/account":
+                self._guard(api_account_action, payload)
+                return
+            if path == "/api/key":
+                self._guard(api_key_action, payload)
                 return
             if path == "/api/export":
                 self._guard(api_export, payload)

@@ -36,9 +36,9 @@
 
   /* ---------- tab ---------- */
   .tabs { display: flex; gap: 2px; background: #fff; padding: 0 16px; flex-shrink: 0;
-          border-bottom: 1px solid #e0e0e0; }
+          border-bottom: 1px solid #e0e0e0; flex-wrap: wrap; }
   .tab {
-    padding: 9px 16px; font-size: 13px; color: #666; cursor: pointer;
+    padding: 9px 13px; font-size: 13px; color: #666; cursor: pointer;
     border: none; background: none; border-bottom: 2px solid transparent;
   }
   .tab.active { color: #07c160; border-bottom-color: #07c160; font-weight: 600; }
@@ -281,6 +281,82 @@
   .m-comment b { color: #576b95; font-weight: 500; }
 
   /* ================================================================
+     联系人（列表 + 详情）
+     ================================================================ */
+  .contact-detail { flex: 1; overflow-y: auto; padding: 16px 20px; min-width: 0; }
+  .cd-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .cd-avatar { width: 52px; height: 52px; border-radius: 8px; flex-shrink: 0;
+               display: flex; align-items: center; justify-content: center;
+               font-size: 22px; color: #fff; font-weight: 600; }
+  .cd-name { font-size: 17px; font-weight: 600; color: #222; }
+  .cd-sub { font-size: 12px; color: #999; margin-top: 2px; }
+  .cd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+             gap: 12px; }
+  .cd-card { background: #fff; border-radius: 10px; padding: 14px 16px;
+             box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  .cd-card h4 { font-size: 13px; color: #444; margin-bottom: 10px; font-weight: 600; }
+  .cd-kv { display: flex; justify-content: space-between; font-size: 12px;
+           padding: 3px 0; gap: 10px; }
+  .cd-kv .k { color: #999; }
+  .cd-kv .v { color: #333; text-align: right; word-break: break-all; }
+  .cd-empty { flex: 1; display: flex; align-items: center; justify-content: center;
+              color: #aaa; font-size: 13px; }
+
+  /* ================================================================
+     画像 / 年报 / 设置（通用卡片页）
+     ================================================================ */
+  .page-wrap { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .page-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+              flex-wrap: wrap; }
+  .page-bar .spacer { flex: 1; }
+  .insight-list { display: flex; flex-direction: column; gap: 8px; }
+  .insight-item { background: #f0faf4; border-left: 3px solid #07c160; color: #1a6b3c;
+                  font-size: 12px; padding: 8px 12px; border-radius: 0 6px 6px 0;
+                  line-height: 1.6; }
+  .kv-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+              gap: 10px; margin-bottom: 14px; }
+  .dual-chart { display: flex; align-items: flex-end; gap: 2px; height: 90px; }
+  .dual-bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+              gap: 1px; height: 100%; }
+  .dual-bar .d-total { background: #c8e6d4; border-radius: 2px 2px 0 0; }
+  .dual-bar .d-mine { background: #07c160; border-radius: 0; }
+  .dual-bar .d-mine.last { border-radius: 0 0 2px 2px; }
+  .dual-legend { display: flex; gap: 14px; font-size: 11px; color: #999; margin-top: 8px; }
+  .dual-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+                   margin-right: 4px; vertical-align: -1px; }
+  .topic-tag { background: #eef4ff; border: 1px solid #d6e4fb; color: #2f5fb3;
+               border-radius: 12px; padding: 2px 10px; font-size: 12px; }
+  .social-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .social-row .sname { width: 120px; font-size: 12px; color: #555; flex-shrink: 0;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .social-row .sbar { height: 12px; background: #3c7ef4; border-radius: 3px; opacity: .75; }
+  .social-row .sval { font-size: 11px; color: #999; }
+
+  /* 设置页 */
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                   gap: 12px; }
+  .set-card { background: #fff; border-radius: 10px; padding: 16px 18px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  .set-card h4 { font-size: 14px; color: #333; margin-bottom: 12px; font-weight: 600; }
+  .acc-row { display: flex; align-items: center; gap: 8px; padding: 8px 0;
+             border-bottom: 1px dashed #eee; font-size: 12px; }
+  .acc-row:last-child { border-bottom: none; }
+  .acc-row .an { font-weight: 600; color: #333; flex: 1; min-width: 0;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acc-row .cur { color: #07c160; font-size: 11px; }
+  .mini-btn { border: 1px solid #e0e0e0; background: #fff; color: #666; font-size: 11px;
+              border-radius: 5px; padding: 3px 10px; cursor: pointer; }
+  .mini-btn:hover { border-color: #07c160; color: #07c160; }
+  .mini-btn.primary { background: #07c160; border-color: #07c160; color: #fff; }
+  .mini-btn.danger:hover { border-color: #fa5151; color: #fa5151; }
+  .set-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .set-form input, .set-form select { border: 1px solid #e0e0e0; border-radius: 6px;
+    outline: none; padding: 7px 10px; font-size: 12px; font-family: inherit; width: 100%; }
+  .set-form input:focus { border-color: #07c160; }
+  .set-note { font-size: 11px; color: #aaa; line-height: 1.7; margin-top: 8px; }
+  .set-note code { background: #f5f5f5; padding: 1px 5px; border-radius: 3px; color: #07c160; }
+
+  /* ================================================================
      导出
      ================================================================ */
   .export-wrap { flex: 1; overflow-y: auto; padding: 20px 24px; }
@@ -336,13 +412,17 @@
     </div>
   </header>
 
-  <!-- tab：控制台 / 数据浏览 / 数据统计 / 朋友圈 / 导出 -->
+  <!-- tab：控制台 / 数据浏览 / 数据统计 / 朋友圈 / 导出 / 联系人 / 画像 / 年报 / 设置 -->
   <nav class="tabs">
     <button class="tab" :class="{active: tab === 'chat'}" @click="tab = 'chat'">控制台</button>
     <button class="tab" :class="{active: tab === 'browse'}" @click="switchBrowse">数据浏览</button>
     <button class="tab" :class="{active: tab === 'stats'}" @click="switchStats">数据统计</button>
     <button class="tab" :class="{active: tab === 'moments'}" @click="switchMoments">朋友圈</button>
     <button class="tab" :class="{active: tab === 'export'}" @click="switchExport">导出</button>
+    <button class="tab" :class="{active: tab === 'contacts'}" @click="switchContacts">联系人</button>
+    <button class="tab" :class="{active: tab === 'profile'}" @click="switchProfile">画像</button>
+    <button class="tab" :class="{active: tab === 'report'}" @click="switchReport">年报</button>
+    <button class="tab" :class="{active: tab === 'settings'}" @click="switchSettings">设置</button>
   </nav>
 
   <!-- ==================== 控制台 ==================== -->
@@ -728,6 +808,335 @@
     </div>
   </div>
 
+  <!-- ==================== 联系人 ==================== -->
+  <div class="main browse" v-show="tab === 'contacts'">
+    <aside class="sess-col">
+      <div class="sess-filters">
+        <input v-model="conKeyword" placeholder="搜索联系人…" @input="loadContacts">
+        <div class="type-tabs">
+          <button class="type-tab" :class="{active: conType === ''}" @click="conType = ''; loadContacts()">全部</button>
+          <button class="type-tab" :class="{active: conType === 'friend'}" @click="conType = 'friend'; loadContacts()">好友</button>
+          <button class="type-tab" :class="{active: conType === 'group'}" @click="conType = 'group'; loadContacts()">群聊</button>
+          <button class="type-tab" :class="{active: conType === 'mp'}" @click="conType = 'mp'; loadContacts()">公众号</button>
+        </div>
+      </div>
+      <div class="sess-list">
+        <p class="log-empty" v-if="conLoading">加载中…</p>
+        <p class="log-empty" v-else-if="!contacts.length">没有联系人</p>
+        <div class="sess-item" v-for="c in contacts" :key="c.wxid"
+             :class="{active: c.wxid === curContactId}" @click="openContact(c)">
+          <div class="sess-avatar" :style="{background: avatarColor(c.displayName)}">
+            {{ (c.displayName || '?').slice(0, 1) }}
+          </div>
+          <div class="sess-info">
+            <div class="sess-name" v-text="c.displayName"></div>
+            <div class="sess-sub" v-text="typeName(c.type) + ' · ' + c.messageCount + ' 条'"></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+    <section class="msg-col">
+      <div class="contact-detail" v-if="contactDetail">
+        <div class="cd-head">
+          <div class="cd-avatar" :style="{background: avatarColor(contactDetail.displayName)}">
+            {{ (contactDetail.displayName || '?').slice(0, 1) }}
+          </div>
+          <div>
+            <div class="cd-name" v-text="contactDetail.displayName"></div>
+            <div class="cd-sub" v-text="typeName(contactDetail.type) + ' · ' + contactDetail.wxid"></div>
+          </div>
+        </div>
+        <div class="cd-grid">
+          <div class="cd-card" v-for="(s, i) in contactDetail.sessions" :key="i">
+            <h4 v-text="s.displayName"></h4>
+            <template v-if="s.stats">
+              <div class="cd-kv"><span class="k">消息总数</span><span class="v" v-text="fmtNum(s.stats.totalMessages)"></span></div>
+              <div class="cd-kv"><span class="k">我发出</span><span class="v" v-text="fmtNum(s.stats.sentMessages)"></span></div>
+              <div class="cd-kv"><span class="k">我收到</span><span class="v" v-text="fmtNum(s.stats.receivedMessages)"></span></div>
+              <div class="cd-kv"><span class="k">活跃天数</span><span class="v" v-text="s.stats.activeDays + ' 天'"></span></div>
+              <div class="cd-kv"><span class="k">最早消息</span><span class="v" v-text="s.stats.firstMessageText || '—'"></span></div>
+              <div class="cd-kv"><span class="k">最近消息</span><span class="v" v-text="s.stats.lastMessageText || '—'"></span></div>
+            </template>
+            <p class="log-empty" v-else>统计不可用</p>
+            <button class="mini-btn" style="margin-top:8px"
+                    @click="gotoSession(s.sessionId)">去看消息 →</button>
+          </div>
+          <div class="cd-card" v-if="contactDetail.groupTop && contactDetail.groupTop.length">
+            <h4>群成员发言榜（前 10）</h4>
+            <div class="social-row" v-for="(m, i) in contactDetail.groupTop.slice(0, 10)" :key="i">
+              <span class="sname" :title="m.displayName" v-text="(i+1) + '. ' + m.displayName"></span>
+              <span class="sbar" :style="{width: Math.round(m.messageCount / contactDetail.groupTop[0].messageCount * 100) + '%', background: m.isSelf ? '#07c160' : '#3c7ef4'}"></span>
+              <span class="sval" v-text="fmtNum(m.messageCount) + (m.isSelf ? ' (我)' : '')"></span>
+            </div>
+          </div>
+          <div class="cd-card">
+            <h4>资料</h4>
+            <div class="cd-kv"><span class="k">备注</span><span class="v" v-text="contactDetail.remark || '—'"></span></div>
+            <div class="cd-kv"><span class="k">昵称</span><span class="v" v-text="contactDetail.nickname || '—'"></span></div>
+            <div class="cd-kv"><span class="k">微信号</span><span class="v" v-text="contactDetail.alias || '—'"></span></div>
+            <div class="cd-kv"><span class="k">wxid</span><span class="v" v-text="contactDetail.wxid"></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="cd-empty" v-else>← 左边选个联系人看详情</div>
+    </section>
+  </div>
+
+  <!-- ==================== 画像 ==================== -->
+  <div class="main" v-show="tab === 'profile'">
+    <div class="page-wrap" ref="profileScroll">
+      <div class="page-bar">
+        <button class="mini-btn" :class="{primary: !profileTarget}" @click="profileTarget = ''; loadProfile()">全库画像</button>
+        <span style="color:#bbb;font-size:12px">或</span>
+        <select style="border:1px solid #e0e0e0;border-radius:6px;padding:5px 8px;font-size:12px;max-width:200px"
+                v-model="profileTarget" @change="loadProfile">
+          <option value="">— 选会话看单人画像 —</option>
+          <option v-for="s in sessions" :key="s.sessionId" :value="s.sessionId">
+            {{ s.displayName }}
+          </option>
+        </select>
+        <span class="spacer"></span>
+        <button class="mini-btn" @click="loadProfile" :disabled="profileLoading">刷新</button>
+      </div>
+      <div class="placeholder" v-if="profileLoading">
+        <div class="spinner"></div><span>正在蒸馏画像…（全库约 10 秒）</span>
+      </div>
+      <div class="err-card" v-else-if="profileErr">
+        <h3>画像加载失败</h3><p>{{ profileErr }}</p>
+      </div>
+      <template v-else-if="profileData">
+        <!-- 概览卡片 -->
+        <div class="kv-cards">
+          <div class="stat-card"><div class="num" v-text="fmtNum(profileData.overview.totalMessages)"></div><div class="lbl">总消息</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(profileData.overview.myMessages)"></div><div class="lbl">我发出的</div></div>
+          <div class="stat-card"><div class="num" v-text="Math.round((profileData.overview.myShare || 0) * 100) + '%'"></div><div class="lbl">我的占比</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(profileData.overview.activeDays)"></div><div class="lbl">活跃天数</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(profileData.overview.spanDays)"></div><div class="lbl">跨度（天）</div></div>
+        </div>
+        <!-- 洞察 -->
+        <div class="cd-card" style="margin-bottom:12px" v-if="profileData.insights && profileData.insights.length">
+          <h4>数据洞察</h4>
+          <div class="insight-list">
+            <div class="insight-item" v-for="(t, i) in profileData.insights" :key="i" v-text="t"></div>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <!-- 作息：双柱（全部/我的） -->
+          <div class="chart-card">
+            <h4>作息节律（绿=我发出，浅绿=全部）</h4>
+            <div class="dual-chart">
+              <div class="dual-bar" v-for="(h, i) in profileData.rhythm.hourly" :key="'h'+i">
+                <span class="d-total" :style="{height: h.total / rhythmMax * 100 + '%'}"></span>
+                <span class="d-mine" :class="{last: true}" :style="{height: h.mine / rhythmMax * 100 + '%'}"></span>
+              </div>
+            </div>
+            <div class="dual-legend">
+              <span><i style="background:#07c160"></i>我发出</span>
+              <span><i style="background:#c8e6d4"></i>全部消息</span>
+              <span style="margin-left:auto">峰值 {{ profileData.rhythm.peakHour }} 点 · 凌晨 {{ profileData.rhythm.nightMessages }} 条</span>
+            </div>
+          </div>
+          <!-- 星期 -->
+          <div class="chart-card">
+            <h4>星期分布</h4>
+            <svg class="chart-svg" viewBox="0 0 336 130" v-if="profileData.rhythm.weekday">
+              <g v-for="(d, i) in profileData.rhythm.weekday" :key="'w'+i">
+                <rect class="bar" :x="i*46+8" :y="120 - Math.round(d.total / wdMax * 100)"
+                      :width="34" :height="Math.max(Math.round(d.total / wdMax * 100), 1)" rx="2">
+                  <title>周{{ d.day }}：全部 {{ d.total }} · 我 {{ d.mine }}</title>
+                </rect>
+                <text class="axis" :x="i*46+25" :y="129" text-anchor="middle">{{ d.day }}</text>
+              </g>
+            </svg>
+          </div>
+          <!-- 社交图谱 -->
+          <div class="chart-card">
+            <h4>社交图谱（我发出最多的会话）</h4>
+            <div class="social-row" v-for="(s, i) in profileData.social.slice(0, 10)" :key="'s'+i">
+              <span class="sname" :title="s.name" v-text="(i+1) + '. ' + s.name"></span>
+              <span class="sbar" :style="{width: Math.round(s.mine / profileData.social[0].mine * 100) + '%'}"></span>
+              <span class="sval" v-text="fmtNum(s.mine) + ' / ' + fmtNum(s.total)"></span>
+            </div>
+          </div>
+          <!-- 话题与风格 -->
+          <div class="chart-card">
+            <h4>话题分布</h4>
+            <div class="kw-list" style="margin-bottom:12px">
+              <span class="topic-tag" v-for="(t, i) in profileData.topics.byTopic.slice(0, 12)" :key="'t'+i">
+                {{ t.topic }} {{ t.hits }}
+              </span>
+            </div>
+            <h4>风格</h4>
+            <div class="cd-kv"><span class="k">平均消息长度</span><span class="v" v-text="profileData.style.avgLength + ' 字'"></span></div>
+            <div class="cd-kv"><span class="k">表情使用率</span><span class="v" v-text="Math.round(profileData.style.emojiRate * 100) + '%'"></span></div>
+            <div class="cd-kv"><span class="k">提问率</span><span class="v" v-text="Math.round(profileData.style.questionRate * 100) + '%'"></span></div>
+          </div>
+        </div>
+        <div class="cd-card" style="margin-top:12px">
+          <h4>月度曲线</h4>
+          <div class="chart-scroll" v-if="profileData.monthly && profileData.monthly.length">
+            <svg class="chart-svg" :viewBox="'0 0 ' + (profileData.monthly.length * 40 + 20) + ' 130'">
+              <g v-for="(m, i) in profileData.monthly" :key="'m'+i">
+                <rect class="bar" :x="i*40+10" :y="120 - Math.round(m.mine / monthMax * 100)"
+                      :width="28" :height="Math.max(Math.round(m.mine / monthMax * 100), 1)" rx="2">
+                  <title>{{ m.month }}：我 {{ m.mine }} · 全部 {{ m.total }}</title>
+                </rect>
+                <text class="axis" :x="i*40+24" :y="129" text-anchor="middle">{{ m.month.slice(2) }}</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </template>
+      <div class="placeholder" v-else><span class="big">🧭</span><span>切换到本标签自动加载</span></div>
+    </div>
+  </div>
+
+  <!-- ==================== 年报 ==================== -->
+  <div class="main" v-show="tab === 'report'">
+    <div class="page-wrap">
+      <div class="page-bar">
+        <label style="font-size:12px;color:#888">年份</label>
+        <select style="border:1px solid #e0e0e0;border-radius:6px;padding:5px 8px;font-size:12px"
+                v-model="reportYear" @change="loadReport">
+          <option value="2026">2026</option>
+          <option value="2025">2025</option>
+          <option value="2024">2024</option>
+          <option value="">全部时间</option>
+        </select>
+        <span class="spacer"></span>
+        <button class="mini-btn" @click="loadReport" :disabled="reportLoading">刷新</button>
+      </div>
+      <div class="placeholder" v-if="reportLoading">
+        <div class="spinner"></div><span>正在生成年报…（约 10 秒）</span>
+      </div>
+      <div class="err-card" v-else-if="reportErr">
+        <h3>年报加载失败</h3><p>{{ reportErr }}</p>
+      </div>
+      <template v-else-if="reportData">
+        <div class="kv-cards">
+          <div class="stat-card"><div class="num" v-text="fmtNum(reportData.summary.totalMessages)"></div><div class="lbl">总消息</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(reportData.summary.sentMessages)"></div><div class="lbl">我发出</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(reportData.summary.receivedMessages)"></div><div class="lbl">我收到</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(reportData.summary.activeDays)"></div><div class="lbl">活跃天数</div></div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h4>小时分布</h4>
+            <svg class="chart-svg" viewBox="0 0 336 130" v-if="reportHourly.length">
+              <g v-for="(b, i) in reportHourly" :key="'rh'+i">
+                <rect class="bar" :x="i*14+2" :y="120 - b.h" :width="10" :height="Math.max(b.h, 1)" rx="2">
+                  <title>{{ b.label }}时：{{ b.count }} 条</title>
+                </rect>
+                <text class="axis" :x="i*14+7" :y="129" text-anchor="middle" v-if="i%3===0">{{ b.label }}</text>
+              </g>
+            </svg>
+          </div>
+          <div class="chart-card">
+            <h4>联系榜 Top 10</h4>
+            <div class="social-row" v-for="(c, i) in reportData.summary.topContacts.slice(0, 10)" :key="'rc'+i">
+              <span class="sname" :title="c.displayName" v-text="(i+1) + '. ' + c.displayName"></span>
+              <span class="sbar" :style="{width: Math.round(c.count / reportData.summary.topContacts[0].count * 100) + '%'}"></span>
+              <span class="sval" v-text="fmtNum(c.count)"></span>
+            </div>
+          </div>
+          <div class="chart-card">
+            <h4>年度关键词</h4>
+            <div class="kw-list">
+              <span class="kw-item" v-for="(k, i) in reportData.summary.topKeywords.slice(0, 20)" :key="'rk'+i"
+                    :style="{fontSize: (13 + (20 - i) * 0.25) + 'px'}">
+                <b v-text="k.word"></b> {{ k.count }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div class="placeholder" v-else><span class="big">📅</span><span>切换到本标签自动加载</span></div>
+    </div>
+  </div>
+
+  <!-- ==================== 设置 ==================== -->
+  <div class="main" v-show="tab === 'settings'">
+    <div class="page-wrap">
+      <div class="placeholder" v-if="settingsLoading"><div class="spinner"></div><span>读取配置…</span></div>
+      <template v-else-if="settings">
+        <div class="settings-grid">
+          <!-- 账号管理 -->
+          <div class="set-card">
+            <h4>账号（{{ settings.accounts.accounts.length }} 个）</h4>
+            <div class="acc-row" v-for="a in settings.accounts.accounts" :key="a.name">
+              <span class="an" v-text="a.name"></span>
+              <span class="cur" v-if="a.current">当前</span>
+              <span style="color:#bbb" v-text="a.keyPreview"></span>
+              <button class="mini-btn" v-if="!a.current" @click="accountAction('use', a.name)">切换</button>
+              <button class="mini-btn danger" @click="accountAction('remove', a.name)">删</button>
+            </div>
+            <p class="log-empty" v-if="!settings.accounts.accounts.length">还没有账号</p>
+            <div class="set-form">
+              <input v-model="accForm.name" placeholder="账号名（如 wxid_xxxx）">
+              <input v-model="accForm.dbPath" placeholder="数据目录（含 db_storage 的上一层）">
+              <input v-model="accForm.key" placeholder="数据库密钥（64 位 hex，可空）">
+              <input v-model="accForm.imgKey" placeholder="图片密钥（32 位 hex，可空）">
+              <button class="mini-btn primary" style="padding:7px 0" @click="accountAction('add')">添加账号</button>
+            </div>
+            <p class="set-note">切换账号后，数据类页面会自动用新账号（下次请求生效）。</p>
+          </div>
+          <!-- 密钥 -->
+          <div class="set-card">
+            <h4>数据库密钥</h4>
+            <div class="cd-kv"><span class="k">当前账号</span><span class="v" v-text="settings.config.current || '—'"></span></div>
+            <div class="cd-kv"><span class="k">密钥状态</span><span class="v" :class="settings.config.hasKey ? 'ok' : 'bad'" v-text="settings.config.hasKey ? settings.config.keyPreview : '未配置'"></span></div>
+            <div class="cd-kv"><span class="k">图片密钥</span><span class="v" :class="settings.config.hasImgKey ? 'ok' : ''" v-text="settings.config.hasImgKey ? '已配置' : '未配置（V2 图片解不开）'"></span></div>
+            <div class="cd-kv"><span class="k">数据目录</span><span class="v" v-text="settings.config.dbPath || '—'"></span></div>
+            <div class="set-form">
+              <input v-model="keyForm.keyHex" placeholder="新的数据库密钥（64 位 hex）">
+              <div style="display:flex;gap:8px">
+                <button class="mini-btn primary" style="flex:1;padding:7px 0" @click="keyAction('set')">保存密钥</button>
+                <button class="mini-btn" style="flex:1;padding:7px 0" @click="keyAction('test')" :disabled="keyTesting">{{ keyTesting ? '测试中…' : '测试密钥' }}</button>
+              </div>
+            </div>
+            <p class="set-note" v-if="keyTestResult">
+              结果：<span :style="{color: keyTestResult.hmacOk ? '#07c160' : '#fa5151'}">
+                {{ keyTestResult.hmacOk ? '✓ HMAC 通过，可解密' : '✗ ' + (keyTestResult.note || '密钥不匹配') }}</span>
+            </p>
+            <p class="set-note">密钥只存在本机 <code>{{ settings.config.configPath }}</code>，不进仓库、不联网。</p>
+          </div>
+          <!-- 配置信息 -->
+          <div class="set-card">
+            <h4>运行环境</h4>
+            <div class="cd-kv"><span class="k">配置目录</span><span class="v" v-text="settings.config.mosuHome"></span></div>
+            <div class="cd-kv"><span class="k">旧版密钥库</span><span class="v" v-text="settings.config.legacyVaultExists ? '存在（可跑 mosu key migrate）' : '无'"></span></div>
+            <div class="cd-kv"><span class="k">MOSU_DB_PATH</span><span class="v" v-text="settings.config.envOverrides.MOSU_DB_PATH ? '已设置' : '—'"></span></div>
+            <div class="cd-kv"><span class="k">MOSU_KEY_HEX</span><span class="v" v-text="settings.config.envOverrides.MOSU_KEY_HEX ? '已设置' : '—'"></span></div>
+            <div class="cd-kv"><span class="k">MOSU_IMG_KEY_HEX</span><span class="v" v-text="settings.config.envOverrides.MOSU_IMG_KEY_HEX ? '已设置' : '—'"></span></div>
+            <p class="set-note">
+              环境变量优先于密钥库。图片 V2 密钥（32 位 hex）只能从本机微信进程内存
+              或既有导出取得——墨溯自己不碰微信进程。
+            </p>
+          </div>
+          <!-- 语料 -->
+          <div class="set-card">
+            <h4>数字分身语料</h4>
+            <p class="set-note" style="margin:0 0 10px">
+              全库扫描你本人的发言，生成 bot 的风格语料包（约 1-2 分钟）。
+              生成后才能用控制台对话与微信通道回复。
+            </p>
+            <button class="mini-btn primary" style="padding:8px 0;width:100%"
+                    :disabled="personaTask.status === 'running'" @click="startPersona">
+              {{ personaTask.status === 'running' ? '生成中… ' + (personaTask.cost || 0) + 's' : '一键生成语料' }}
+            </button>
+            <p class="set-note" v-if="personaTask.status === 'done'">
+              ✓ 语料 {{ fmtNum(personaTask.result.corpus) }} 条 / {{ personaTask.result.sessions }} 个会话，
+              平均 {{ personaTask.result.avgLen }} 字（{{ personaTask.cost }}s）
+            </p>
+            <p class="set-note" v-else-if="personaTask.status === 'error'" style="color:#fa5151">
+              ✗ {{ personaTask.error }}
+            </p>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
   <!-- 数据源错误卡片 -->
   <div class="err-card" v-if="data.error && tab !== 'chat'">
     <h3>数据源没配好</h3>
@@ -781,9 +1190,26 @@ createApp({
       exportForm: { session: "", format: "html", from: "", to: "" },
       exportTask: { id: "", status: "", cost: 0, result: null, error: "", session: "" },
       lightbox: "",                     // 图片灯箱（md5）
+      // ---- 联系人 ----
+      contactsLoaded: false,
+      conKeyword: "", conType: "",
+      contacts: [], conLoading: false,
+      curContactId: "", contactDetail: null,
+      // ---- 画像 ----
+      profileLoaded: false,
+      profileTarget: "", profileData: null, profileLoading: false, profileErr: "",
+      // ---- 年报 ----
+      reportLoaded: false,
+      reportYear: "2026", reportData: null, reportLoading: false, reportErr: "",
+      // ---- 设置 ----
+      settingsLoaded: false,
+      settings: null, settingsLoading: false,
+      accForm: { name: "", dbPath: "", key: "", imgKey: "" },
+      keyForm: { keyHex: "" }, keyTesting: false, keyTestResult: null,
+      personaTask: { id: "", status: "", cost: 0, result: null, error: "" },
       // ---- 内部 ----
       _pendingSid: "", _openPending: null, _waitSid: null,
-      _kwTimer: null, _exportTimer: null,
+      _kwTimer: null, _exportTimer: null, _personaTimer: null,
     };
   },
   computed: {
@@ -846,26 +1272,45 @@ createApp({
       return this.exportSessions.filter(
         s => (s.displayName || "").toLowerCase().includes(kw));
     },
+    // ---- 画像/年报图表计算属性 ----
+    rhythmMax() {
+      const h = (this.profileData && this.profileData.rhythm.hourly) || [];
+      return Math.max(1, ...h.map(x => x.total));
+    },
+    wdMax() {
+      const w = (this.profileData && this.profileData.rhythm.weekday) || [];
+      return Math.max(1, ...w.map(x => x.total));
+    },
+    monthMax() {
+      const m = (this.profileData && this.profileData.monthly) || [];
+      return Math.max(1, ...m.map(x => x.mine));
+    },
+    reportHourly() {
+      const dist = (this.reportData && this.reportData.summary.hourlyDistribution) || {};
+      const keys = Object.keys(dist).sort();
+      const max = Math.max(1, ...keys.map(k => dist[k]));
+      return keys.map(k => ({ label: k, count: dist[k],
+                              h: Math.round(dist[k] / max * 100) }));
+    },
   },
   mounted() {
     // ?tab=xxx[&session=<wxid>] 直达（收藏/演示用）
     try {
       const p = new URLSearchParams(location.search);
       const t = p.get("tab");
-      if (["browse", "stats", "moments", "export"].includes(t)) {
-        if (t === "browse") this.switchBrowse();
-        else if (t === "stats") this.switchStats();
-        else if (t === "moments") this.switchMoments();
-        else if (t === "export") this.switchExport();
-        const sid = p.get("session");
-        if (sid && t === "browse") {
-          this._pendingSid = sid;
-          this._openPending = () => {
-            const s = this.sessions.find(x => x.sessionId === sid);
-            if (s) { this.openSession(s); clearInterval(this._waitSid); }
-          };
-          this._waitSid = setInterval(this._openPending, 500);
-        }
+      const map = { browse: "switchBrowse", stats: "switchStats",
+                    moments: "switchMoments", export: "switchExport",
+                    contacts: "switchContacts", profile: "switchProfile",
+                    report: "switchReport", settings: "switchSettings" };
+      if (map[t]) this[map[t]]();
+      const sid = p.get("session");
+      if (sid && t === "browse") {
+        this._pendingSid = sid;
+        this._openPending = () => {
+          const s = this.sessions.find(x => x.sessionId === sid);
+          if (s) { this.openSession(s); clearInterval(this._waitSid); }
+        };
+        this._waitSid = setInterval(this._openPending, 500);
       }
     } catch (e) { /* file:// 等场景忽略 */ }
     this.refreshStatus();
@@ -876,6 +1321,7 @@ createApp({
   unmounted() {
     clearInterval(this._t1); clearInterval(this._t2); clearInterval(this._waitSid);
     clearTimeout(this._kwTimer); clearTimeout(this._exportTimer);
+    clearTimeout(this._personaTimer);
   },
   methods: {
     fmtNum(n) { return (n == null ? "0" : n).toLocaleString(); },
@@ -1124,9 +1570,11 @@ createApp({
             return;
           }
           if (which === "kw") this._kwTimer = setTimeout(tick, 1000);
+          else if (which === "persona") this._personaTimer = setTimeout(tick, 1500);
           else this._exportTimer = setTimeout(tick, 1000);
         }).catch(() => {
           if (which === "kw") this._kwTimer = setTimeout(tick, 2000);
+          else if (which === "persona") this._personaTimer = setTimeout(tick, 2000);
           else this._exportTimer = setTimeout(tick, 2000);
         });
       };
@@ -1162,6 +1610,194 @@ createApp({
       }
     },
     loadMoreMoments() { this.loadMoments(false); },
+
+    // ---------------- 联系人 ----------------
+    switchContacts() {
+      this.tab = "contacts";
+      if (!this.contactsLoaded) {
+        this.contactsLoaded = true;
+        this.loadContacts();
+      }
+    },
+    async loadContacts() {
+      this.conLoading = true;
+      try {
+        const q = new URLSearchParams({ limit: 300 });
+        if (this.conType) q.set("type", this.conType);
+        if (this.conKeyword.trim()) q.set("q", this.conKeyword.trim());
+        const r = await fetch("/api/contacts?" + q);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        this.contacts = d.contacts || [];
+      } catch (e) {
+        this.contacts = [];
+      } finally {
+        this.conLoading = false;
+      }
+    },
+    async openContact(c) {
+      this.curContactId = c.wxid;
+      this.contactDetail = null;
+      try {
+        const r = await fetch("/api/contact?wxid=" + encodeURIComponent(c.wxid));
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        this.contactDetail = d;
+      } catch (e) {
+        this.contactDetail = { error: String(e.message || e), wxid: c.wxid,
+                               displayName: c.displayName, sessions: [] };
+      }
+    },
+    gotoSession(sessionId) {
+      // 跳到数据浏览并打开该会话
+      this.switchBrowse();
+      this.openSession({ sessionId, displayName: "", type: "", messageCount: 0 });
+    },
+
+    // ---------------- 画像 ----------------
+    switchProfile() {
+      this.tab = "profile";
+      if (!this.profileLoaded) {
+        this.profileLoaded = true;
+        this.loadProfile();
+      }
+    },
+    async loadProfile() {
+      this.profileLoading = true;
+      this.profileErr = "";
+      try {
+        const q = this.profileTarget
+          ? "?session=" + encodeURIComponent(this.profileTarget) : "";
+        const r = await fetch("/api/profile" + q);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        this.profileData = d;
+      } catch (e) {
+        this.profileErr = String(e.message || e);
+        this.profileData = null;
+      } finally {
+        this.profileLoading = false;
+      }
+    },
+
+    // ---------------- 年报 ----------------
+    switchReport() {
+      this.tab = "report";
+      if (!this.reportLoaded) {
+        this.reportLoaded = true;
+        this.loadReport();
+      }
+    },
+    async loadReport() {
+      this.reportLoading = true;
+      this.reportErr = "";
+      try {
+        const q = this.reportYear ? "?year=" + this.reportYear : "";
+        const r = await fetch("/api/report" + q);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        this.reportData = d;
+      } catch (e) {
+        this.reportErr = String(e.message || e);
+        this.reportData = null;
+      } finally {
+        this.reportLoading = false;
+      }
+    },
+
+    // ---------------- 设置 ----------------
+    switchSettings() {
+      this.tab = "settings";
+      if (!this.settingsLoaded) {
+        this.settingsLoaded = true;
+        this.loadSettings();
+      }
+    },
+    async loadSettings() {
+      this.settingsLoading = true;
+      try {
+        const [acc, cfg] = await Promise.all([
+          fetch("/api/accounts").then(r => r.json()),
+          fetch("/api/config").then(r => r.json()),
+        ]);
+        this.settings = { accounts: acc, config: cfg };
+      } catch (e) {
+        this.settings = null;
+      } finally {
+        this.settingsLoading = false;
+      }
+    },
+    async accountAction(action, name) {
+      try {
+        const body = { action };
+        if (action === "add") {
+          if (!this.accForm.name.trim()) { alert("账号名不能为空"); return; }
+          body.name = this.accForm.name.trim();
+          body.dbPath = this.accForm.dbPath.trim();
+          body.key = this.accForm.key.trim();
+          body.imgKey = this.accForm.imgKey.trim();
+        } else {
+          body.name = name;
+        }
+        const r = await fetch("/api/account", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (d.error) { alert(d.error); return; }
+        this.accForm = { name: "", dbPath: "", key: "", imgKey: "" };
+        this.loadSettings();
+      } catch (e) {
+        alert(String(e));
+      }
+    },
+    async keyAction(action) {
+      if (action === "set") {
+        const k = this.keyForm.keyHex.trim();
+        if (!k) { alert("密钥不能为空"); return; }
+        try {
+          const r = await fetch("/api/key", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "set", keyHex: k }),
+          });
+          const d = await r.json();
+          if (d.error) { alert(d.error); return; }
+          this.keyForm.keyHex = "";
+          this.loadSettings();
+        } catch (e) { alert(String(e)); }
+        return;
+      }
+      // test
+      this.keyTesting = true;
+      this.keyTestResult = null;
+      try {
+        const r = await fetch("/api/key", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "test" }),
+        });
+        this.keyTestResult = await r.json();
+      } catch (e) {
+        this.keyTestResult = { hmacOk: false, note: String(e) };
+      } finally {
+        this.keyTesting = false;
+      }
+    },
+    startPersona() {
+      this.personaTask = { id: "", status: "running", cost: 0, result: null, error: "" };
+      fetch("/api/persona", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).then(r => r.json()).then(d => {
+        if (d.error) {
+          this.personaTask = { id: "", status: "error", cost: 0, result: null, error: d.error };
+          return;
+        }
+        this.personaTask.id = d.taskId;
+        this.pollTask(this.personaTask, "persona");
+      }).catch(e => {
+        this.personaTask = { id: "", status: "error", cost: 0, result: null, error: String(e) };
+      });
+    },
 
     // ---------------- 导出 ----------------
     switchExport() {
