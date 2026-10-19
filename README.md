@@ -234,21 +234,75 @@ docs/                  命令速查、媒体格式、SQLCipher 参数说明
 
 ## English
 
-**mosu** decrypts and exports your local WeChat (PC) chat data with a
+**mosu** decrypts, browses and exports your local WeChat (PC) chat data with a
 from-scratch SQLCipher 4 engine — no DLL injection, no network, no license check.
 
+### What it is
+
+A pure-Python toolkit for your own WeChat data: decrypt the encrypted databases,
+browse sessions/messages/moments, run statistics and profiles, build a personal
+chat corpus, and run a "digital twin" bot that replies in your own style.
+Everything stays on your machine except the optional LLM backend you configure
+yourself for the bot.
+
+### Install
+
 ```bash
-pip install -r requirements.txt
-export MOSU_DB_PATH="/path/to/xwechat_files/wxid_xxx"
-export MOSU_KEY_HEX=<64-hex-key>
-python cli/mosu.py sessions
-python cli/mosu.py profile            # personal data portrait
+pip install -r requirements.txt        # or: pip install mosu (PyPI, v0.2.0+)
 ```
 
-See [docs/CLI.md](docs/CLI.md) for all commands. The database key can only be
-obtained from your own machine's WeChat process memory or a previous export —
-this tool never touches the WeChat process itself.
+Python >= 3.10. Required: `pycryptodome`, `zstandard`.
+Optional: `jieba` (keyword stats), `Pillow` (image resize).
+Node.js is only needed for SILK voice → MP3 transcoding.
 
-## License
+### Quick start
+
+```bash
+export MOSU_DB_PATH="/path/to/xwechat_files/wxid_xxx"
+export MOSU_KEY_HEX=<64-hex-key>       # from your own machine only
+python cli/mosu.py status              # config + key check + data scale
+python cli/mosu.py sessions --limit 20
+python cli/mosu.py messages "Alice" --limit 50
+python cli/mosu.py search keyword
+python cli/mosu.py profile             # personal data portrait
+python cli/mosu.py gui                 # local console: http://127.0.0.1:8788
+```
+
+### Features
+
+- Full-database decryption (sessions / contacts / messages / media / moments)
+- Message queries by session, type, direction, time range, cursor paging
+- Full-text search across decompressed message bodies
+- Statistics, annual reports, contact/keyword rankings
+- Personal profile distillation (rhythm, social graph, sentiment curve)
+- Personal bot corpus + style profile; digital-twin bot service (LLM + RAG + rule checks)
+- WeChat Bot channel (official iLink API, self-implemented): scan-to-login,
+  long-poll receive/send, resident service with heartbeat
+- Local web console (`mosu gui`): chat playground, channel status, message feed,
+  session browser with bubble UI and decrypted images, statistics charts,
+  moments feed, one-click export (HTML zip / JSON / CSV / TXT)
+- MCP server (12 tools) for AI clients
+- Offline export: HTML (WeChat-style bubbles), JSON, CSV, TXT
+
+### Privacy
+
+Read-only against WeChat's files; never injects, hooks or scans processes;
+no network requests except the LLM endpoint you configure for the bot.
+The database key can only be obtained from your own machine's WeChat process
+memory or a previous export — this tool never touches the WeChat process itself.
+
+You are responsible for your own keys and for using exported data lawfully.
+
+### Project layout
+
+```
+cli/mosu.py     CLI entry (16 command groups)
+core/           decryption / parsing / analytics / bot / wechat channel / GUI server
+gui/            local web console (single-page Vue3, local vendor, offline-ready)
+tests/          offline test suite (90 cases)
+docs/           CLI reference, media format, GUI & WeChat channel guides
+```
+
+### License
 
 [MIT](LICENSE) © 2026 傅铭胜 and contributors

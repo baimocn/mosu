@@ -6,8 +6,6 @@ node_modules/
 key*.txt
 .env
 export/
-scripts/__pycache__/
-core/__pycache__/
 __pycache__/
 
 # 本地工作记忆（含本机路径，不进公开仓库）
@@ -20,3 +18,12 @@ __pycache__/
 persona/
 corpus.jsonl
 *.jsonl
+
+# GUI 导出产物与截图（防桌面截图误入）
+*.zip
+mosu-gui-*.png
+
+# 构建产物
+build/
+dist/
+*.egg-info/
