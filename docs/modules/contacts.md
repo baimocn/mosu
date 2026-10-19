@@ -17,9 +17,15 @@
 
 > ⚠️ 这与 `/api/sessions` 的 `type` **不是同一套词表**：后者用 `_session_type()`，
 > 值域只有 `private | group | mp`，永远不会返回 `friend` / `former_friend` / `other`。
-两套判定还不一致：`_session_type()` 只认 `gh_` 前缀，`contact_type()` 额外认
-`wxid_gh` 前缀——同一个公众号在两处可能得到不同类型。
-> 前端共用同一个中文映射表掩盖了这个差异。两套词表统一是遗留项。
+> **两套词表刻意不合并**——通讯录看 `delete_flag`、会话看 `session_type`，
+> 各有存在理由，合并会丢信息。
+>
+> 但公众号判定必须一致，这里曾有真实缺陷：`_session_type()` 只认 `gh_` 前缀，
+> `contact_type()` 额外认 `wxid_gh`（公众号的 wxid 形式）。结果是同一个公众号账号
+> 在「数据浏览」页显示「单聊」、在「联系人」页显示「公众号」，`session_type=2` 时
+> 甚至显示成「群聊」。前端共用一张中文映射表把 `private` 翻成「好友」，恰好把这个
+> 矛盾盖住了。现已对齐——两处都认 `gh_` 与 `wxid_gh`。
+> 前端仍应拆成 `contactTypeName` / `sessionTypeName` 两张表，别让映射表再掩盖差异。
 
 `former_friend` 的文案是「已删除（保留聊天记录）」，但判定**只看 `delete_flag`**，
 不检查是否真有消息往来——一个删掉后从未聊过的人也会被这样标注。文案与判定存在偏差。

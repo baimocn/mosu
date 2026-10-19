@@ -132,5 +132,59 @@ class TestContactLookupSafety(unittest.TestCase):
         self.assertIn("len(cand) == 1", src)
 
 
+class TestSessionTypeConsistency(unittest.TestCase):
+    """会话类型与联系人类型对同一个账号必须给出相容的判定。
+
+    真实缺陷：`wxid_gh*` 是公众号的 wxid 形式，`_session_type` 只判了 `gh_` 前缀，
+    漏掉了 `wxid_gh`。同一个公众号账号因此在「数据浏览」页显示「单聊」、
+    在「联系人」页显示「公众号」——用户直接可见的自相矛盾。
+    前端曾用同一张中文映射表把 private 翻成「好友」，恰好把这个矛盾盖住了。
+
+    注意：**两套词表不合并**（通讯录看 delete_flag、会话看 session_type，
+    各自有存在理由，合并会丢信息）。这里只要求公众号这一项判定对齐。
+    """
+
+    def _st(self, username, session_type=None):
+        from core.dataset import Dataset
+        return Dataset._session_type(username, session_type)
+
+    def test_wxid_gh_is_mp_regardless_of_session_type(self):
+        """规格复现的两组分歧——修完后都必须判 mp。"""
+        self.assertEqual(self._st("wxid_gh9x8y7z", None), "mp")
+        self.assertEqual(self._st("wxid_gh9x8y7z", 2), "mp")
+
+    def test_both_mp_prefixes_recognised(self):
+        """两种写法都要认：gh_ 与 wxid_gh。"""
+        self.assertEqual(self._st("gh_abc123"), "mp")
+        self.assertEqual(self._st("wxid_gh9x8y7z"), "mp")
+
+    def test_session_type_branch_still_reachable(self):
+        """修 gh_ 不能把 session_type 分支吃掉——非公众号账号仍靠它判群/公众号。"""
+        self.assertEqual(self._st("wxid_zzz", 2), "group")
+        self.assertEqual(self._st("wxid_zzz", 3), "mp")
+
+    def test_plain_friend_stays_private(self):
+        self.assertEqual(self._st("wxid_u1"), "private")
+        self.assertEqual(self._st("wxid_u1", 1), "private")
+
+    def test_chatroom_stays_group(self):
+        """@chatroom 优先级最高——公众号群也带 @chatroom。"""
+        self.assertEqual(self._st("123456@chatroom"), "group")
+        self.assertEqual(self._st("gh_abc@chatroom"), "group")
+
+    def test_matches_contact_type_for_mp(self):
+        """与 contact_type() 的公众号判定对齐：同一个 wxid_gh 两边都得是 mp。"""
+        import inspect
+        from core.dataset import Dataset
+        src = inspect.getsource(Dataset.contact_type)
+        self.assertIn('username.startswith("wxid_gh")', src)
+
+        # contact_type 依赖通讯录，纯静态方法不易构造实例；
+        # 改为锁住两处源码的判定条件一致——这是本条能自动化验证的部分
+        st_src = inspect.getsource(Dataset._session_type)
+        self.assertIn('username.startswith("wxid_gh")', st_src)
+        self.assertIn('username.startswith("gh_")', st_src)
+
+
 if __name__ == "__main__":
     unittest.main()

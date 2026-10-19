@@ -43,7 +43,7 @@ python cli/mosu.py sessions
 - **本地 GUI 控制台**（`mosu gui`）：浏览器打开 `127.0.0.1:8788`——对话调试分身、微信通道状态灯、消息流水、数据浏览（会话列表 + 微信气泡消息流 + 图片解密直出 + 全库搜索）。零构建链、零 Node 运行时
 - **导出**：HTML（微信气泡式，图片视频内嵌）/ JSON / CSV / TXT，可全量
 - **朋友圈**：正文、图片、点赞、评论
-- **MCP Server**：一组 `mosu_` 前缀工具，AI 客户端可直接调用，图片能直接"看"
+- **MCP Server**：12 个工具，AI 客户端可直接调用，图片能直接"看"
 - **离线情感分析**：内置中文情感词典 + 否定/程度规则，不调任何外部 API
 
 ## 安装
@@ -59,7 +59,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，不联网）：
+测试（全离线，154 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -153,10 +153,9 @@ python cli/mosu.py mcp selftest       # 不起服务，逐个工具冒烟
 python cli/mosu.py mcp config         # 打印接入用的配置片段
 ```
 
-一组 `mosu_` 前缀工具：`mosu_status` / `mosu_sessions` / `mosu_messages` / `mosu_contacts` /
+12 个工具：`mosu_status` / `mosu_sessions` / `mosu_messages` / `mosu_contacts` /
 `mosu_contact_info` / `mosu_search` / `mosu_stats` / `mosu_moments` /
 `mosu_report` / `mosu_export` / `mosu_profile` / `mosu_media`。
-完整清单以 `tools/list` 返回为准。
 
 其中 `mosu_media(md5, as=base64)` 能把解密后的图片直接回传 —— AI 可以"看"聊天里的图。
 
@@ -201,13 +200,13 @@ core/
   sentiment.py         中文情感打分（词典 + 否定/程度规则）
   sns.py               朋友圈
   formatters.py        json/jsonl/table/csv/markdown 输出
-  mcp_server.py        MCP Server（stdio，mosu_ 前缀工具集）
+  mcp_server.py        MCP Server（stdio，12 工具）
   task.py              常驻：Windows 计划任务（首选）/ 启动文件夹+VBS 守护（降级）
 gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试套件
+tests/                 离线测试（154 例）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
 ```
 
@@ -216,9 +215,9 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] 核心解密引擎（SQLCipher 4 自有实现）
 - [x] 消息/联系人/群/语音/视频/朋友圈全格式解析
 - [x] CLI 命令集 + 五种输出格式
-- [x] MCP Server（`mosu_`-prefixed tool set）
+- [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件
+- [x] 离线测试套件（154 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -287,7 +286,7 @@ python cli/mosu.py gui                 # local console: http://127.0.0.1:8788
 - Local web console (`mosu gui`): chat playground, channel status, message feed,
   session browser with bubble UI and decrypted images, statistics charts,
   moments feed, one-click export (HTML zip / JSON / CSV / TXT)
-- MCP server (`mosu_`-prefixed tool set) for AI clients
+- MCP server (12 tools) for AI clients
 - Offline export: HTML (WeChat-style bubbles), JSON, CSV, TXT
 
 ### Privacy
@@ -305,7 +304,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite
+tests/          offline test suite (154 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

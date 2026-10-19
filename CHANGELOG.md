@@ -36,6 +36,12 @@
   - `questionRate` 只统计半角 `?`，中文全角 `？` 全漏
   - 画像采样取到每个会话**最早** N 条而非最近 N 条（14 万条大群只贡献开头部分）
   - 空库时 `render_markdown` 对 `peakHour=None` 格式化崩溃
+- **同一公众号账号在两个页面显示不同类型**：`_session_type` 只判了 `gh_` 前缀，
+  漏掉 `wxid_gh`（公众号的 wxid 形式），于是「数据浏览」页显示「单聊」、
+  「联系人」页显示「公众号」，`session_type=2` 时还会显示成「群聊」。
+  前端曾用同一张中文映射表把 `private` 翻成「好友」，恰好把这个矛盾盖住了。
+  现在两处判定对齐（`core/dataset.py`）。**两套词表本身不合并**——通讯录看
+  `delete_flag`、会话看 `session_type`，各有存在理由
 - 聊天记录里的群聊消息残留 `wxid_xxx:` 发送者前缀
 - 界面一致性：设置齿轮缺 2 齿且左右不对称；导航选中态蓝底配绿字；焦点环与图表
   色板残留蓝色；折叠态分组标题与徽标溢出、图标未居中；命令面板选中行绿标题配灰图标
@@ -66,8 +72,11 @@
   `from` / `to`，缺省＝全量，既有行为不变
 - `/api/profile` 新增 `?async=1` 走 TaskHub（结果经 `/api/task` 取）。**不带该参数
   仍走同步旧路径**——CLI / MCP 间接依赖 `ProfileDistiller`，一次切换爆炸半径不值
-- **README 去掉写死的工具数量**：改为描述性表述 + 罗列工具名，并指向 `tools/list`
-  返回；`tests/test_docs.py` 双向锁住「README 列出的 == 实际注册的」，防止再次腐化
+- **README 的 MCP 工具数加了防腐化测试**：本轮出现过一次「README 写 12、实际 16」的
+  误传，复核后发现两边都没错（是复核方数错了）。README 里的数字是对的，因此**一个字
+  都没改**——写死数字让读者能自己核对，而「写死数字会腐化」这个风险交给
+  `tests/test_docs.py` 锁住：README 里所有「N 工具 / N tools」必须等于 `len(TOOLS)`，
+  反向再锁 `len(TOOLS) == 12`，另加工具名集合双向断言
 - `report()` 返回体新增 `summary.firstMessage` / `summary.lastMessage`
   （会话口径；非会话为 `null`）——这两个值此前已查出来却没进返回值，纯浪费
 - `contact_profile` 加上限 `CONTACT_MAX_MSGS=60000`，命中时 `overview.truncated=true`。

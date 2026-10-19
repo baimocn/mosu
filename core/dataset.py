@@ -668,9 +668,18 @@ class Dataset:
 
     @staticmethod
     def _session_type(username: str, session_type=None) -> str:
+        """会话类型。与 contact_type() 的公众号判定保持一致。
+
+        `wxid_gh*` 是公众号的 wxid 形式。漏判它会让同一个账号在「数据浏览」页
+        显示「单聊」、在「联系人」页显示「公众号」——用户直接可见的自相矛盾。
+        （前端曾用同一张中文映射表把 private 翻成「好友」，恰好把这个矛盾盖住了。）
+
+        两套词表本身**不合并**：通讯录看 delete_flag、会话看 session_type，
+        各有存在理由，合并会丢信息。这里只对齐公众号这一个判定。
+        """
         if username.endswith("@chatroom"):
             return "group"
-        if username.startswith("gh_"):
+        if username.startswith("gh_") or username.startswith("wxid_gh"):
             return "mp"
         if session_type in (2, 3):
             return "group" if session_type == 2 else "mp"

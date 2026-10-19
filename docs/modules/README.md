@@ -47,7 +47,7 @@
 | 性能 | ~~`contact_profile` 无耗时上限~~ **已修**：`CONTACT_MAX_MSGS=60000` + `overview.truncated` + `?async=1` 走 TaskHub |
 | 性能 | ~~`keyword_stats` 在 TaskHub worker 内整段持锁~~ **已缓解**：硬上限收到 20000，`_texts()` 每 5000 条让出 GIL。worker 内仍整段持锁，这是本轮不改的结构 |
 | 口径 | 群聊的联系人画像沿用「我 / 对方」二分，数百成员被聚合成一个人。**已知口径，非缺陷**——改成员级聚合＝新增特性 |
-| 一致性 | ~~`contact_type()`（5 种）与 `_session_type()`（3 种）两套词表共用同一中文映射~~ **本轮只拆前端映射**，后端两套词表各有存在理由，不合并 |
+| 一致性 | ~~`contact_type()`（5 种）与 `_session_type()`（3 种）两套词表共用同一中文映射~~ **后端已修公众号判定**（`_session_type` 补 `wxid_gh`，原先同一公众号在两页显示不同类型）；两套词表**刻意不合并**，各有存在理由。前端拆两张映射表 |
 | 一致性 | ~~`spanDays` 在本人画像是 `int`、联系人画像是 `float`~~ **已修**：两处统一 `float`（JS 里 `3 !== 3.0`） |
 | 死代码 | ~~`report()` 算出的首末消息正文未进入返回值~~ **已修**：进 `summary.firstMessage/lastMessage` |
 | 体验 | 空库时统计页显示一屏 0 而非空态；`/api/contacts` 无 contact.db 时无空态提示。**纯前端，本轮前端改** |
