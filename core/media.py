@@ -211,6 +211,7 @@ class MediaStore:
             cache.write_text(
                 json.dumps(
                     {"fingerprint": self._dir_fingerprint(),
+                     "cache_fp": self._cache_fingerprint(),
                      "images": self.images, "videos": self.videos,
                      "thumbs": self.thumbs, "files": self.files},
                     ensure_ascii=False,
