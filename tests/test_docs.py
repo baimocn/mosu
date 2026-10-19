@@ -14,6 +14,7 @@
 3. 双向名称集合：README 的 mosu_* 集合 == TOOLS 名字集合
 """
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -115,6 +116,50 @@ class TestReadmeMcpToolCountMatchesRegistry(unittest.TestCase):
             self.assertTrue(t.get("description"), f"{t['name']} 缺 description")
             self.assertIsInstance(t.get("inputSchema"), dict,
                                   f"{t['name']} 缺 inputSchema")
+
+
+def _actual_test_count() -> int:
+    """跑一遍 discovery 拿真实用例数——不硬编码，不估算。"""
+    if str(ROOT / "tests") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tests"))
+    import unittest
+    return unittest.defaultTestLoader.discover(str(ROOT / "tests")).countTestCases()
+
+
+class TestReadmeTestCount(unittest.TestCase):
+    """README 里写的测试例数必须与实际相符。
+
+    与工具数同一类腐化：加一个用例就得记得改四处 README，漏一处就开始骗人。
+    断言从「数字必须存在且正确」——不是「README 不要写数字」。
+    """
+
+    # 「270 例」/「270 cases」
+    _RES = [re.compile(r"(\d+)\s*例"), re.compile(r"(\d+)\s*cases", re.I)]
+
+    def _declared(self):
+        text = _readme_text()
+        out = []
+        for rx in self._RES:
+            for m in rx.finditer(text):
+                out.append((int(m.group(1)),
+                            text[:m.start()].count("\n") + 1,
+                            m.group(0).strip()))
+        return out
+
+    def test_readme_states_a_test_count(self):
+        found = self._declared()
+        self.assertTrue(found, "README 没有声明测试例数——数字应当保留并被锁住")
+
+    def test_declared_count_matches_actual(self):
+        real = _actual_test_count()
+        for n, line, raw in self._declared():
+            self.assertEqual(n, real,
+                             f"README 第 {line} 行写「{raw}」，"
+                             f"但实际跑出 {real} 例。数字要留着，别删——删了读者就没法核对")
+
+    def test_count_is_not_baseline_stale(self):
+        """154 是本轮开工前的基线。现在远超它，说明 README 没跟上。"""
+        self.assertGreater(_actual_test_count(), 154)
 
 
 if __name__ == "__main__":
