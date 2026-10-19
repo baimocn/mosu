@@ -45,8 +45,8 @@
     scannedMessages: "扫描消息", textSampled: "抽样文本", cost: "用时",
     // 节奏
     peakHour: "最活跃小时", peakWeekday: "最活跃星期",
-    quietest4hStart: "最安静时段", nightMessages: "凌晨消息（0-6 点）",
-    morningMessages: "清晨消息（5-9 点）", hourly: "逐小时",
+    quietest4hStart: "最安静时段", nightMessages: "凌晨消息（0-5 点）",
+    morningMessages: "清晨消息（6-9 点）", hourly: "逐小时",
     hourlyMine: "我（逐小时）", hourlyTheirs: "对方（逐小时）",
     weekday: "按星期", monthly: "按月", byKind: "按消息类型",
     // 风格
@@ -388,7 +388,7 @@
         this.kwRunning = true;
         try {
           const d = await M.api.post("/api/stats/keywords", { top: 60 });
-          const tid = d.id || (d.task && d.task.id);
+          const tid = d.taskId || d.id || (d.task && d.task.id);
           if (!tid) { this.keywords = d.keywords || []; return; }
           for (let i = 0; i < 300; i++) {
             await new Promise((r) => setTimeout(r, 1500));

@@ -756,10 +756,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             cons = ds.contacts()
             c = cons.get(wxid)
             if not c:
-                # 联系人表没有（如群成员未存好友）也允许看，用 wxid 兜底
-                cand = [v for k, v in cons.items()
-                        if wxid.lower() in k.lower()]
-                c = cand[0] if cand else {"wxid": wxid}
+                # 通讯录里没有（如群成员未存好友）也允许看。但子串匹配可能命中
+                # **另一个人**（"wxid_a1" 会匹配到 "wxid_a123"），那会展示错误
+                # 的数据 —— 只接受唯一命中，多个命中一律按原样返回并交给前端
+                # 显示"没有消息记录"。
+                cand = [v for k, v in cons.items() if wxid.lower() in k.lower()]
+                c = cand[0] if len(cand) == 1 else {"wxid": wxid}
             real = c["wxid"]
             out = {
                 "wxid": real,

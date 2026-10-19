@@ -47,7 +47,8 @@ TOPIC_LEXICON: dict[str, list[str]] = {
                  "同事", "周报", "开会", " KPI", "调休", "年假"],
 }
 
-WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+# SQLite %w：0=周日 … 6=周六。下标必须按 %w 的定义，否则星期整体偏移一天
+WEEKDAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
 
 def _bar(value: int, vmax: int, width: int = 20) -> str:
@@ -95,11 +96,22 @@ class ProfileDistiller:
             if sess is None and len(out) >= max_msgs:
                 break
             n_sess = 0
-            for shard, r in self.ds.iter_session_rows(s, from_ts, to_ts):
+            cap = per_session if sess is None else 0
+            # 每会话只取**最近** cap 条。iter_session_rows 默认升序，直接
+            # 数到 cap 就 break 拿到的是会话最早的 cap 条（大群如 14 万条的
+            # AI 群会因此只贡献开头部分，话题/风格统计严重偏斜）。
+            picked: list[tuple] = []
+            for shard, r in self.ds.iter_session_rows(
+                    s, from_ts, to_ts, desc=bool(cap), limit=cap or 0):
                 if len(out) >= max_msgs:
                     return out
-                if sess is None and n_sess >= per_session:
+                if cap and len(picked) >= cap:
                     break
+                picked.append((shard, r))
+            if cap and len(picked) > cap:      # 跨分片合并后再截断
+                picked.sort(key=lambda sr: sr[1]["create_time"] or 0)
+                picked = picked[-cap:]
+            for shard, r in picked:
                 n_sess += 1
                 m = self.ds.to_message(r, s, shard=shard)
                 kind = m.get("kind") or "other"
@@ -125,7 +137,8 @@ class ProfileDistiller:
         wd_t: Counter = Counter(); wd_m: Counter = Counter()
         mon_t: Counter = Counter(); mon_m: Counter = Counter()
         kinds: Counter = Counter(); kinds_mine: Counter = Counter()
-        social: dict[str, dict] = defaultdict(lambda: {"mine": 0, "total": 0})
+        social: dict[str, dict] = defaultdict(
+            lambda: {"mine": 0, "total": 0, "name": ""})
         total = mine_n = 0
         day_set: set = set()
         first = last = None
@@ -148,7 +161,8 @@ class ProfileDistiller:
                     first = r[1] if first is None else min(first, r[1])
                 if r[2]:
                     last = r[2] if last is None else max(last, r[2])
-                d = social[sess["displayName"]]
+                d = social[sess["sessionId"]]      # 用 wxid 作键：两个同名会话不该被合并
+                d["name"] = sess["displayName"]
                 d["total"] += r[0] or 0; d["mine"] += r[3] or 0
                 sql = (f"SELECT strftime('%H', create_time,'unixepoch','localtime'), "
                        f"strftime('%w', create_time,'unixepoch','localtime'), "
@@ -194,11 +208,11 @@ class ProfileDistiller:
         peak_wd = wd_total.most_common(1)[0][0] if wd_total else None
         quiet4 = min(range(21), key=lambda s: sum(hour_total.get((s + i) % 24, 0) for i in range(4))) \
             if hour_total else None
-        night = sum(hour_mine.get(h, 0) for h in range(0, 6))
-        morning = sum(hour_mine.get(h, 0) for h in range(5, 10))
+        night = sum(hour_mine.get(h, 0) for h in range(0, 6))       # 0-5 点
+        morning = sum(hour_mine.get(h, 0) for h in range(6, 10))   # 6-9 点（与夜间不重叠）
 
         social = sorted(
-            [{"name": k, "mine": v["mine"], "total": v["total"],
+            [{"wxid": k, "name": v["name"] or k, "mine": v["mine"], "total": v["total"],
               "share": round(v["mine"] / v["total"], 2) if v["total"] else 0}
              for k, v in agg["social"].items() if v["mine"] > 0],
             key=lambda x: -x["mine"])[:top]
@@ -216,7 +230,8 @@ class ProfileDistiller:
 
         lens = [len(t) for t in texts if t]
         emoji_rate = kinds_mine.get("emoji", 0) / max(1, mine_n)
-        q_rate = sum(1 for t in texts if "?" in t or "?" in t) / max(1, len(texts))
+        q_rate = sum(1 for t in texts
+                   if "?" in t or "？" in t) / max(1, len(texts))
         insights = self._self_insights(hour_mine, night, mine_n, lens, topics,
                                        emoji_rate, q_rate, peak_wd)
 
@@ -273,7 +288,7 @@ class ProfileDistiller:
                        emoji_rate, q_rate, peak_wd) -> list[str]:
         out = []
         if my_total and night / my_total > 0.08:
-            out.append(f"夜猫子作息：凌晨 0-6 点的本人消息占 {night/my_total:.0%}")
+            out.append(f"夜猫子作息：凌晨 0-5 点的本人消息占 {night/my_total:.0%}")
         if lens and sum(lens) / len(lens) < 15:
             out.append(f"短句派：本人平均消息 {sum(lens)/len(lens):.1f} 字，沟通直接")
         elif lens and sum(lens) / len(lens) > 40:
@@ -289,9 +304,10 @@ class ProfileDistiller:
             out.append("经营线并行：客户/报价/交付类对话成规模，不是纯学生聊天结构")
         if hit.get("考研/学业"):
             out.append("学业线存在：考研/课程话题有持续痕迹")
-        if peak_wd is not None and peak_wd in (4, 5):
-            out.append(f"周{'' if peak_wd==5 else ''}{'五' if peak_wd==4 else '六'}最活跃："
-                       f"周末输出高于工作日")
+        if peak_wd is not None:
+            # 只陈述被计算过的事实：峰值星期。不由此推断"周末高于工作日"——
+            # 那个结论需要单独比较两组总量，这里没有算。
+            out.append(f"{WEEKDAY_NAMES[peak_wd]}是最活跃的一天")
         return out
 
     # ============================================================ 单人画像
@@ -507,8 +523,10 @@ class ProfileDistiller:
         for x in r["hourly"]:
             L.append(f"| {x['hour']:02d}:00 | {_bar(x['total'], hmax)} | {x['total']}（我 {x['mine']}）|")
         L.append("")
-        L.append(f"- **发言高峰**：{r['peakHour']:02d}:00"
-                 f"｜**最活跃星期**：{r['peakWeekday']}")
+        # 空库时 peakHour/peakWeekday 都是 None，直接格式化会 TypeError
+        peak_h = f"{r['peakHour']:02d}:00" if r.get("peakHour") is not None else "无数据"
+        peak_w = r.get("peakWeekday") or "无数据"
+        L.append(f"- **发言高峰**：{peak_h}｜**最活跃星期**：{peak_w}")
         if r["quietest4hStart"] is not None:
             L.append(f"- **睡眠推断**：{r['quietest4hStart']:02d}:00–"
                      f"{(r['quietest4hStart']+4)%24:02d}:00 为最安静窗口")

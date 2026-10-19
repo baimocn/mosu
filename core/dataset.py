@@ -851,8 +851,13 @@ class Dataset:
         out_rows.sort(key=lambda d: (d.get("create_time") or 0, d.get("sort_seq") or 0))
         return out_rows, names, 0
 
-    def iter_session_rows(self, sess: dict, from_ts=None, to_ts=None, batch: int = 2000):
-        """全量游标式读取一个会话（用于搜索/统计），跨分片 yield (shard, row)。"""
+    def iter_session_rows(self, sess: dict, from_ts=None, to_ts=None,
+                          batch: int = 2000, desc: bool = False, limit: int = 0):
+        """全量游标式读取一个会话（用于搜索/统计），跨分片 yield (shard, row)。
+
+        desc=True + limit>0 时按 sort_seq 倒序并限量 —— 采样"最近 N 条"时用，
+        否则上游会拿到会话**最早**的 N 条（ORDER BY 默认升序）。
+        """
         for sh in self._shard_list(sess):
             con = self.conn(sh["shard"])
             where, params = [], []
@@ -866,7 +871,9 @@ class Dataset:
                    'message_content, packed_info_data FROM "%s"' % sh["table"])
             if where:
                 sql += " WHERE " + " AND ".join(where)
-            sql += " ORDER BY sort_seq"
+            sql += " ORDER BY sort_seq DESC" if desc else " ORDER BY sort_seq"
+            if limit and int(limit) > 0:
+                sql += " LIMIT %d" % int(limit)
             cur = con.execute(sql, params)
             while True:
                 rows = cur.fetchmany(batch)
