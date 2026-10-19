@@ -17,7 +17,15 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from datetime import datetime  # noqa: E402
+
 from gui.server import _TaskHub, _text_export_bytes, _zip_dir  # noqa: E402
+
+# fmt_time 走本地时区；测试期望值必须同源计算，不能写死字符串
+# （否则 UTC 的 CI 会挂——v0.2.0 发布后就踩过这个坑）
+_T = 1770000000
+_TS = datetime.fromtimestamp(_T).strftime("%Y-%m-%d %H:%M:%S")
+_TS3 = datetime.fromtimestamp(_T + 120).strftime("%Y-%m-%d %H:%M:%S")  # 第三条（voice）
 
 
 class _StubMessages:
@@ -25,7 +33,7 @@ class _StubMessages:
 
     def messages(self, sess, limit=50, offset=0, order="desc", **kw):
         msgs = [
-            {"createTime": 1770000000, "direction": "out", "senderName": "白墨",
+            {"createTime": _T, "direction": "out", "senderName": "白墨",
              "kind": "text", "content": "在吗"},
             {"createTime": 1770000060, "direction": "in", "senderName": "张三",
              "kind": "image", "content": "", "imgMd5": "a" * 32},
@@ -54,14 +62,14 @@ class TestTextExportBytes(unittest.TestCase):
         self.assertEqual(len(lines), 5)           # 表头 + 4 条
         self.assertIn("在吗", lines[1])
         # CSV 的内容列直接用 content（voice 的 content 为空，voiceText 只进 TXT）
-        self.assertEqual(lines[3], "2026-02-02 10:42:00,in,张三,voice,")
+        self.assertEqual(lines[3], f"{_TS3},in,张三,voice,")
 
     def test_txt_line_format(self):
         data, ext = _text_export_bytes(self.ds, self.sess, "txt")
         self.assertEqual(ext, "txt")
         text = data.decode("utf-8")
-        # 1770000000 = 2026-02-02 10:40:00 (UTC+8)，格式对齐 CLI
-        self.assertIn("[2026-02-02 10:40:00] 我: 在吗", text)
+        # 期望时间与 fmt_time 同源（本地时区），CI/本机都过
+        self.assertIn(f"[{_TS}] 我: 在吗", text)
         self.assertIn("张三: [图片]", text)
         self.assertIn("张三: [语音 5000ms] 我也在", text)
         self.assertIn("我: [文件] 报表.xlsx", text)
