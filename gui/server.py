@@ -46,6 +46,15 @@ _MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
          "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}
 
 
+def _resize(data: bytes, ext: str, max_width: int) -> bytes:
+    """限宽等比缩放；没有 Pillow 或失败时原样返回，绝不因压缩失败而丢图。"""
+    try:
+        from core.exporter import ChatExporter
+        return ChatExporter._maybe_resize(data, ext, max_width=max_width)
+    except Exception:
+        return data
+
+
 def _heartbeat_age() -> int | None:
     """通道服务最近一次心跳距现在多少秒；没有心跳文件返回 None。"""
     import core.wechat as wx
@@ -379,21 +388,36 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         }
 
     def api_media(q) -> tuple[bytes, str]:
+        """返回 (字节, content-type)。
+
+        查询参数：
+          md5   必填，32 位
+          thumb 1 = 只要缩略图（列表用，快）
+          w     限宽像素；不给则原样返回（灯箱看原图）
+        响应头 X-Mosu-Variant=thumb|full、X-Mosu-Source=t|w|h|main，
+        前端据此判断「点的这张到底是不是原图」。
+        """
         md5 = (q.get("md5") or "").strip()
         if len(md5) != 32:
             raise ValueError("md5 必须是 32 位")
+        thumb = str(q.get("thumb") or "") in ("1", "true", "yes")
+        want_w = int(q.get("w") or 0)
         with _ds_lock:
-            pair = get_media().get_image(md5)
-        if not pair:
+            store = get_media()
+            got = store.get_thumb_image(md5) if thumb else store.get_full_image(md5)
+        if not got:
             raise ValueError(f"本地找不到该图片（md5={md5}），可能已被清理或没下载")
-        data, ext = pair
-        if len(data) > 900_000:      # 大图先缩到 1024 宽，别把浏览器撑爆
-            try:
-                from core.exporter import ChatExporter
-                data = ChatExporter._maybe_resize(data, ext, max_width=1024)
-            except Exception:
-                pass
-        return data, _MIME.get(ext.lstrip(".").lower(), "image/jpeg")
+        data, ext, source = got
+
+        # 缩略图再压一道：列表里不需要原图像素
+        if thumb and (want_w or len(data) > 120_000):
+            data = _resize(data, ext, max_width=want_w or 480)
+        elif want_w and len(data) > 900_000:
+            data = _resize(data, ext, max_width=want_w)
+
+        headers = {"X-Mosu-Variant": "thumb" if thumb else "full",
+                   "X-Mosu-Source": source}
+        return (data, _MIME.get(ext.lstrip(".").lower(), "image/jpeg"), headers)
 
     def get_moments():
         """朋友圈：首屏全量解析后缓存 rows，翻页直接切片（sns.db 静态假设，
@@ -415,6 +439,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 rows = [e for e in rows if user in (e["author"]["wxid"],)]
             total = len(rows)
             page = rows[offset:offset + limit]
+            # 标注每张图本地是否存在：本地优先（可靠且快），没有才用远程 URL
+            store = get_media()
+            for e in page:
+                e["mediaLocal"] = [bool(m) and store.has_image(m)
+                                   for m in (e.get("mediaMd5") or [])]
         return {
             "total": total, "offset": offset, "limit": limit,
             "hasMore": total > offset + len(page),
@@ -983,11 +1012,14 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         def log_message(self, *a):
             pass
 
-        def _send(self, body: bytes, ctype: str, code: int = 200):
+        def _send(self, body: bytes, ctype: str, code: int = 200,
+                  headers: dict | None = None):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
@@ -1082,8 +1114,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/media":
                 try:
-                    data, mime = api_media(self._params())
-                    self._send(data, mime)
+                    data, mime, headers = api_media(self._params())
+                    self._send(data, mime, headers=headers)
                 except ValueError as e:
                     self._json({"error": str(e)}, 404)
                 except Exception as e:  # noqa: BLE001

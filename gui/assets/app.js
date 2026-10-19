@@ -32,7 +32,7 @@
     components: {
       Console: V.Console, Browse: V.Browse, Stats: V.Stats, Insight: V.Insight,
       Contacts: V.Contacts, Moments: V.Moments, ExportView: V.ExportView,
-      Settings: V.Settings, Wizard: V.Wizard,
+      Settings: V.Settings, Wizard: V.Wizard, Lightbox: V.Lightbox,
     },
     template: `
     <div class="app" :class="{collapsed: collapsed}">

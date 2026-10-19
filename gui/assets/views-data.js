@@ -47,9 +47,15 @@
               </div>
             </div>
             <div class="moment-text">{{ e.contentText }}</div>
-            <div v-if="e.mediaUrls && e.mediaUrls.length" class="moment-imgs">
-              <img v-for="(u,i) in e.mediaUrls.slice(0,9)" :key="i" :src="u"
-                   loading="lazy" @click="lightbox=u" @error="onImgErr" />
+            <div v-if="imgList(e).length" class="moment-imgs">
+              <div v-for="(m,i) in imgList(e)" :key="i" class="moment-img-cell">
+                <img :src="m.thumb + (m.bust || '')" loading="lazy"
+                     @click="openImg(m)" @error="onImgErr(m, i)" />
+                <div v-if="m.failed" class="moment-img-fallback">
+                  <span>图片不可用</span>
+                  <button class="btn btn-sm" @click.stop="retryImg(m)">重试</button>
+                </div>
+              </div>
             </div>
             <div class="moment-foot">
               <span>👍 {{ e.likes || 0 }}</span>
@@ -73,14 +79,12 @@
         </div>
       </template>
 
-      <div v-if="lightbox" class="lightbox" @click="lightbox=''">
-        <img :src="lightbox" @click.stop />
-        <button class="lightbox-close" @click="lightbox=''">✕</button>
-      </div>
+      <lightbox v-if="lightbox" :item="lightbox" @close="lightbox = null" />
     </div>`,
+    components: { Lightbox: global.MosuViews.Lightbox },
     data() {
       return { items: [], total: 0, hasMore: false, loading: true, loadingMore: false,
-               unsupported: false, user: "", lightbox: "" };
+               unsupported: false, user: "", lightbox: null };
     },
     methods: {
       ...{ fmtTime: M.fmtTime, initial: M.initial },
@@ -109,10 +113,26 @@
         } catch (e) { M.toast.err(e.message); }
         finally { this.loadingMore = false; }
       },
-      onImgErr(e) {
-        // 远程图失效是常态（微信 CDN 有过期时间）：明确占位而不是留破图
-        e.target.style.display = "none";
+      /* 图片列表：本地库优先（可靠、可拿到原图），没有才用微信 CDN 远程地址。
+         列表只取缩略图，点开时才请求原图 —— 首屏因此不会拖着一堆大图。 */
+      imgList(e) {
+        const md5 = e.mediaMd5 || [];
+        const loc = e.mediaLocal || [];
+        const urls = e.mediaUrls || [];
+        const out = [];
+        for (let i = 0; i < Math.min(urls.length, 9); i++) {
+          if (md5[i] && loc[i]) {
+            out.push({ thumb: M.mediaUrl(md5[i], true), full: M.mediaUrl(md5[i], false),
+                       local: true, bust: "" });
+          } else {
+            out.push({ thumb: urls[i], full: urls[i], local: false, bust: "" });
+          }
+        }
+        return out;
       },
+      openImg(m) { this.lightbox = { ...m, note: m.local ? "本地原图" : "远程原图（微信 CDN）" }; },
+      onImgErr(m) { m.failed = true; },
+      retryImg(m) { m.failed = false; m.bust = (m.bust ? "" : "&") + "_=" + Date.now(); },
     },
     mounted() { this.reload(); },
   };

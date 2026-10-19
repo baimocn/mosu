@@ -76,22 +76,12 @@ class Moments:
         if media is not None:
             for m in media.findall("media"):
                 etype = _xml_text(m.find("type")).strip()
-                urls, md5s = [], []
-                for u in m.findall("url"):
-                    t = (u.text or "").strip()
-                    if not t:
-                        for sub in u:
-                            t = (sub.text or "").strip()
-                            if t:
-                                break
-                    if t:
-                        urls.append(t)
-                        md5s.append(u.get("md5") or "")
-                        break
-                if urls:
-                    entry["mediaUrls"].append(urls[0])
-                    if md5s[0]:
-                        entry.setdefault("mediaMd5", []).append(md5s[0])
+                item = _parse_media(m)
+                entry["mediaItems"].append(item)
+                if item.get("md5"):
+                    entry.setdefault("mediaMd5", []).append(item["md5"])
+                if item.get("url"):
+                    entry["mediaUrls"].append(item["url"])
                 entry["mediaCount"] += 1
                 entry.setdefault("mediaTypes", []).append(etype)
         like = root.find(".//likeList")
@@ -171,6 +161,7 @@ class Moments:
                 "contentText": e.get("contentText", ""),
                 "mediaCount": e.get("mediaCount", 0),
                 "mediaUrls": e.get("mediaUrls", []),
+                "mediaMd5": e.get("mediaMd5", []),
                 "likes": e.get("likes", 0),
                 "likeUsers": e.get("likeUsers", []),
                 "comments": e.get("comments", 0),

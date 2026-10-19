@@ -221,34 +221,56 @@ class MediaStore:
         return self
 
     # ---------------------------------------------------------------- 取用
-    def get_image(self, md5: str | None) -> tuple[bytes, str] | None:
-        """返回 (明文图像字节, 扩展名)。优先大图，降级缩略图。
+    def has_image(self, md5: str | None) -> bool:
+        """本地是否存在该图片（用于决定走本地还是远程，不解密不读盘）。"""
+        if not md5:
+            return False
+        return md5.lower() in self.images
 
-        查找顺序：_W（大图）> _h（高清）> main（无后缀主图）> _t（缩略图）。
-        """
+    @staticmethod
+    def _decode_file(path: str) -> tuple[bytes, str] | None:
+        try:
+            raw = Path(path).read_bytes()
+        except Exception:
+            return None
+        dec = None
+        if raw[:6] == V2_MAGIC:
+            dec = decode_v2(raw)                     # 新一代：AES + XOR
+        if dec is None:
+            dec = decode_dat(raw)                    # 老格式：纯 XOR 0x3D
+        ext = sniff_ext(dec)
+        if ext == "bin":
+            return None
+        return dec, ext
+
+    def _pick(self, md5: str | None, order: tuple[str, ...]) -> tuple[bytes, str, str] | None:
+        """按 order 里的分区优先级取一张图，返回 (明文字节, 扩展名, 命中的分区名)。"""
         if not md5:
             return None
         entry = self.images.get(md5.lower())
         if not entry:
             return None
-        for key in ("w", "W", "h", "main", "t"):
+        for key in order:
             p = entry.get(key)
             if not p:
                 continue
-            try:
-                raw = Path(p).read_bytes()
-            except Exception:
-                continue
-            dec = None
-            if raw[:6] == V2_MAGIC:
-                dec = decode_v2(raw)                     # 新一代：AES + XOR
-            if dec is None:
-                dec = decode_dat(raw)                    # 老格式：纯 XOR 0x3D
-            ext = sniff_ext(dec)
-            if ext == "bin":
-                continue
-            return dec, ext
+            got = self._decode_file(p)
+            if got:
+                return got[0], got[1], key
         return None
+
+    def get_thumb_image(self, md5: str | None) -> tuple[bytes, str, str] | None:
+        """缩略图：优先微信存的小图 _t；没有就退回主图（前端列表用，快优先）。"""
+        return self._pick(md5, ("t", "main", "h", "w", "W"))
+
+    def get_full_image(self, md5: str | None) -> tuple[bytes, str, str] | None:
+        """原图/高清：_W > _h > 无后缀主图 > _t（本地只有缩略图时才用缩略图兜底）。"""
+        return self._pick(md5, ("w", "W", "h", "main", "t"))
+
+    def get_image(self, md5: str | None) -> tuple[bytes, str] | None:
+        """兼容旧调用：等价于 get_full_image，返回 (明文图像字节, 扩展名)。"""
+        got = self.get_full_image(md5)
+        return (got[0], got[1]) if got else None
 
     def get_video(self, vid: str | None) -> str | None:
         if not vid:

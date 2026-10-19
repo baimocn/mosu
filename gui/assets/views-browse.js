@@ -30,6 +30,7 @@
   };
 
   const Browse = {
+    components: { Lightbox: global.MosuViews.Lightbox },
     template: `
     <div class="browse">
       <!-- 左：会话列表 -->
@@ -131,10 +132,11 @@
                   <div class="bubble" :class="bubbleClass(m)">
                     <!-- 图片 -->
                     <template v-if="m.kind==='image'">
+                      <!-- 气泡里只加载缩略图；点开才请求原图 -->
                       <img v-if="m.imgMd5 && !m.imgFailed"
-                           :src="'/api/media?md5=' + m.imgMd5"
+                           :src="M.mediaUrl(m.imgMd5, true)"
                            @error="m.imgFailed = true"
-                           @click="lightbox='/api/media?md5=' + m.imgMd5"
+                           @click="openImage(m)"
                            loading="lazy" />
                       <span v-else class="media-ph">🖼 图片加载失败</span>
                     </template>
@@ -213,11 +215,8 @@
         </div>
       </div>
 
-      <!-- 灯箱 -->
-      <div v-if="lightbox" class="lightbox" @click="lightbox=''">
-        <img :src="lightbox" @click.stop />
-        <button class="lightbox-close" @click="lightbox=''">✕</button>
-      </div>
+      <!-- 灯箱：缩略图打底 → 原图加载 → 失败重试 -->
+      <lightbox v-if="lightbox" :item="lightbox" @close="lightbox = null" />
     </div>`,
 
     data() {
@@ -227,7 +226,7 @@
         total: null,
         fType: "", fDir: "", fFrom: "", fTo: "",
         searchOpen: false, sq: "", sResults: [], searched: false, searching: false,
-        lightbox: "",
+        lightbox: null,
         art: ART,
       };
     },
@@ -276,6 +275,13 @@
       voiceText(m) {
         const t = (m.voiceText || "").trim();
         return t || `[语音 ${Math.round((m.voiceMs || 0) / 1000)} 秒]`;
+      },
+      openImage(m) {
+        this.lightbox = {
+          thumb: M.mediaUrl(m.imgMd5, true),
+          full: M.mediaUrl(m.imgMd5, false),
+          note: "滚轮缩放 · 拖拽移动 · Esc 关闭",
+        };
       },
       async copyMsg(m) {
         try {
