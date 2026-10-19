@@ -187,5 +187,62 @@ class TestBotService(unittest.TestCase):
         self.assertIn("不要照抄", ref["content"])
 
 
+class TestSemanticCache(unittest.TestCase):
+    """语义缓存：高频短问题命中直接回；边界从严（短回复/可关/FIFO）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.corpus = _write_corpus(Path(self.tmp.name), [("在吗", "同学")])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _bot(self, replies):
+        bot = BotService(self.corpus)
+        bot.llm = MockLlm(replies)
+        return bot
+
+    def test_hit_on_second_call(self):
+        bot = self._bot(["在"])
+        r1 = bot.chat("在吗")
+        self.assertFalse(r1["cached"])
+        self.assertEqual(bot.llm.calls_count if hasattr(bot.llm, "calls_count")
+                         else len(bot.llm.calls), 1)
+        r2 = bot.chat("在吗？")            # 归一化后同一个键
+        self.assertTrue(r2["cached"])
+        self.assertEqual(r2["reply"], "在")
+        self.assertEqual(r2["tries"], 0)
+        self.assertLess(r2["cost"], 0.1)  # 0 LLM 调用
+        # 命中也写历史（对话连续性不因缓存断裂）
+        self.assertEqual(len(bot.history["default"]), 4)
+
+    def test_long_reply_not_cached(self):
+        bot = self._bot(["这是一段很长的解释性回复" * 5])
+        bot.chat("Python 的 GIL 是什么")
+        self.assertEqual(bot._cache, {})   # 超长回复不进缓存
+
+    def test_failed_check_not_cached(self):
+        # 三次调用全是 AI 腔 → 最终仍未过校验 → 不缓存
+        bot = self._bot(["很高兴为您服务"] * 3)
+        r = bot.chat("你好")
+        self.assertFalse(r["passed"])
+        self.assertEqual(bot._cache, {})
+
+    def test_switch_off(self):
+        bot = self._bot(["在"])
+        bot.cache_enabled = False
+        bot.chat("在吗")
+        self.assertEqual(bot._cache, {})
+        r = bot.chat("在吗")
+        self.assertFalse(r["cached"])
+
+    def test_fifo_eviction(self):
+        bot = self._bot(["嗯"] * 250)
+        bot.cache_limit = 10
+        for i in range(15):
+            bot.chat(f"问题{i}")
+        self.assertEqual(len(bot._cache), 10)
+
+
 if __name__ == "__main__":
     unittest.main()

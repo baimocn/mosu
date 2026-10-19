@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import os
+import re
 import time
 from pathlib import Path
 
@@ -36,6 +38,12 @@ REF_TMPL = """下面是从白墨历史微信发言里检索到的 {n} 条片段�
 {blocks}"""
 
 
+def _norm_key(query: str) -> str:
+    """问题归一化：去空白/标点/大小写。用于缓存键——
+    「在吗」「在吗？」「在 吗」视为同一个问题。"""
+    return re.sub(r"[\s\W_]+", "", query).lower()
+
+
 class BotService:
     def __init__(self, corpus_path: str | Path, retriever=None, checker=None,
                  llm=None, max_retries: int = 2, history_limit: int = 20,
@@ -57,6 +65,34 @@ class BotService:
         self.history_limit = history_limit
         self.sample_mode = sample_mode
         self.history: dict[str, list[dict]] = {}
+        # ---- 语义缓存：高频短问题（问候/确认类）命中直接回，省额度省延迟 ----
+        # 边界从严：只缓存「通过校验且 <= cache_max_len 字」的回复——
+        # 长回复往往依赖上下文，缓存会露馅；MOSU_BOT_CACHE=0 可关
+        self.cache_limit = 200               # FIFO 容量
+        self.cache_max_len = 20              # 超过此长度的回复不缓存
+        self.cache_enabled = os.environ.get("MOSU_BOT_CACHE", "1") != "0"
+        self._cache: dict[str, dict] = {}
+
+    def _cache_put(self, key: str, reply: str, retrieved: list[dict],
+                   passed: bool) -> None:
+        if (not self.cache_enabled or not passed
+                or not (0 < len(reply) <= self.cache_max_len)):
+            return
+        self._cache[key] = {
+            "reply": reply,
+            "retrieved": [{"text": c["text"], "session": c.get("session", "")}
+                          for c in retrieved],
+        }
+        while len(self._cache) > self.cache_limit:      # FIFO 淘汰最旧
+            self._cache.pop(next(iter(self._cache)))
+
+    def _record_history(self, conv_id: str | None, query: str, reply: str) -> None:
+        cid = conv_id or "default"
+        hist = self.history.setdefault(cid, [])
+        hist.extend([{"role": "user", "content": query},
+                     {"role": "assistant", "content": reply}])
+        if len(hist) > self.history_limit * 2:
+            del hist[:-self.history_limit * 2]
 
     @property
     def llm(self):
@@ -91,6 +127,22 @@ class BotService:
 
     def chat(self, query: str, conv_id: str | None = None, topk: int = 5) -> dict:
         t0 = time.time()
+        key = _norm_key(query)
+
+        # ---- 缓存命中：0 LLM 调用，0 延迟 ----
+        if self.cache_enabled and key in self._cache:
+            hit = self._cache[key]
+            self._record_history(conv_id, query, hit["reply"])
+            return {
+                "reply": hit["reply"],
+                "passed": True,
+                "problems": [],
+                "tries": 0,
+                "retrieved": hit["retrieved"],
+                "cost": round(time.time() - t0, 3),
+                "cached": True,
+            }
+
         retrieved = self._retrieve(query, topk)
         messages = self._build_messages(query, retrieved, conv_id)
         reply, problems, tries = "", [], 0
@@ -102,12 +154,8 @@ class BotService:
                 break
             messages.append({"role": "assistant", "content": reply})
             messages.append({"role": "user", "content": self.checker.feedback(problems)})
-        cid = conv_id or "default"
-        hist = self.history.setdefault(cid, [])
-        hist.extend([{"role": "user", "content": query},
-                     {"role": "assistant", "content": reply}])
-        if len(hist) > self.history_limit * 2:
-            del hist[:-self.history_limit * 2]
+        self._record_history(conv_id, query, reply)
+        self._cache_put(key, reply, retrieved, passed=not problems)
         return {
             "reply": reply,
             "passed": not problems,
@@ -116,6 +164,7 @@ class BotService:
             "retrieved": [{"text": c["text"], "session": c.get("session", "")}
                           for c in retrieved],
             "cost": round(time.time() - t0, 2),
+            "cached": False,
         }
 
     def preview_prompt(self, query: str, topk: int = 5) -> dict:
