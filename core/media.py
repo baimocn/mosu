@@ -138,6 +138,21 @@ class MediaStore:
         self._built = False
 
     # ---------------------------------------------------------------- 索引
+    def _dir_fingerprint(self) -> float:
+        """attach 目录树的 mtime 指纹（只扫目录不读文件，几十个目录秒完）。
+        微信新增图片会更新其所在目录 mtime —— 用它判断缓存是否过期。"""
+        attach = self.msg_dir / "attach"
+        if not attach.exists():
+            return 0.0
+        m = attach.stat().st_mtime
+        for dp, dns, _ in os.walk(attach):
+            for d in dns:
+                try:
+                    m = max(m, os.path.getmtime(os.path.join(dp, d)))
+                except OSError:
+                    pass
+        return m
+
     def build(self, use_cache: bool = True) -> "MediaStore":
         if self._built:
             return self
@@ -145,12 +160,14 @@ class MediaStore:
         if use_cache and cache and cache.exists():
             try:
                 d = json.loads(cache.read_text(encoding="utf-8"))
-                self.images = d.get("images", {})
-                self.videos = d.get("videos", {})
-                self.thumbs = d.get("thumbs", {})
-                self.files = d.get("files", {})
-                self._built = True
-                return self
+                # 缓存失效：目录指纹对不上（微信又存了新图）就重建
+                if d.get("fingerprint") == self._dir_fingerprint():
+                    self.images = d.get("images", {})
+                    self.videos = d.get("videos", {})
+                    self.thumbs = d.get("thumbs", {})
+                    self.files = d.get("files", {})
+                    self._built = True
+                    return self
             except Exception:
                 pass
 
@@ -159,10 +176,17 @@ class MediaStore:
         if attach.exists():
             for dp, _, fn in os.walk(attach):
                 for f in fn:
-                    stem, _, suffix = f.partition("_")
+                    if "_" in f:
+                        # {md5}_t.dat 缩略图 / {md5}_W.dat 等
+                        stem, _, suffix = f.partition("_")
+                        ext = suffix.split(".")[0].lower()
+                    else:
+                        # 无后缀主图 {md5}.dat —— 曾整个漏掉（6726 张），
+                        # partition("_") 对无下划线文件返回整名（含 .dat）长度不对被跳过
+                        stem, _, _ = f.partition(".")
+                        ext = "main"
                     if len(stem) != 32:
                         continue
-                    ext = suffix.split(".")[0].lower()  # W / t
                     self.images.setdefault(stem.lower(), {})[ext] = os.path.join(dp, f)
 
         vdir = self.msg_dir / "video"
@@ -186,7 +210,8 @@ class MediaStore:
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(
                 json.dumps(
-                    {"images": self.images, "videos": self.videos,
+                    {"fingerprint": self._dir_fingerprint(),
+                     "images": self.images, "videos": self.videos,
                      "thumbs": self.thumbs, "files": self.files},
                     ensure_ascii=False,
                 ),
@@ -197,13 +222,16 @@ class MediaStore:
 
     # ---------------------------------------------------------------- 取用
     def get_image(self, md5: str | None) -> tuple[bytes, str] | None:
-        """返回 (明文图像字节, 扩展名)。优先大图 _W。"""
+        """返回 (明文图像字节, 扩展名)。优先大图，降级缩略图。
+
+        查找顺序：_W（大图）> _h（高清）> main（无后缀主图）> _t（缩略图）。
+        """
         if not md5:
             return None
         entry = self.images.get(md5.lower())
         if not entry:
             return None
-        for key in ("w", "W", "t"):
+        for key in ("w", "W", "h", "main", "t"):
             p = entry.get(key)
             if not p:
                 continue

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """图片解密测试：V0 XOR 与 V2 容器（构造数据往返，不需要真实图片）。"""
+import json
 import os
 import struct
 import sys
@@ -75,6 +76,57 @@ class TestV2(unittest.TestCase):
         plain = os.urandom(1024 + 32)
         raw = self._build(plain)
         self.assertIsNone(decode_v2(raw[:-20], self.KEY))
+
+
+class TestMediaStoreIndex(unittest.TestCase):
+    """MediaStore 索引：无后缀主图 + 缓存指纹失效（v0.2.0 后的真实坑）。"""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        # 造假的 msg/attach/{hash}/{date}/Img/ 结构
+        img_dir = self.root / "msg" / "attach" / "ab12" / "2026-10" / "Img"
+        img_dir.mkdir(parents=True)
+        self.md5 = "a" * 32
+        # 三种命名：缩略图 _t、无后缀主图、带 _h
+        (img_dir / f"{self.md5}_t.dat").write_bytes(b"t")
+        (img_dir / f"{self.md5}.dat").write_bytes(b"main")
+        (img_dir / f"{self.md5}_h.dat").write_bytes(b"h")
+        # 噪声：非 32 位前缀的文件应被忽略
+        (img_dir / "tooshort.dat").write_bytes(b"x")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _store(self, cache=True):
+        from core.media import MediaStore
+        return MediaStore(self.root, self.root / ".cache").build(use_cache=cache)
+
+    def test_no_suffix_main_indexed(self):
+        """无后缀主图 {md5}.dat 必须进索引（曾整个漏掉 6726 张）。"""
+        ms = self._store()
+        entry = ms.images.get(self.md5)
+        self.assertIsNotNone(entry)
+        self.assertIn("main", entry)
+        self.assertIn("t", entry)
+        self.assertIn("h", entry)
+        self.assertNotIn("tooshort", ms.images)
+
+    def test_cache_fingerprint_invalidation(self):
+        """目录指纹变化（微信存了新图）→ 旧缓存必须失效重建。"""
+        ms1 = self._store()
+        self.assertIn("main", ms1.images[self.md5])
+        # 新图落盘（更新目录 mtime 由文件系统保证；这里直接换缓存内容模拟过期）
+        cache = self.root / ".cache" / "media_index.json"
+        d = json.loads(cache.read_text(encoding="utf-8"))
+        self.assertIn("fingerprint", d)
+        d["fingerprint"] = 0.0                      # 伪装成过期指纹
+        cache.write_text(json.dumps(d), encoding="utf-8")
+        ms2 = self._store()                          # 应检测到指纹不符，重建
+        self.assertIn("main", ms2.images[self.md5])
+        d2 = json.loads(cache.read_text(encoding="utf-8"))
+        self.assertNotEqual(d2["fingerprint"], 0.0)
 
 
 if __name__ == "__main__":

@@ -192,7 +192,17 @@
                    word-break: break-word; white-space: pre-wrap; font-size: 14px; }
   .wmsg.in .bubble2 { background: #fff; border-top-left-radius: 2px; }
   .wmsg.out .bubble2 { background: #95ec69; border-top-right-radius: 2px; }
-  .wmsg .bubble2 img { max-width: 240px; max-height: 240px; border-radius: 6px; display: block; }
+  .wmsg .bubble2 img { max-width: 240px; max-height: 240px; border-radius: 6px; display: block; cursor: zoom-in; }
+  .wmsg .bubble2 img:hover { opacity: .9; }
+
+  /* ---------- 图片灯箱 ---------- */
+  .lightbox {
+    position: fixed; inset: 0; background: rgba(0,0,0,.82); z-index: 100;
+    display: flex; align-items: center; justify-content: center; cursor: zoom-out;
+  }
+  .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 4px;
+                  box-shadow: 0 4px 30px rgba(0,0,0,.5); }
+  .lightbox .lb-tip { position: absolute; bottom: 18px; color: #aaa; font-size: 12px; }
   .wmsg .bubble2 .media-tag { color: #576b95; font-size: 13px; }
   .wmsg .mtime { font-size: 10px; color: #bbb; margin-top: 3px; }
   .wmsg.out .mtime { text-align: right; }
@@ -471,9 +481,11 @@
             <div class="body">
               <div class="sender" v-if="curSession.type === 'group'" v-text="m.direction === 'out' ? '我' : (m.sender || '')"></div>
               <div class="bubble2">
-                <img v-if="m.kind === 'image' && m.imgMd5" :src="'/api/media?md5=' + m.imgMd5"
-                     @error="m.imgFailed = true" v-show="!m.imgFailed">
-                <span class="media-tag" v-else-if="m.kind === 'image'">[图片]</span>
+                <template v-if="m.kind === 'image'">
+                  <img v-if="m.imgMd5 && !m.imgFailed" :src="'/api/media?md5=' + m.imgMd5"
+                       @error="m.imgFailed = true" @click="lightbox = m.imgMd5">
+                  <span class="media-tag" v-else>[{{ m.imgMd5 ? '图片加载失败' : '图片' }}]</span>
+                </template>
                 <span class="media-tag" v-else-if="m.kind === 'voice'">[语音 {{ m.voiceMs ? Math.round(m.voiceMs/1000) + 's' : '' }}] {{ m.voiceText }}</span>
                 <span class="media-tag" v-else-if="m.kind === 'video'">[视频]</span>
                 <span class="media-tag" v-else-if="m.kind === 'file'">[文件] {{ m.title }}</span>
@@ -725,6 +737,12 @@
       或 <code>mosu key set &lt;hex&gt;</code> 配好密钥再试。
     </p>
   </div>
+
+  <!-- 图片灯箱（点击聊天图片放大） -->
+  <div class="lightbox" v-if="lightbox" @click="lightbox = ''">
+    <img :src="'/api/media?md5=' + lightbox" @error.stop="lightbox = ''">
+    <span class="lb-tip">点击任意处关闭</span>
+  </div>
 </div>
 
 <script>
@@ -762,6 +780,7 @@ createApp({
       exportSessions: [], exportKw: "",
       exportForm: { session: "", format: "html", from: "", to: "" },
       exportTask: { id: "", status: "", cost: 0, result: null, error: "", session: "" },
+      lightbox: "",                     // 图片灯箱（md5）
       // ---- 内部 ----
       _pendingSid: "", _openPending: null, _waitSid: null,
       _kwTimer: null, _exportTimer: null,
