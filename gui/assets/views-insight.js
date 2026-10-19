@@ -159,12 +159,25 @@
       <div v-if="loading" class="grid grid-4">
         <div v-for="i in 4" class="skeleton" :key="i" style="height:96px"></div>
       </div>
+      <template v-else-if="isEmpty">
+        <div class="empty">
+          <div class="empty-icon">📊</div>
+          <div class="empty-title">还没有可统计的消息</div>
+          <div class="empty-desc">
+            数据库里一条消息都没有。先在「设置」里配好密钥或确认数据目录指向了正确的
+            微信聊天记录文件夹，配置生效后回到这一页刷新。
+          </div>
+        </div>
+      </template>
       <template v-else-if="g">
         <div class="grid grid-4">
           <div class="tile rise">
             <div class="tile-head">消息总数</div>
             <div class="tile-value">{{ fmtNum(g.totalMessages) }}</div>
             <div class="tile-foot">分布在 {{ fmtNum(g.totalSessions) }} 个会话</div>
+            <div class="tile-foot" v-if="g.deduped === false">
+              按数据库原始行统计，跨分片重复行未去重
+            </div>
           </div>
           <div class="tile rise">
             <div class="tile-head">联系人</div>
@@ -304,6 +317,8 @@
       };
     },
     computed: {
+      /** 空库：一屏 0 比报错更糟，明确告诉用户下一步做什么 */
+      isEmpty() { return !!this.g && !(this.g.totalMessages > 0); },
       maxType() { return Math.max(1, ...Object.values(this.g ? this.g.byType : { x: 1 })); },
       maxContact() { return Math.max(1, ...this.contacts.map((c) => c.messageCount)); },
       maxTime() { return Math.max(1, ...(this.time ? this.time.items.map((i) => i.count) : [1])); },
@@ -377,8 +392,9 @@
         this.by = by; this.time = null;
         this.time = await M.api.get("/api/stats/time", { by });
       },
-      /** 逐日聚合要扫全库，单独加载，不拖慢首屏 */
+      /** 逐日聚合要扫全库，单独加载，不拖慢首屏；空库时没有可聚合的东西 */
       async loadHeat() {
+        if (this.isEmpty) { this.heatLoading = false; return; }
         this.heatLoading = true;
         try { this.heat = await M.api.get("/api/stats/time", { by: "date" }); }
         catch (e) { this.heat = null; }
@@ -558,8 +574,10 @@
       ["rhythm", "时段分布"],
     ],
   };
-  /** 这些键不进卡片：meta 进页首脚注，scope/session 已在页首体现 */
-  const PROFILE_HIDDEN = new Set(["meta", "scope", "session"]);
+  /** 这些键不进卡片：meta 进页首脚注，scope/session 已在页首体现。
+      summary 是 truncated 标记的载体（见 applyProfile），由专门的 notice 呈现，
+      不该在「补充信息」里以 `summary: {truncated: true}` 的形态重复出现。 */
+  const PROFILE_HIDDEN = new Set(["meta", "scope", "session", "summary"]);
 
   const Insight = {
     components: { JsonView, ReportView },
@@ -575,7 +593,7 @@
                 v-model="picked" @change="load">
           <option value="">选择一个会话…</option>
           <option v-for="s in sessions" :key="s.sessionId" :value="s.sessionId">
-            {{ s.displayName }}
+            {{ s.displayName }}（{{ sessionTypeName(s.type) }}）
           </option>
         </select>
         <select class="select" style="width:120px" v-if="kind==='report'"
@@ -603,6 +621,20 @@
       </template>
       <template v-else-if="data">
         <div class="tiny muted" v-if="metaLine" style="margin-bottom:12px">{{ metaLine }}</div>
+        <div class="notice" v-if="truncated" style="margin-bottom:12px">
+          <b>样本已达上限</b>
+          <div class="tiny" style="margin-top:4px;opacity:.85">
+            数据量超过单次分析上限，本次仅基于最近 {{ fmtNum(sampled) }} 条消息计算，
+            不是全量口径。下面的结论对更早的消息可能不成立。
+          </div>
+        </div>
+        <div class="notice" v-if="isGroupContact" style="margin-bottom:12px">
+          <b>群聊口径说明</b>
+          <div class="tiny" style="margin-top:4px;opacity:.85">
+            群聊没有明确的「对方」。本页的互动与情绪类指标按「我 vs 群」二分计算，
+            即「我发出的」对「群内其他人发出的合计」，不区分具体是哪位群成员。
+          </div>
+        </div>
         <div v-for="sec in sections" :key="sec.key" class="card" style="margin-bottom:16px">
           <div class="card-title">{{ sec.title }}</div>
           <div class="card-sub" v-if="sec.note">{{ sec.note }}</div>
@@ -639,6 +671,8 @@
       return {
         mode: "self", picked: "", year: "", years: [], sessions: [],
         data: null, loading: false, err: "",
+        /** 样本触顶时后端置 true：结果只覆盖最近 N 条，不是全量口径 */
+        truncated: false, sampled: 0,
       };
     },
     computed: {
@@ -646,6 +680,12 @@
         return this.kind === "profile"
           ? (PROFILE_SECTIONS[this.mode === "self" ? "self" : "contact"] || [])
           : [];
+      },
+      /** 选中的会话是群聊：互动/情绪指标走「我 vs 群」二分口径，需要免责说明。
+          直接读结果体里的 session.type（服务端已判定），不依赖会话列表是否恰好有这一项。 */
+      isGroupContact() {
+        if (this.kind !== "profile" || this.mode !== "contact" || !this.data) return false;
+        return !!(this.data.session && this.data.session.type === "group");
       },
       /** 只呈现后端实际返回了的分区，顺序按配置来 */
       sections() {
@@ -678,8 +718,19 @@
         if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
         return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
       },
+      /** 触顶提示要告诉用户「按多少条算的」，取得到实际数就显示实际数 */
+      sampled() {
+        const m = (this.data && this.data.meta) || {};
+        return m.scannedMessages || 0;
+      },
     },
     methods: {
+      ...{ fmtNum: M.fmtNum },
+      /**
+       * 会话类型 → 中文。词表只有一份，定义在 views-data.js 的 Contacts 上
+       * （后端 `_session_type()` 的值域），这里转调，避免两张表各改各的。
+       */
+      sessionTypeName(t) { return global.MosuViews.sessionTypeName(t); },
       setMode(m) {
         this.mode = m;
         if (m === "self") { this.picked = ""; this.load(); }
@@ -687,16 +738,40 @@
       },
       async load() {
         if (this.kind === "profile" && this.mode === "contact" && !this.picked) return;
-        this.loading = true; this.err = "";
+        this.loading = true; this.err = ""; this.truncated = false;
         try {
           if (this.kind === "profile") {
-            this.data = await M.api.get("/api/profile",
-              this.picked ? { session: this.picked } : {});
+            await this.loadProfile();
           } else {
             this.data = await M.api.get("/api/report", this.year ? { year: this.year } : {});
           }
         } catch (e) { this.err = e.message; this.data = null; }
         finally { this.loading = false; }
+      },
+      /**
+       * 画像改走异步任务：contact_profile 要扫全量消息，大群能跑十几秒，
+       * 同步持锁会把整个 GUI 卡住且无法超时自救（后端 risk #3）。
+       * 轮询写法与 Stats.runKeywords 一致：起一个 taskId，按固定间隔问 /api/task。
+       * 服务端不支持 async 时（老版本）返回的是完整结果体，此时直接渲染——优雅降级。
+       */
+      async loadProfile() {
+        const d = await M.api.get("/api/profile", {
+          ...(this.picked ? { session: this.picked } : {}), async: 1,
+        });
+        const tid = d.taskId || d.id || (d.task && d.task.id);
+        if (!tid) { this.applyProfile(d); return; }        // 未走异步分支，直接就是结果
+        for (let i = 0; i < 300; i++) {                    // 上限与关键词分析一致：约 7.5 分钟
+          await new Promise((r) => setTimeout(r, 1500));
+          const t = await M.api.get("/api/task", { id: tid });
+          if (t.status === "done") { this.applyProfile(t.result || {}); return; }
+          if (t.status === "error") throw new Error(t.error || "画像生成失败");
+        }
+        throw new Error("画像生成超时，请重试或缩小数据范围");
+      },
+      /** 结果结构与原同步返回体一致，只多一个 summary.truncated；多余字段一律忽略 */
+      applyProfile(r) {
+        this.data = r || null;
+        this.truncated = !!(r && r.summary && r.summary.truncated);
       },
     },
     async mounted() {

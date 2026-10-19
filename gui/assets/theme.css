@@ -79,7 +79,7 @@
   --bg-surface-2: #fafbfc;
   --bg-inset: #eef1f5;
   --bg-hover: rgba(15, 23, 42, 0.045);
-  --bg-active: rgba(14, 158, 86, 0.1);
+  --bg-active: rgba(11, 133, 72, 0.1);
   --bg-sidebar: #ffffff;
   --bg-topbar: rgba(255, 255, 255, 0.82);
 
@@ -91,11 +91,15 @@
 
   --border: #e3e8ef;
   --border-strong: #cbd5e1;
-  --border-focus: #0e9e56;
+  --border-focus: #0b8548;
 
-  --brand: #0e9e56;
-  --brand-hover: #0b8548;
-  --brand-soft: rgba(14, 158, 86, 0.1);
+  /* 品牌绿：向 logo 色系（#1ac873/#07c160/#03a251，色相 148.7–150.7）靠拢，
+     并压深到能扛白字。#0e9e56 对白字只有 3.47:1，达不到 WCAG AA 的 4.5:1，
+     .btn-primary 又是拿渐变换白字 —— 属于既存可读性缺陷，不只是美观问题。
+     实算：#0b8548 对白字 4.71:1。logo 一字不动，改的是令牌。 */
+  --brand: #0b8548;
+  --brand-hover: #08693a;
+  --brand-soft: rgba(11, 133, 72, 0.1);
   --brand-text: #ffffff;
 
   --wechat: #07c160;           /* 微信绿：只用于「我发出的气泡」等语义位置 */
@@ -118,14 +122,16 @@
   --bubble-out-text: #0f172a;
   --code-bg: #f1f5f9;
 
-  /* Aurora 渐变流：主按钮 / 强调条。background-size 200% + 位移动画 */
-  --grad-brand: linear-gradient(100deg, #0e9e56 0%, #16b866 30%, #34cf85 55%, #0e9e56 100%);
-  --grad-brand-soft: linear-gradient(100deg, rgba(14,158,86,.14), rgba(52,207,133,.2), rgba(14,158,86,.14));
+  /* Aurora 渐变流：主按钮 / 强调条。background-size 200% + 位移动画。
+     四档全部 ≥4.5:1 对白字（4.71/4.96/5.28/4.71），「亮起来」的观感
+     交给 app.css 里 .btn-shine 的 --grad-sheen 高光扫过，不再靠浅色色标。 */
+  --grad-brand: linear-gradient(100deg, #0b8548 0%, #12813f 30%, #0d7c42 55%, #0b8548 100%);
+  --grad-brand-soft: linear-gradient(100deg, rgba(11,133,72,.14), rgba(13,124,66,.2), rgba(11,133,72,.14));
   --grad-sheen: linear-gradient(105deg, transparent 30%, rgba(255,255,255,.55) 48%, transparent 66%);
   --grad-surface: linear-gradient(160deg, #ffffff 0%, #fbfcfe 100%);
 
   /* 柔光（Soft Glow）：悬停时从品牌色外溢的呼吸感 */
-  --glow-brand: 0 0 0 4px rgba(14, 158, 86, 0.14), 0 6px 20px rgba(14, 158, 86, 0.28);
+  --glow-brand: 0 0 0 4px rgba(11, 133, 72, 0.14), 0 6px 20px rgba(11, 133, 72, 0.28);
   --glow-danger: 0 0 0 4px rgba(220, 38, 38, 0.13), 0 6px 20px rgba(220, 38, 38, 0.26);
   --glow-success: 0 0 0 4px rgba(5, 150, 105, 0.13), 0 6px 20px rgba(5, 150, 105, 0.24);
 
@@ -134,11 +140,11 @@
   --heat-1: #cdeed8;
   --heat-2: #8fdfae;
   --heat-3: #4fc983;
-  --heat-4: #1fa85f;
+  --heat-4: #0b8548;
   --heat-5: #0d7c42;
 
   /* 图表序列色（自绘 SVG 用，深浅主题各自校准过对比度） */
-  --c1: #0e9e56;
+  --c1: #0b8548;
   --c2: #35c98a;
   --c3: #f59e0b;
   --c4: #a855f7;

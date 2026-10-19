@@ -412,6 +412,15 @@
           <div v-if="loading" style="padding:16px">
             <div v-for="i in 10" class="skeleton" :key="i" style="height:52px;margin-bottom:8px"></div>
           </div>
+          <div v-else-if="!list.length" style="padding:32px 16px">
+            <div style="text-align:center;color:var(--text-3)">
+              <div style="font-size:28px;margin-bottom:8px">👤</div>
+              <div style="font-weight:600;color:var(--text-1);margin-bottom:6px">
+                {{ emptyTitle }}
+              </div>
+              <div class="tiny">{{ emptyDesc }}</div>
+            </div>
+          </div>
           <div v-for="c in list" :key="c.wxid" class="session-item"
                :class="{active: cur && cur.wxid===c.wxid}" @click="open(c)">
             <div class="avatar" :style="{background: avatarBg(c)}">
@@ -420,7 +429,7 @@
             <div class="session-meta">
               <div class="session-name" v-html="hl(c.displayName)"></div>
               <div class="session-preview">
-                {{ typeName(c.type) }}<span v-if="c.messageCount"> · {{ fmtNum(c.messageCount) }} 条</span>
+                {{ contactTypeName(c.type) }}<span v-if="c.messageCount"> · {{ fmtNum(c.messageCount) }} 条</span>
               </div>
             </div>
           </div>
@@ -440,7 +449,7 @@
                 <dt>微信号</dt><dd>{{ detail.alias || '—' }}</dd>
                 <dt>备注</dt><dd>{{ detail.remark || '—' }}</dd>
                 <dt>昵称</dt><dd>{{ detail.nickname || '—' }}</dd>
-                <dt>类型</dt><dd>{{ typeName(detail.type) }}</dd>
+                <dt>类型</dt><dd>{{ contactTypeName(detail.type) }}</dd>
               </dl>
             </div>
             <template v-if="isGroup">
@@ -509,6 +518,21 @@
     },
     computed: {
       isGroup() { return (this.cur && this.cur.type === "group"); },
+      /**
+       * 空态分两种，下一步动作完全不同，不能共用一句话。
+       *
+       * 判据用「有没有搜索词」而不是后端返回的 `total`：`/api/contacts` 的
+       * `total` 是筛选**之后**的条数，带搜索词时它也是 0，分不出两种情况。
+       * 而搜索词为空时列表仍为空，就确实是通讯录里没有可显示的条目。
+       */
+      emptyTitle() { return this.kw.trim() ? "没有匹配的联系人" : "通讯录里还没有联系人"; },
+      emptyDesc() {
+        if (this.kw.trim()) {
+          return "库里没有匹配「" + this.kw.trim() + "」的联系人。清空搜索词，或换个关键词试试。";
+        }
+        return "先在「设置」里配好密钥，并确认数据目录指向了微信聊天记录所在的账号文件夹。"
+             + "通讯录与聊天记录都在本机解密，配好之前这里会是空的。";
+      },
       topMax() {
         return Math.max(1, ...(this.detail && this.detail.groupTop || [])
           .map((m) => m.messageCount));
@@ -573,9 +597,28 @@
         const p = (n) => (n < 10 ? "0" + n : n);
         return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`;
       },
-      typeName(t) {
-        return { friend: "好友", private: "好友", group: "群聊", mp: "公众号",
-                 former_friend: "已删除（保留聊天记录）" }[t] || t || "—";
+      /**
+       * 通讯录类型 → 中文。值域来自后端 `contact_type()`：看的是通讯录
+       * `delete_flag` 与 wxid 形态，所以有「已删除」这一档。
+       */
+      contactTypeName(t) {
+        return { friend: "好友", group: "群聊", mp: "公众号",
+                 former_friend: "已删除（保留聊天记录）",
+                 other: "其他" }[t] || t || "—";
+      },
+      /**
+       * 会话类型 → 中文。值域来自后端 `_session_type()`：看的是会话表本身，
+       * 单聊叫 `private` 而不是 `friend`。
+       *
+       * 这两张表刻意不合并：它们是两套判定口径（`wxid_gh*` 在通讯录里算公众号、
+       * 在会话表里因为只认 `gh_` 前缀而算单聊），各有存在理由。混成一张表的
+       * 代价是 `/api/sessions` 返回的 `private` 会被翻成「好友」。
+       *
+       * 页面里凡是渲染 `/api/sessions` 的地方都用这张（views-insight.js 的
+       * 画像会话下拉通过 MosuViews.sessionTypeName 复用，避免两张表各改各的）。
+       */
+      sessionTypeName(t) {
+        return { private: "单聊", group: "群聊", mp: "公众号" }[t] || t || "—";
       },
       async fetch_() {
         this.loading = true;
@@ -610,5 +653,7 @@
   };
 
   global.MosuViews = global.MosuViews || {};
+  /* 会话类型映射导出去给 views-insight.js 复用：两张词表不允许各维护一份 */
+  global.MosuViews.sessionTypeName = Contacts.methods.sessionTypeName;
   Object.assign(global.MosuViews, { Moments, ExportView, Contacts });
 })(window);
