@@ -21,15 +21,19 @@
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import queue
+import shutil
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 GUI_DIR = Path(__file__).resolve().parent
 ROOT = GUI_DIR.parent
@@ -52,6 +56,128 @@ def _heartbeat_age() -> int | None:
     return max(0, int(time.time() - ts))
 
 
+# ---------------------------------------------------------------- 导出产物目录
+EXPORT_ROOT = ROOT / ".cache" / "gui_export"
+
+
+class _TaskHub:
+    """异步任务注册表（关键词统计 / HTML 导出共用）。
+
+    - 单 worker 串行执行：重操作不并发互相踩（它们都要抢 _ds_lock，
+      并发只会排队，不如显式串行 + UI 显示排队/耗时）
+    - 锁与 _ds_lock 分开：worker 内部要取 _ds_lock，不能拿同一把锁等待
+    - 产物目录 EXPORT_ROOT/<task_id>/，历史上限 keep 条，超限淘汰最旧已完成
+    """
+
+    def __init__(self, artifact_root: Path, keep: int = 20):
+        self.root = artifact_root
+        self.keep = keep
+        self._lock = threading.Lock()
+        self._tasks: dict[str, dict] = {}
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._worker = threading.Thread(target=self._loop, daemon=True,
+                                        name="mosu-gui-task")
+        self._worker.start()
+
+    def submit(self, kind: str, fn) -> str:
+        tid = uuid.uuid4().hex[:12]
+        with self._lock:
+            self._tasks[tid] = {"id": tid, "kind": kind, "status": "queued",
+                                "cost": None, "result": None, "error": None}
+            done = [t for t in self._tasks.values()
+                    if t["status"] in ("done", "error")]
+            for t in done[:max(0, len(done) - self.keep + 1)]:
+                self._tasks.pop(t["id"], None)
+        self._queue.put((tid, fn))
+        return tid
+
+    def _loop(self):
+        while True:
+            tid, fn = self._queue.get()
+            with self._lock:
+                t = self._tasks.get(tid)
+                if not t:
+                    continue
+                t["status"] = "running"
+            t0 = time.time()
+            try:
+                result = fn(tid)
+                with self._lock:
+                    t["status"] = "done"
+                    t["result"] = result
+            except Exception as e:  # noqa: BLE001 —— 任务失败必须落状态，不能崩 worker
+                with self._lock:
+                    t["status"] = "error"
+                    t["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                with self._lock:
+                    t["cost"] = round(time.time() - t0, 2)
+
+    def fetch(self, tid: str) -> dict | None:
+        with self._lock:
+            t = self._tasks.get(tid)
+            return dict(t) if t else None
+
+
+def _text_export_bytes(ds, sess: dict, fmt: str,
+                       from_ts=None, to_ts=None) -> tuple[bytes, str]:
+    """文本格式导出为字节（json/csv/txt）——格式与 CLI `mosu export` 完全一致：
+    CSV 表头「时间,方向,发送者,类型,内容」+ utf-8-sig BOM（Excel 友好）；
+    TXT 行 `[YYYY-MM-DD HH:MM:SS] 我|对方: 内容`，媒体占位规则同 CLI。
+    返回 (bytes, 扩展名)。
+    """
+    from core.formatters import fmt_time
+    r = ds.messages(sess, limit=10 ** 9, order="asc", from_ts=from_ts, to_ts=to_ts)
+    msgs = r["messages"]
+    if fmt == "json":
+        return json.dumps(r, ensure_ascii=False, indent=2).encode("utf-8"), "json"
+    if fmt == "csv":
+        import csv as _csv
+        import io
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["时间", "方向", "发送者", "类型", "内容"])
+        for m in msgs:
+            w.writerow([fmt_time(m["createTime"]),
+                        "out" if m["direction"] == "out" else "in",
+                        m["senderName"] or "", m["kind"],
+                        (m["content"] or "").replace("\n", " ")])
+        return buf.getvalue().encode("utf-8-sig"), "csv"
+    if fmt != "txt":
+        raise ValueError(f"不支持的格式：{fmt}（只支持 json/csv/txt）")
+    # txt
+    lines = []
+    for m in msgs:
+        who = "我" if m["direction"] == "out" else (m["senderName"] or "对方")
+        c = m["content"] or ""
+        if m["kind"] == "image":
+            c = "[图片]"
+        elif m["kind"] == "voice":
+            c = f"[语音 {m['voiceMs']}ms] {m['voiceText'] or ''}"
+        elif m["kind"] == "video":
+            c = "[视频]"
+        elif m["kind"] == "file":
+            c = f"[文件] {m['title'] or m['fileName'] or ''}"
+        lines.append(f"[{fmt_time(m['createTime'])}] {who}: {c}")
+    return ("\n".join(lines) + "\n").encode("utf-8"), "txt"
+
+
+def _zip_dir(src_dir: Path) -> bytes:
+    """把目录打包成 zip 字节（标准库 zipfile）。arcname 相对化，跳过含 ..
+    的条目（防穿越进压缩包）。"""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(src_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            arc = p.relative_to(src_dir).as_posix()
+            if ".." in arc.split("/"):
+                continue
+            zf.write(p, arc)
+    return buf.getvalue()
+
+
 def run_gui(corpus_path, port: int | None = None) -> None:
     from core.bot.service import BotService
     import core.wechat as wx
@@ -65,9 +191,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     _ds = None
     _media = None
     _ds_err = None
+    _moments_rows = None      # 朋友圈全量缓存（get_moments 首屏解析后填充）
+    _moments_unsup = None     # 无 sns.db 时 True（缓存）
     _ds_lock = threading.RLock()  # SQLite 连接跨线程复用：整个数据 API 期间持锁
                                   # （RLock：api_* 持锁时内部 get_ds 可重入），
                                   # 同时防并发首次触发重复解密
+    tasks = _TaskHub(EXPORT_ROOT)   # 异步任务（关键词统计/导出）
 
     def get_ds():
         nonlocal _ds, _ds_err
@@ -224,6 +353,166 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 pass
         return data, _MIME.get(ext.lstrip(".").lower(), "image/jpeg")
 
+    def get_moments():
+        """朋友圈：首屏全量解析后缓存 rows，翻页直接切片（sns.db 静态假设，
+        GUI 会话内不失效）。"""
+        nonlocal _moments_rows
+        with _ds_lock:
+            if _moments_rows is None:
+                from core.sns import Moments
+                _moments_rows = Moments(get_ds()).entries(limit=10 ** 9)["entries"]
+            return _moments_rows
+
+    def api_moments(q) -> dict:
+        limit = max(1, min(int(q.get("limit", 30)), 50))
+        offset = max(0, int(q.get("offset", 0)))
+        user = (q.get("user") or "").strip() or None
+        with _ds_lock:
+            rows = get_moments()
+            if user:
+                rows = [e for e in rows if user in (e["author"]["wxid"],)]
+            total = len(rows)
+            page = rows[offset:offset + limit]
+        return {
+            "total": total, "offset": offset, "limit": limit,
+            "hasMore": total > offset + len(page),
+            "entries": page,
+            "unsupported": _moments_unsupported(),
+        }
+
+    def _moments_unsupported() -> bool:
+        nonlocal _moments_unsup
+        with _ds_lock:
+            if _moments_unsup is None:
+                _moments_unsup = not get_ds().has("sns/sns.db")
+            return _moments_unsup
+
+    # ---------------------------------------------------------------- 统计
+    def api_stats_global() -> dict:
+        from core.analytics import Analytics
+        with _ds_lock:
+            return Analytics(get_ds()).global_stats()
+
+    def api_stats_contacts(q) -> dict:
+        from core.analytics import Analytics
+        top = max(1, min(int(q.get("top", 20)), 100))
+        with _ds_lock:
+            return Analytics(get_ds()).contact_stats(top=top)
+
+    def api_stats_time(q) -> dict:
+        from core.analytics import Analytics
+        by = (q.get("by") or "hour").lower()
+        if by not in ("hour", "weekday", "month", "date"):
+            raise ValueError("by 只支持 hour/weekday/month/date")
+        with _ds_lock:
+            return Analytics(get_ds()).time_stats(by=by)
+
+    def _kw_task(top: int, max_msgs: int):
+        """TaskHub worker 里跑：全库逐条解压抽关键词（重操作，持锁数十秒）。"""
+        def run(tid):
+            from core.analytics import Analytics
+            with _ds_lock:
+                return Analytics(get_ds()).keyword_stats(top=top, max_msgs=max_msgs)
+        return run
+
+    def api_stats_keywords(payload: dict) -> dict:
+        top = int(payload.get("top") or 30)
+        max_msgs = int(payload.get("max_msgs") or 20000)
+        if not (1 <= top <= 100):
+            raise ValueError("top 需在 1~100")
+        if not (1000 <= max_msgs <= 200000):
+            raise ValueError("max_msgs 需在 1000~200000")
+        tid = tasks.submit("keywords", _kw_task(top, max_msgs))
+        return {"taskId": tid, "status": "running"}
+
+    def api_task(q) -> dict:
+        tid = (q.get("id") or "").strip()
+        t = tasks.fetch(tid)
+        if not t:
+            raise KeyError(tid)
+        return t
+
+    # ---------------------------------------------------------------- 导出
+    def _export_text_task(sess_id: str, fmt: str, from_ts, to_ts):
+        """TaskHub worker：文本格式（秒级，但走任务统一轮询，前端一套逻辑）。"""
+        def run(tid):
+            with _ds_lock:
+                ds = get_ds()
+                sess = ds.find_session(sess_id)
+                if not sess:
+                    raise LookupError(f"没找到会话「{sess_id}」")
+                data, ext = _text_export_bytes(ds, sess, fmt, from_ts, to_ts)
+                return {"session": sess["displayName"], "count": len(data),
+                        "ext": ext, "data": data.hex()}
+        return run
+
+    def _export_html_task(sess_id: str, from_ts, to_ts):
+        """TaskHub worker：HTML 整会话导出 + zip（复刻 CLI cmd_export 的 html 分支）。
+        语音不带 mp3（GUI 零 Node 原则），HTML 内以转文字呈现。"""
+        def run(tid):
+            with _ds_lock:
+                ds = get_ds()
+                sess = ds.find_session(sess_id)
+                if not sess:
+                    raise LookupError(f"没找到会话「{sess_id}」")
+                from core.media import MediaStore
+                from core.exporter import ChatExporter
+                out_dir = EXPORT_ROOT / tid
+                out_dir.mkdir(parents=True, exist_ok=True)
+                media = MediaStore(ds.user_dir, ROOT / ".cache").build()
+                rows, names, self_id = ds.collect_session_rows(sess, from_ts, to_ts)
+                exp = ChatExporter(media, out_dir, voice_map={})
+                exp.export(rows, names, self_id, title=sess["displayName"])
+                zip_bytes = _zip_dir(out_dir)
+                return {"session": sess["displayName"], "count": len(rows),
+                        "bytes": len(zip_bytes),
+                        "zip": zip_bytes.hex()}
+        return run
+
+    def api_export(payload: dict):
+        sess_id = (payload.get("session") or "").strip()
+        fmt = (payload.get("format") or "").lower()
+        if not sess_id:
+            raise ValueError("缺少 session（会话 wxid）")
+        if fmt not in ("json", "csv", "txt", "html"):
+            raise ValueError("format 只支持 json/csv/txt/html")
+        from core.dataset import parse_time
+        try:
+            from_ts = parse_time(payload.get("from"))
+            to_ts = parse_time(payload.get("to"))
+        except SystemExit as e:
+            raise ValueError(str(e)) from e
+        # 先校验会话存在（同步路径直接 404；异步路径提前失败）
+        with _ds_lock:
+            sess = get_ds().find_session(sess_id)
+            if not sess:
+                raise LookupError(f"没找到会话「{sess_id}」")
+        if fmt == "html":
+            tid = tasks.submit("export-html",
+                               _export_html_task(sess_id, from_ts, to_ts))
+            return {"taskId": tid, "status": "running",
+                    "session": sess["displayName"]}
+        tid = tasks.submit("export-text", _export_text_task(sess_id, fmt, from_ts, to_ts))
+        return {"taskId": tid, "status": "running",
+                "session": sess["displayName"], "sync": False}
+
+    def api_export_download(q) -> tuple[bytes, str, str]:
+        """任务完成后返回 (字节, content-type, 文件名)。"""
+        tid = (q.get("task") or "").strip()
+        t = tasks.fetch(tid)
+        if not t:
+            raise KeyError(tid)
+        if t["status"] == "error":
+            raise RuntimeError(t["error"] or "导出失败")
+        if t["status"] != "done":
+            raise ValueError("任务还没完成")
+        res = t["result"] or {}
+        if t["kind"] == "export-html":
+            return (bytes.fromhex(res["zip"]), "application/zip",
+                    f"{res['session']}.zip")
+        return (bytes.fromhex(res["data"]), "application/octet-stream",
+                f"{res['session']}.{res['ext']}")
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -242,6 +531,19 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
         def _params(self) -> dict:
             return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+
+        def _guard(self, fn, *args):
+            """统一错误码：不存在/参数错 → 4xx，其余 → 500 JSON，绝不裸奔。
+            注意 SystemExit 不是 Exception 子类，core 层（Analytics 等）
+            找不到会话时抛的就是它，必须显式捕获。"""
+            try:
+                self._json(fn(*args))
+            except (SystemExit, LookupError, KeyError) as e:
+                self._json({"error": str(e) or "不存在"}, 404)
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+            except Exception as e:  # noqa: BLE001
+                self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
         def do_GET(self):
             path = urlparse(self.path).path
@@ -307,26 +609,79 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
+            if path == "/api/moments":
+                self._guard(api_moments, self._params())
+                return
+            if path == "/api/stats/global":
+                self._guard(api_stats_global)
+                return
+            if path == "/api/stats/contacts":
+                self._guard(api_stats_contacts, self._params())
+                return
+            if path == "/api/stats/time":
+                self._guard(api_stats_time, self._params())
+                return
+            if path == "/api/task":
+                self._guard(api_task, self._params())
+                return
+            if path == "/api/export/download":
+                try:
+                    data, ctype, fname = api_export_download(self._params())
+                except KeyError:
+                    self._json({"error": "任务不存在"}, 404)
+                except ValueError as e:
+                    self._json({"error": str(e)}, 400)
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                else:
+                    # 中文文件名：RFC 5987 filename*（pct-encoded UTF-8）
+                    quoted = quote(fname)
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Disposition",
+                                     f"attachment; filename*=UTF-8''{quoted}")
+                    self.end_headers()
+                    self.wfile.write(data)
+                return
             self._json({"error": f"unknown path: {path}"}, 404)
 
         def do_POST(self):
             path = urlparse(self.path).path
-            if path != "/api/chat":
-                self._json({"error": "POST /api/chat only"}, 404)
-                return
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) \
+                    if length else {}
+            except Exception:
+                self._json({"error": "请求体不是合法 JSON"}, 400)
+                return
+            if path == "/api/chat":
                 query = (payload.get("message") or "").strip()
                 if not query:
                     self._json({"error": "message 不能为空"}, 400)
                     return
-                result = bot.chat(query, conv_id="gui")
-                self._json(result)
-            except SystemExit as e:
-                self._json({"error": str(e)}, 500)
-            except Exception as e:  # noqa: BLE001
-                self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                try:
+                    self._json(bot.chat(query, conv_id="gui"))
+                except SystemExit as e:
+                    self._json({"error": str(e)}, 500)
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/stats/keywords":
+                self._guard(api_stats_keywords, payload)
+                return
+            if path == "/api/export":
+                self._guard(api_export, payload)
+                return
+            self._json({"error": f"unknown path: {path}"}, 404)
+
+    # 启动时清空导出产物目录（上次运行的临时 HTML/zip，无保留价值）
+    try:
+        if EXPORT_ROOT.exists():
+            shutil.rmtree(EXPORT_ROOT)
+    except Exception:
+        pass
 
     # 端口已被占用 → 认为服务已在跑，直接开浏览器，不再起第二份
     import socket

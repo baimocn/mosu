@@ -38,7 +38,7 @@
   .tabs { display: flex; gap: 2px; background: #fff; padding: 0 16px; flex-shrink: 0;
           border-bottom: 1px solid #e0e0e0; }
   .tab {
-    padding: 9px 18px; font-size: 13px; color: #666; cursor: pointer;
+    padding: 9px 16px; font-size: 13px; color: #666; cursor: pointer;
     border: none; background: none; border-bottom: 2px solid transparent;
   }
   .tab.active { color: #07c160; border-bottom-color: #07c160; font-weight: 600; }
@@ -135,16 +135,17 @@
      数据浏览（三栏：会话列表 | 消息流 | 搜索）
      ================================================================ */
   .browse { flex: 1; display: flex; min-height: 0; }
-
-  /* 左：会话列表 */
   .sess-col { width: 280px; flex-shrink: 0; border-right: 1px solid #e0e0e0;
               background: #f7f7f7; display: flex; flex-direction: column; min-height: 0; }
   .sess-filters { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 8px; }
-  .sess-filters input, .search-box input {
+  .sess-filters input, .search-box input, .export-form select, .export-form input {
     border: 1px solid #e0e0e0; border-radius: 6px; outline: none;
     padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%;
+    background: #fff;
   }
-  .sess-filters input:focus, .search-box input:focus { border-color: #07c160; }
+  .sess-filters input:focus, .search-box input:focus, .export-form select:focus {
+    border-color: #07c160;
+  }
   .type-tabs { display: flex; gap: 4px; }
   .type-tab {
     flex: 1; border: none; background: #ececec; color: #666; font-size: 12px;
@@ -152,17 +153,13 @@
   }
   .type-tab.active { background: #07c160; color: #fff; }
   .sess-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
-  .sess-item {
-    display: flex; gap: 10px; padding: 9px 10px; border-radius: 8px;
-    cursor: pointer; align-items: center;
-  }
+  .sess-item { display: flex; gap: 10px; padding: 9px 10px; border-radius: 8px;
+               cursor: pointer; align-items: center; }
   .sess-item:hover { background: #ececec; }
   .sess-item.active { background: #e4e4e4; }
-  .sess-avatar {
-    width: 38px; height: 38px; border-radius: 6px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 15px; color: #fff; font-weight: 600;
-  }
+  .sess-avatar { width: 38px; height: 38px; border-radius: 6px; flex-shrink: 0;
+                 display: flex; align-items: center; justify-content: center;
+                 font-size: 15px; color: #fff; font-weight: 600; }
   .sess-info { min-width: 0; flex: 1; }
   .sess-name { font-size: 13px; color: #1a1a1a; overflow: hidden;
                text-overflow: ellipsis; white-space: nowrap; }
@@ -170,12 +167,9 @@
               text-overflow: ellipsis; white-space: nowrap; }
   .sess-count { font-size: 10px; color: #bbb; flex-shrink: 0; }
 
-  /* 中：消息流 */
   .msg-col { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #ededed; }
-  .msg-head {
-    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
-    background: #f7f7f7; border-bottom: 1px solid #e8e8e8; flex-shrink: 0;
-  }
+  .msg-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+              background: #f7f7f7; border-bottom: 1px solid #e8e8e8; flex-shrink: 0; }
   .msg-head .name { font-size: 14px; font-weight: 600; color: #333; }
   .msg-head .sub { font-size: 11px; color: #999; }
   .msg-scroll { flex: 1; overflow-y: auto; padding: 16px; }
@@ -188,32 +182,25 @@
   .load-more:disabled { opacity: .5; cursor: default; }
   .wmsg { display: flex; margin-bottom: 16px; align-items: flex-start; gap: 8px; }
   .wmsg.out { flex-direction: row-reverse; }
-  .wmsg .avatar {
-    width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 13px; color: #fff; font-weight: 600;
-  }
+  .wmsg .avatar { width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0;
+                  display: flex; align-items: center; justify-content: center;
+                  font-size: 13px; color: #fff; font-weight: 600; }
   .wmsg .body { max-width: 60%; min-width: 0; }
   .wmsg .sender { font-size: 11px; color: #999; margin-bottom: 3px; }
   .wmsg.out .sender { text-align: right; }
-  .wmsg .bubble2 {
-    padding: 8px 11px; border-radius: 8px; line-height: 1.55;
-    word-break: break-word; white-space: pre-wrap; font-size: 14px;
-  }
+  .wmsg .bubble2 { padding: 8px 11px; border-radius: 8px; line-height: 1.55;
+                   word-break: break-word; white-space: pre-wrap; font-size: 14px; }
   .wmsg.in .bubble2 { background: #fff; border-top-left-radius: 2px; }
   .wmsg.out .bubble2 { background: #95ec69; border-top-right-radius: 2px; }
-  .wmsg .bubble2 img {
-    max-width: 240px; max-height: 240px; border-radius: 6px; display: block; cursor: zoom-in;
-  }
+  .wmsg .bubble2 img { max-width: 240px; max-height: 240px; border-radius: 6px; display: block; }
   .wmsg .bubble2 .media-tag { color: #576b95; font-size: 13px; }
   .wmsg .mtime { font-size: 10px; color: #bbb; margin-top: 3px; }
   .wmsg.out .mtime { text-align: right; }
   .wmsg .mtime.hl { color: #07c160; }
 
-  /* 右：搜索 */
   .search-col { width: 300px; flex-shrink: 0; border-left: 1px solid #e0e0e0;
                 background: #f7f7f7; display: flex; flex-direction: column; min-height: 0; }
-  .search-box { padding: 12px 12px 8px; position: relative; }
+  .search-box { padding: 12px 12px 8px; }
   .search-results { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
   .hit-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; }
   .hit-item:hover { background: #ececec; }
@@ -224,21 +211,96 @@
               overflow: hidden; }
   .hit-text mark { background: #fff3a3; color: inherit; padding: 0 1px; }
 
-  /* 空态/加载态 */
-  .placeholder {
-    flex: 1; display: flex; flex-direction: column; gap: 8px;
-    align-items: center; justify-content: center; color: #aaa; font-size: 13px;
-  }
+  /* ================================================================
+     数据统计（卡片 + 自绘 SVG 图表）
+     ================================================================ */
+  .stats-wrap { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                gap: 12px; margin-bottom: 16px; }
+  .stat-card { background: #fff; border-radius: 10px; padding: 14px 16px;
+               box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  .stat-card .num { font-size: 24px; font-weight: 700; color: #1a1a1a;
+                    font-variant-numeric: tabular-nums; }
+  .stat-card .lbl { font-size: 12px; color: #999; margin-top: 2px; }
+  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                gap: 12px; }
+  .chart-card { background: #fff; border-radius: 10px; padding: 14px 16px;
+                box-shadow: 0 1px 3px rgba(0,0,0,.05); min-width: 0; }
+  .chart-card h4 { font-size: 13px; color: #444; margin-bottom: 10px; font-weight: 600; }
+  .chart-svg { width: 100%; height: auto; display: block; }
+  .chart-svg .bar { fill: #07c160; opacity: .85; }
+  .chart-svg .bar:hover { opacity: 1; }
+  .chart-svg .axis { font-size: 9px; fill: #aaa; }
+  .chart-svg .val { font-size: 9px; fill: #888; }
+  .chart-scroll { overflow-x: auto; }
+  .chart-scroll .chart-svg { min-width: 640px; }
+  .kw-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .kw-item { background: #f0faf4; border: 1px solid #d6f0e0; color: #0a8a48;
+             border-radius: 14px; padding: 3px 12px; font-size: 12px; cursor: default; }
+  .kw-item b { font-weight: 600; }
+  .kw-meta { font-size: 11px; color: #aaa; margin-top: 10px; }
+  .contact-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .contact-row .cname { width: 130px; font-size: 12px; color: #555; flex-shrink: 0;
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .contact-row .cbar { height: 14px; background: #07c160; border-radius: 3px; opacity: .8; }
+  .contact-row .cval { font-size: 11px; color: #999; flex-shrink: 0; }
+
+  /* ================================================================
+     朋友圈
+     ================================================================ */
+  .moments-wrap { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .moments-tip { background: #fff8e6; border: 1px solid #f0e0b0; color: #8a6d1f;
+                 font-size: 12px; border-radius: 8px; padding: 8px 14px; margin-bottom: 14px; }
+  .moment-card { background: #fff; border-radius: 10px; padding: 14px 16px;
+                 box-shadow: 0 1px 3px rgba(0,0,0,.05); margin-bottom: 12px; }
+  .m-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .m-author { font-size: 13px; font-weight: 600; color: #576b95; }
+  .m-time { font-size: 11px; color: #bbb; }
+  .m-text { font-size: 13px; color: #333; line-height: 1.7; margin-top: 6px;
+            white-space: pre-wrap; word-break: break-word; }
+  .m-media { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .m-media img { width: 120px; height: 120px; object-fit: cover; border-radius: 6px;
+                 background: #f5f5f5; }
+  .m-img-fail { width: 120px; height: 120px; border-radius: 6px; background: #f5f5f5;
+                color: #bbb; font-size: 11px; display: flex; align-items: center;
+                justify-content: center; }
+  .m-social { margin-top: 8px; background: #f7f7f7; border-radius: 6px; padding: 8px 10px;
+              font-size: 12px; color: #666; line-height: 1.7; }
+  .m-social .likes { color: #576b95; }
+  .m-comment { margin-top: 2px; }
+  .m-comment b { color: #576b95; font-weight: 500; }
+
+  /* ================================================================
+     导出
+     ================================================================ */
+  .export-wrap { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .export-card { background: #fff; border-radius: 10px; padding: 20px 24px;
+                 box-shadow: 0 1px 3px rgba(0,0,0,.05); max-width: 560px; }
+  .export-card h3 { font-size: 15px; color: #333; margin-bottom: 14px; }
+  .export-form { display: flex; flex-direction: column; gap: 12px; }
+  .export-form label.field { display: flex; flex-direction: column; gap: 4px;
+                             font-size: 12px; color: #888; }
+  .fmt-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .fmt-opt { flex: 1; min-width: 120px; border: 1px solid #e0e0e0; border-radius: 8px;
+             padding: 8px 10px; cursor: pointer; font-size: 12px; color: #555; }
+  .fmt-opt.active { border-color: #07c160; background: #f0faf4; color: #0a8a48; }
+  .fmt-opt .fmt-name { font-weight: 600; font-size: 13px; }
+  .fmt-opt .fmt-desc { font-size: 11px; color: #999; margin-top: 2px; }
+  .date-row { display: flex; gap: 10px; }
+  .date-row label { flex: 1; }
+  .export-status { margin-top: 14px; font-size: 12px; color: #666; line-height: 1.8; }
+  .export-status .ok { color: #07c160; }
+  .export-status .bad { color: #fa5151; }
+
+  /* ---------- 空态/加载态 ---------- */
+  .placeholder { flex: 1; display: flex; flex-direction: column; gap: 8px;
+                 align-items: center; justify-content: center; color: #aaa; font-size: 13px; }
   .placeholder .big { font-size: 34px; }
-  .spinner {
-    width: 22px; height: 22px; border: 3px solid #e0e0e0; border-top-color: #07c160;
-    border-radius: 50%; animation: spin .8s linear infinite;
-  }
+  .spinner { width: 22px; height: 22px; border: 3px solid #e0e0e0; border-top-color: #07c160;
+             border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .err-card {
-    margin: 40px auto; max-width: 420px; background: #fff; border-radius: 10px;
-    padding: 22px 24px; box-shadow: 0 2px 8px rgba(0,0,0,.06); text-align: center;
-  }
+  .err-card { margin: 40px auto; max-width: 420px; background: #fff; border-radius: 10px;
+              padding: 22px 24px; box-shadow: 0 2px 8px rgba(0,0,0,.06); text-align: center; }
   .err-card h3 { color: #fa5151; font-size: 15px; margin-bottom: 8px; }
   .err-card p { color: #888; font-size: 12px; line-height: 1.7; }
   .err-card code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; color: #07c160; }
@@ -264,12 +326,13 @@
     </div>
   </header>
 
-  <!-- tab：控制台 / 数据浏览 -->
+  <!-- tab：控制台 / 数据浏览 / 数据统计 / 朋友圈 / 导出 -->
   <nav class="tabs">
     <button class="tab" :class="{active: tab === 'chat'}" @click="tab = 'chat'">控制台</button>
-    <button class="tab" :class="{active: tab === 'browse'}" @click="switchBrowse">
-      数据浏览{{ data.ready ? '' : '（首次进入需解密）' }}
-    </button>
+    <button class="tab" :class="{active: tab === 'browse'}" @click="switchBrowse">数据浏览</button>
+    <button class="tab" :class="{active: tab === 'stats'}" @click="switchStats">数据统计</button>
+    <button class="tab" :class="{active: tab === 'moments'}" @click="switchMoments">朋友圈</button>
+    <button class="tab" :class="{active: tab === 'export'}" @click="switchExport">导出</button>
   </nav>
 
   <!-- ==================== 控制台 ==================== -->
@@ -352,7 +415,7 @@
   </div>
 
   <!-- ==================== 数据浏览 ==================== -->
-  <div class="main" v-show="tab === 'browse'">
+  <div class="main browse" v-show="tab === 'browse'">
     <!-- 左：会话列表 -->
     <aside class="sess-col">
       <div class="sess-filters">
@@ -448,8 +511,213 @@
     </aside>
   </div>
 
+  <!-- ==================== 数据统计 ==================== -->
+  <div class="main" v-show="tab === 'stats'">
+    <div class="stats-wrap" ref="statsScroll">
+      <div class="placeholder" v-if="statsLoading">
+        <div class="spinner"></div>
+        <span>正在解密统计…（首次约 10 秒）</span>
+      </div>
+      <template v-else-if="stats.global">
+        <!-- 全局卡片 -->
+        <div class="stat-cards">
+          <div class="stat-card"><div class="num" v-text="fmtNum(stats.global.totalMessages)"></div><div class="lbl">总消息</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(stats.global.totalSessions)"></div><div class="lbl">会话</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(stats.global.totalContacts)"></div><div class="lbl">联系人</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(stats.global.textMessages)"></div><div class="lbl">文本消息</div></div>
+          <div class="stat-card"><div class="num" v-text="fmtNum(stats.global.mediaMessages)"></div><div class="lbl">媒体消息</div></div>
+          <div class="stat-card"><div class="num" style="font-size:16px" v-text="stats.global.timeRange.firstText + ' → ' + stats.global.timeRange.lastText"></div><div class="lbl">数据时间跨度</div></div>
+        </div>
+        <!-- 图表 -->
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h4>小时分布（几点最爱说话）</h4>
+            <svg class="chart-svg" viewBox="0 0 336 130" v-if="hourChart.length">
+              <g v-for="(b, i) in hourChart" :key="'h'+i">
+                <rect class="bar" :x="i*14+2" :y="120-b.h" :width="10" :height="Math.max(b.h, 1)" rx="2">
+                  <title>{{ b.label }}时：{{ b.count }} 条</title>
+                </rect>
+                <text class="axis" :x="i*14+7" :y="129" text-anchor="middle" v-if="i%3===0">{{ b.label }}</text>
+              </g>
+            </svg>
+          </div>
+          <div class="chart-card">
+            <h4>星期分布</h4>
+            <svg class="chart-svg" viewBox="0 0 336 130" v-if="weekdayChart.length">
+              <g v-for="(b, i) in weekdayChart" :key="'w'+i">
+                <rect class="bar" :x="i*46+8" :y="120-b.h" :width="34" :height="Math.max(b.h, 1)" rx="2">
+                  <title>周{{ b.label }}：{{ b.count }} 条</title>
+                </rect>
+                <text class="axis" :x="i*46+25" :y="129" text-anchor="middle">{{ b.label }}</text>
+              </g>
+            </svg>
+          </div>
+          <div class="chart-card">
+            <h4>月份分布（近 24 个月）</h4>
+            <div class="chart-scroll" v-if="monthChart.length">
+              <svg class="chart-svg" :viewBox="'0 0 ' + (monthChart.length*40+20) + ' 130'">
+                <g v-for="(b, i) in monthChart" :key="'m'+i">
+                  <rect class="bar" :x="i*40+10" :y="120-b.h" :width="28" :height="Math.max(b.h, 1)" rx="2">
+                    <title>{{ b.label }}：{{ b.count }} 条</title>
+                  </rect>
+                  <text class="axis" :x="i*40+24" :y="129" text-anchor="middle">{{ b.label.slice(2) }}</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+          <div class="chart-card">
+            <h4>联系榜 Top 10</h4>
+            <div class="contact-row" v-for="(c, i) in contactChart" :key="'c'+i">
+              <span class="cname" :title="c.displayName" v-text="(i+1) + '. ' + c.displayName"></span>
+              <span class="cbar" :style="{width: c.pct + '%'}"></span>
+              <span class="cval" v-text="fmtNum(c.messageCount)"></span>
+            </div>
+          </div>
+          <div class="chart-card">
+            <h4>关键词 Top 30
+              <button class="load-more" style="display:inline-block;margin:0 0 0 8px;padding:3px 12px;font-size:11px"
+                      :disabled="kwTask.status === 'running'" @click="startKeywords">
+                {{ kwTask.status === 'running' ? '统计中…' : (kwTask.status === 'done' ? '重新统计' : '开始统计') }}
+              </button>
+            </h4>
+            <div class="kw-list" v-if="kwTask.status === 'done'">
+              <span class="kw-item" v-for="(k, i) in kwTask.result.keywords" :key="'k'+i"
+                    :style="{fontSize: (12 + (30 - i) * 0.25) + 'px'}">
+                <b v-text="k.word"></b> {{ k.count }}
+              </span>
+            </div>
+            <p class="log-empty" v-else-if="kwTask.status === 'running'">
+              全库扫描中…已耗时 {{ kwTask.cost || 0 }}s
+            </p>
+            <p class="log-empty" v-else-if="kwTask.status === 'error'" style="color:#fa5151">
+              统计失败：{{ kwTask.error }}
+            </p>
+            <p class="log-empty" v-else>点「开始统计」——全库扫描，约十几秒到几十秒</p>
+            <div class="kw-meta" v-if="kwTask.status === 'done'">
+              扫描 {{ fmtNum(kwTask.result.scannedMessages) }} 条 · 耗时 {{ kwTask.result.cost }}s
+            </div>
+          </div>
+        </div>
+      </template>
+      <div class="err-card" v-else-if="statsErr">
+        <h3>统计加载失败</h3>
+        <p>{{ statsErr }}</p>
+        <p style="margin-top:10px">先跑 <code>mosu init --db-path &lt;目录&gt; --key &lt;hex&gt;</code> 配好数据源再试。</p>
+      </div>
+      <div class="placeholder" v-else><span class="big">📊</span><span>切换到本标签自动加载</span></div>
+    </div>
+  </div>
+
+  <!-- ==================== 朋友圈 ==================== -->
+  <div class="main" v-show="tab === 'moments'">
+    <div class="moments-wrap" ref="momentsScroll">
+      <p class="moments-tip" v-if="!moments.unsupported">
+        朋友圈图片取自微信服务器（远程地址），过期或本地没下载过可能打不开——失效会显示占位。
+        点赞/评论来自本地数据库。
+      </p>
+      <div class="placeholder" v-if="moments.loading && !moments.list.length">
+        <div class="spinner"></div>
+        <span>正在解析朋友圈…（首次约几秒）</span>
+      </div>
+      <div class="err-card" v-else-if="momentsErr">
+        <h3>朋友圈加载失败</h3><p>{{ momentsErr }}</p>
+      </div>
+      <template v-else-if="moments.list.length">
+        <div class="moment-card" v-for="m in moments.list" :key="m.id">
+          <div class="m-head">
+            <span class="m-author" v-text="m.author.displayName || m.author.wxid"></span>
+            <span class="m-time" v-text="fmtMsgTime(m.createTime)"></span>
+          </div>
+          <div class="m-text" v-text="m.contentText"></div>
+          <div class="m-media" v-if="m.mediaCount">
+            <template v-for="(u, i) in m.mediaUrls" :key="i">
+              <img v-if="!imgFailed[u]" :src="u" @error="imgFailed[u] = true">
+              <span v-else class="m-img-fail">[图片已失效]</span>
+            </template>
+          </div>
+          <div class="m-social" v-if="m.likes || m.comments">
+            <div class="likes" v-if="m.likes">
+              👍 {{ m.likeUsers && m.likeUsers.length ? m.likeUsers.join('、') : m.likes + ' 人' }}
+            </div>
+            <div class="m-comment" v-for="(c, i) in (m.commentList || [])" :key="i">
+              <b v-text="(c.displayName || c.username) + '：'"></b>{{ c.content }}
+            </div>
+          </div>
+        </div>
+        <button class="load-more" v-if="moments.hasMore" :disabled="moments.loading" @click="loadMoreMoments">
+          {{ moments.loading ? '加载中…' : '加载更早的朋友圈' }}
+        </button>
+        <p class="log-empty" v-else>—— 没有更多了 ——</p>
+      </template>
+      <div class="placeholder" v-else-if="moments.unsupported">
+        <span class="big">📷</span><span>该账号没有朋友圈数据（未找到 sns/sns.db）</span>
+      </div>
+      <div class="placeholder" v-else><span class="big">📷</span><span>暂无朋友圈</span></div>
+    </div>
+  </div>
+
+  <!-- ==================== 导出 ==================== -->
+  <div class="main" v-show="tab === 'export'">
+    <div class="export-wrap">
+      <div class="export-card">
+        <h3>导出会话</h3>
+        <div class="export-form">
+          <label class="field">会话（按消息数排序，可输入关键字过滤）
+            <input v-model="exportKw" placeholder="过滤会话名…">
+            <select v-model="exportForm.session" size="8">
+              <option v-for="s in filteredExportSessions" :key="s.sessionId" :value="s.sessionId">
+                {{ s.displayName }}（{{ fmtNum(s.messageCount) }} 条）
+              </option>
+            </select>
+          </label>
+          <label class="field">格式
+            <div class="fmt-row">
+              <div class="fmt-opt" :class="{active: exportForm.format === 'html'}" @click="exportForm.format = 'html'">
+                <div class="fmt-name">HTML</div><div class="fmt-desc">微信气泡式，图片内嵌，zip 打包</div>
+              </div>
+              <div class="fmt-opt" :class="{active: exportForm.format === 'json'}" @click="exportForm.format = 'json'">
+                <div class="fmt-name">JSON</div><div class="fmt-desc">完整字段，给脚本/AI 消费</div>
+              </div>
+              <div class="fmt-opt" :class="{active: exportForm.format === 'csv'}" @click="exportForm.format = 'csv'">
+                <div class="fmt-name">CSV</div><div class="fmt-desc">表格，Excel 可直接开</div>
+              </div>
+              <div class="fmt-opt" :class="{active: exportForm.format === 'txt'}" @click="exportForm.format = 'txt'">
+                <div class="fmt-name">TXT</div><div class="fmt-desc">纯文本对话流</div>
+              </div>
+            </div>
+          </label>
+          <div class="date-row">
+            <label class="field">从（可空）<input type="date" v-model="exportForm.from"></label>
+            <label class="field">到（可空）<input type="date" v-model="exportForm.to"></label>
+          </div>
+          <p class="log-empty" style="padding:4px 0;text-align:left"
+             v-if="exportForm.format === 'html'">
+            语音在 HTML 里以「时长+转写文字」呈现；要真音频请用 CLI 的 <code>mosu export --with-media</code>。
+          </p>
+          <button class="send-btn" style="padding:10px 0"
+                  :disabled="!exportForm.session || exportTask.status === 'running'"
+                  @click="doExport">
+            {{ exportTask.status === 'running' ? '导出中…' : '导出并下载' }}
+          </button>
+        </div>
+        <div class="export-status" v-if="exportTask.status">
+          <div v-if="exportTask.status === 'running'">
+            ⏳ 正在导出「{{ exportTask.session }}」…已耗时 {{ exportTask.cost || 0 }}s（大会话要等一会）
+          </div>
+          <div v-else-if="exportTask.status === 'done'">
+            <span class="ok">✓ 导出完成</span>（{{ exportTask.cost }}s）—— 浏览器应已开始下载；
+            没下动 <a href="#" @click.prevent="triggerDownload(exportTask)">点此重试</a>
+          </div>
+          <div v-else-if="exportTask.status === 'error'" class="bad">
+            ✗ 导出失败：{{ exportTask.error }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 数据源错误卡片 -->
-  <div class="err-card" v-if="data.error && tab === 'browse'">
+  <div class="err-card" v-if="data.error && tab !== 'chat'">
     <h3>数据源没配好</h3>
     <p>{{ data.error }}</p>
     <p style="margin-top:10px">
@@ -478,7 +746,25 @@ createApp({
       curSessId: "", curSession: null,
       chatMsgs: [], msgLoading: false, msgLoadingMore: false, msgOffset: 0,
       searchKw: "", hits: [], searchTotal: 0, searchLoading: false, searched: false,
+      // ---- 数据统计 ----
+      statsLoaded: false,
+      stats: { global: null, contacts: [], hour: [], weekday: [], month: [] },
+      statsLoading: false, statsErr: "",
+      kwTask: { id: "", status: "", cost: 0, result: null, error: "" },
+      // ---- 朋友圈 ----
+      momentsLoaded: false,
+      moments: { list: [], offset: 0, total: 0, hasMore: false, loading: false,
+                 cost: 0, unsupported: false },
+      momentsErr: "",
+      imgFailed: {},
+      // ---- 导出 ----
+      exportLoaded: false,
+      exportSessions: [], exportKw: "",
+      exportForm: { session: "", format: "html", from: "", to: "" },
+      exportTask: { id: "", status: "", cost: 0, result: null, error: "", session: "" },
+      // ---- 内部 ----
       _pendingSid: "", _openPending: null, _waitSid: null,
+      _kwTimer: null, _exportTimer: null,
     };
   },
   computed: {
@@ -501,15 +787,59 @@ createApp({
     serviceTitle() {
       return this.service.last_seen == null ? "无心跳记录" : this.service.last_seen + " 秒前";
     },
+    // ---- 图表计算属性（补零/重排/截断，不拼 SVG 字符串，防 XSS）----
+    hourChart() {
+      const dist = (this.stats.hour && this.stats.hour.distribution) || {};
+      const max = Math.max(1, ...Object.values(dist));
+      return Array.from({ length: 24 }, (_, h) => {
+        const label = String(h).padStart(2, "0");
+        const count = dist[label] || 0;
+        return { label, count, h: Math.round(count / max * 100) };
+      });
+    },
+    weekdayChart() {
+      const dist = (this.stats.weekday && this.stats.weekday.distribution) || {};
+      const max = Math.max(1, ...Object.values(dist));
+      // 后端键 "0".."6" 是周日~周六；重排为周一→周日
+      const order = ["1", "2", "3", "4", "5", "6", "0"];
+      const names = { "0": "日", "1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六" };
+      return order.map(k => {
+        const count = dist[k] || 0;
+        return { label: names[k], count, h: Math.round(count / max * 100) };
+      });
+    },
+    monthChart() {
+      const dist = (this.stats.month && this.stats.month.distribution) || {};
+      const keys = Object.keys(dist).sort();
+      const recent = keys.slice(-24);
+      const max = Math.max(1, ...recent.map(k => dist[k]));
+      return recent.map(k => ({ label: k, count: dist[k],
+                                h: Math.round(dist[k] / max * 100) }));
+    },
+    contactChart() {
+      const cs = (this.stats.contacts || []).slice(0, 10);
+      const max = Math.max(1, ...cs.map(c => c.messageCount));
+      return cs.map(c => ({ ...c, pct: Math.round(c.messageCount / max * 100) }));
+    },
+    filteredExportSessions() {
+      const kw = this.exportKw.trim().toLowerCase();
+      if (!kw) return this.exportSessions;
+      return this.exportSessions.filter(
+        s => (s.displayName || "").toLowerCase().includes(kw));
+    },
   },
   mounted() {
-    // ?tab=browse[&session=<wxid>] 可直达数据浏览/指定会话（收藏/演示用）
+    // ?tab=xxx[&session=<wxid>] 直达（收藏/演示用）
     try {
       const p = new URLSearchParams(location.search);
-      if (p.get("tab") === "browse") {
-        this.switchBrowse();
+      const t = p.get("tab");
+      if (["browse", "stats", "moments", "export"].includes(t)) {
+        if (t === "browse") this.switchBrowse();
+        else if (t === "stats") this.switchStats();
+        else if (t === "moments") this.switchMoments();
+        else if (t === "export") this.switchExport();
         const sid = p.get("session");
-        if (sid) {
+        if (sid && t === "browse") {
           this._pendingSid = sid;
           this._openPending = () => {
             const s = this.sessions.find(x => x.sessionId === sid);
@@ -524,8 +854,13 @@ createApp({
     this._t1 = setInterval(this.refreshStatus, 5000);
     this._t2 = setInterval(this.refreshLog, 3000);
   },
-  unmounted() { clearInterval(this._t1); clearInterval(this._t2); clearInterval(this._waitSid); },
+  unmounted() {
+    clearInterval(this._t1); clearInterval(this._t2); clearInterval(this._waitSid);
+    clearTimeout(this._kwTimer); clearTimeout(this._exportTimer);
+  },
   methods: {
+    fmtNum(n) { return (n == null ? "0" : n).toLocaleString(); },
+
     // ---------------- 控制台 ----------------
     async refreshStatus() {
       try {
@@ -707,6 +1042,172 @@ createApp({
       let h = 0;
       for (const ch of String(seed || "?")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
       return colors[h % colors.length];
+    },
+
+    // ---------------- 数据统计 ----------------
+    switchStats() {
+      this.tab = "stats";
+      if (!this.statsLoaded) {
+        this.statsLoaded = true;
+        this.loadStats();
+      }
+    },
+    async loadStats() {
+      this.statsLoading = true;
+      this.statsErr = "";
+      try {
+        const [g, c, h, w, m] = await Promise.all([
+          fetch("/api/stats/global").then(r => r.json()),
+          fetch("/api/stats/contacts?top=10").then(r => r.json()),
+          fetch("/api/stats/time?by=hour").then(r => r.json()),
+          fetch("/api/stats/time?by=weekday").then(r => r.json()),
+          fetch("/api/stats/time?by=month").then(r => r.json()),
+        ]);
+        if (g.error) throw new Error(g.error);
+        this.stats = { global: g, contacts: c.contacts || [],
+                       hour: h, weekday: w, month: m };
+      } catch (e) {
+        this.statsErr = String(e.message || e);
+      } finally {
+        this.statsLoading = false;
+      }
+    },
+    startKeywords() {
+      this.kwTask = { id: "", status: "running", cost: 0, result: null, error: "" };
+      fetch("/api/stats/keywords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ top: 30, max_msgs: 30000 }),
+      }).then(r => r.json()).then(d => {
+        if (d.error) {
+          this.kwTask = { id: "", status: "error", cost: 0, result: null, error: d.error };
+          return;
+        }
+        this.kwTask.id = d.taskId;
+        this.pollTask(this.kwTask, "kw");
+      }).catch(e => {
+        this.kwTask = { id: "", status: "error", cost: 0, result: null, error: String(e) };
+      });
+    },
+    pollTask(taskObj, which) {
+      const tick = () => {
+        fetch("/api/task?id=" + taskObj.id).then(r => r.json()).then(d => {
+          if (d.error) {
+            taskObj.status = "error"; taskObj.error = d.error;
+            return;
+          }
+          taskObj.status = d.status;
+          taskObj.cost = d.cost || 0;
+          taskObj.result = d.result;
+          taskObj.error = d.error || "";
+          if (d.status === "done" || d.status === "error") {
+            if (which === "export" && d.status === "done") this.triggerDownload(taskObj);
+            return;
+          }
+          if (which === "kw") this._kwTimer = setTimeout(tick, 1000);
+          else this._exportTimer = setTimeout(tick, 1000);
+        }).catch(() => {
+          if (which === "kw") this._kwTimer = setTimeout(tick, 2000);
+          else this._exportTimer = setTimeout(tick, 2000);
+        });
+      };
+      tick();
+    },
+
+    // ---------------- 朋友圈 ----------------
+    switchMoments() {
+      this.tab = "moments";
+      if (!this.momentsLoaded) {
+        this.momentsLoaded = true;
+        this.loadMoments(true);
+      }
+    },
+    async loadMoments(reset) {
+      if (reset) { this.moments.offset = 0; this.moments.list = []; }
+      this.moments.loading = true;
+      this.momentsErr = "";
+      try {
+        const d = await (await fetch(
+          `/api/moments?limit=30&offset=${this.moments.offset}`)).json();
+        if (d.error) throw new Error(d.error);
+        this.moments.list = this.moments.list.concat(d.entries || []);
+        this.moments.total = d.total;
+        this.moments.hasMore = d.hasMore;
+        this.moments.offset += (d.entries || []).length;
+        this.moments.cost = d.cost || 0;
+        this.moments.unsupported = d.unsupported;
+      } catch (e) {
+        this.momentsErr = String(e.message || e);
+      } finally {
+        this.moments.loading = false;
+      }
+    },
+    loadMoreMoments() { this.loadMoments(false); },
+
+    // ---------------- 导出 ----------------
+    switchExport() {
+      this.tab = "export";
+      if (!this.exportLoaded) {
+        this.exportLoaded = true;
+        this.loadExportSessions();
+      }
+    },
+    async loadExportSessions() {
+      try {
+        const d = await (await fetch("/api/sessions?limit=500")).json();
+        if (d.error) throw new Error(d.error);
+        this.exportSessions = (d.sessions || [])
+          .slice().sort((a, b) => b.messageCount - a.messageCount);
+      } catch (e) { /* 静默，用户可切回数据浏览触发 */ }
+    },
+    doExport() {
+      if (!this.exportForm.session) return;
+      this.exportTask = { id: "", status: "running", cost: 0, result: null,
+                          error: "", session: this.exportForm.session };
+      fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session: this.exportForm.session,
+          format: this.exportForm.format,
+          from: this.exportForm.from || undefined,
+          to: this.exportForm.to || undefined,
+        }),
+      }).then(r => r.json()).then(d => {
+        if (d.error) {
+          this.exportTask.status = "error";
+          this.exportTask.error = d.error;
+          return;
+        }
+        this.exportTask.id = d.taskId;
+        this.exportTask.session = d.session || this.exportForm.session;
+        this.pollTask(this.exportTask, "export");
+      }).catch(e => {
+        this.exportTask.status = "error";
+        this.exportTask.error = String(e);
+      });
+    },
+    async triggerDownload(taskObj) {
+      try {
+        const r = await fetch("/api/export/download?task=" + taskObj.id);
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          taskObj.error = d.error || ("HTTP " + r.status);
+          return;
+        }
+        const blob = await r.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        // 文件名与后端规则一致：html→会话名.zip；文本→会话名.ext
+        const fmt = (taskObj.result && taskObj.result.ext) || "zip";
+        a.download = (taskObj.session || "export") + "." + fmt;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        taskObj.error = String(e);
+      }
     },
   },
 }).mount("#app");

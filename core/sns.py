@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 import xml.etree.ElementTree as ET
 
 from core.msgparse import decompress
@@ -142,11 +143,12 @@ class Moments:
         return out
 
     def entries(self, limit: int = 20, user: str | None = None,
-                from_ts=None, to_ts=None) -> dict:
+                from_ts=None, to_ts=None, offset: int = 0) -> dict:
         con = self._con()
         if con is None:
             return {"entries": [], "total": 0, "limit": limit,
                     "meta": {"nativeSupported": False, "note": "未找到 sns/sns.db"}}
+        t0 = time.time()
         rows = []
         for r in con.execute("SELECT tid, user_name, content FROM SnsTimeLine"):
             c = r["content"]
@@ -184,5 +186,9 @@ class Moments:
                 e["commentList"] = e["commentList"] or it["commentList"]
         rows.sort(key=lambda x: x["createTime"], reverse=True)
         total = len(rows)
-        return {"entries": rows[:limit], "total": total, "limit": limit,
-                "meta": {"nativeSupported": True}}
+        # offset：本方法本就全表解析后内存排序切片，offset 零额外成本；
+        # GUI「加载更多」分页用（CLI 不传 offset，行为不变）
+        return {"entries": rows[offset:offset + limit], "total": total,
+                "limit": limit, "offset": offset,
+                "meta": {"nativeSupported": True,
+                         "cost": round(time.time() - t0, 2)}}

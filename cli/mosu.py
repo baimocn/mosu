@@ -693,24 +693,8 @@ def cmd_profile(args, ds: Dataset):
 
 # ---------------------------------------------------------------- export
 def _collect_rows(ds: Dataset, sess: dict, from_ts=None, to_ts=None):
-    """跨分片收集一个会话的消息（可限定时间范围），并把 sender id 统一到同一命名空间。"""
-    base_of = {sh["shard"]: (i + 1) * 10_000_000 for i, sh in enumerate(ds._shard_list(sess))}
-    out_rows, names, self_ids = [], {}, set()
-    for shard, r in ds.iter_session_rows(sess, from_ts, to_ts):
-        d = dict(r)
-        sid = d.get("real_sender_id")
-        if sid == ds.self_id(shard):
-            gid = 0
-            self_ids.add(0)
-            names[0] = ds.display_name(ds.self_username())
-        else:
-            gid = base_of.get(shard, 0) + (sid or 0)
-            if gid not in names:
-                names[gid] = ds.sender_names(shard).get(sid) or str(sid)
-        d["real_sender_id"] = gid
-        out_rows.append(d)
-    out_rows.sort(key=lambda d: (d.get("create_time") or 0, d.get("sort_seq") or 0))
-    return out_rows, names, 0
+    """跨分片收集（薄封装，实现在 Dataset.collect_session_rows，GUI 导出共用）。"""
+    return ds.collect_session_rows(sess, from_ts, to_ts)
 
 
 def _export_textual(ds: Dataset, sess: dict, out_file: Path, fmt: str, args,
