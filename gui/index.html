@@ -21,7 +21,7 @@
     [data-theme="dark"] #boot { background: #0d1117; color: #8b96a5; }
     #boot .mark {
       width: 44px; height: 44px; border-radius: 12px; margin: 0 auto 12px;
-      background: linear-gradient(140deg, #2f6feb, #7aa2ff);
+      background: linear-gradient(140deg, #1ac873, #07c160);
       display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 20px;
     }
   </style>
@@ -30,7 +30,7 @@
   <div id="app"></div>
   <div id="boot">
     <div style="text-align:center">
-      <div class="mark">墨</div>
+      <img class="mark" src="/assets/logo-512.png" alt="" />
       <div>墨溯启动中…</div>
     </div>
   </div>
@@ -52,7 +52,7 @@
       if (b && !document.querySelector(".app")) {
         b.innerHTML = '<div style="text-align:center;max-width:520px;padding:24px">'
           + '<div class="mark" style="background:#dc2626">!</div>'
-          + '<div style="font-weight:600;color:#0f172a;margin-bottom:6px">界面加载失败</div>'
+          + '<div style="font-weight:600;color:var(--text-2);margin-bottom:6px">界面加载失败</div>'
           + '<div style="font-size:13px">' + (e.message || "未知错误") + '</div>'
           + '<div style="font-size:12px;margin-top:8px">确认服务是从项目目录启动的（资源在 gui/assets/）</div>'
           + '</div>';

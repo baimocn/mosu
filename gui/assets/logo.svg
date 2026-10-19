@@ -1,30 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="100%" height="100%" role="img" aria-label="墨溯">
   <defs>
-    <linearGradient id="mosuBg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#12b46a"/>
-      <stop offset="0.55" stop-color="#07c160"/>
-      <stop offset="1" stop-color="#059748"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1ac873"/>
+      <stop offset="0.5" stop-color="#07c160"/>
+      <stop offset="1" stop-color="#03a251"/>
     </linearGradient>
-    <linearGradient id="mosuDrop" x1="0.2" y1="0" x2="0.8" y2="1">
+    <linearGradient id="tail" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#dff7e9"/>
+      <stop offset="1" stop-color="#e2f7ea"/>
     </linearGradient>
   </defs>
 
-  <!-- 底：圆角方（应用窗口的隐喻） -->
-  <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#mosuBg)"/>
-  <rect x="0" y="0" width="256" height="256" rx="58" fill="none"
-        stroke="#ffffff" stroke-opacity="0.16" stroke-width="2"/>
+  <!-- 底：圆角方。绿色是"墨溯"的品牌底，与微信同源但不混淆 -->
+  <rect x="0" y="0" width="256" height="256" rx="60" fill="url(#bg)"/>
+  <rect x="0" y="0" width="256" height="256" rx="60" fill="none"
+        stroke="#ffffff" stroke-opacity="0.14" stroke-width="2"/>
 
-  <!-- 墨滴：把「墨」具象化 -->
-  <path d="M128 46 C100 46 78 68 78 96 C78 138 128 208 128 208
-           C128 208 178 138 178 96 C178 68 156 46 128 46 Z"
-        fill="url(#mosuDrop)"/>
+  <!-- 对话气泡：产品形态的隐喻 —— 它是一个"可以被说话的对象" -->
+  <path d="M56 74h144a16 16 0 0 1 16 16v66a16 16 0 0 1-16 16H96l-26 26v-26H56
+           a16 16 0 0 1-16-16V90a16 16 0 0 1 16-16z"
+        fill="url(#tail)"/>
 
-  <!-- 滴内：往回追溯的时间线，末端箭头指向上方（回溯） -->
-  <g stroke="#059748" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <path d="M100 148 L120 128 L138 136 L156 104"/>
-    <path d="M143 104 L157 104"/>
-    <path d="M157 104 L157 118"/>
+  <!-- 三道声波弧：由内向外递减，表示"在听"而不是"在说" -->
+  <g fill="none" stroke="#07c160" stroke-width="11" stroke-linecap="round">
+    <path d="M126 118.3a18 18 0 0 1 0 23.4" stroke-opacity="0.95"/>
+    <path d="M141 106.9a32 32 0 0 1 0 46.2" stroke-opacity="0.72"/>
+    <path d="M156 95.6a46 46 0 0 1 0 68.8" stroke-opacity="0.42"/>
   </g>
 </svg>

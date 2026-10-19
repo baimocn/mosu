@@ -72,6 +72,10 @@ body {
 .brand-name { font-size: var(--fs-16); font-weight: 650; letter-spacing: 0.02em; }
 .brand-sub { font-size: var(--fs-11); color: var(--text-3); }
 .collapsed .brand-text, .collapsed .nav-label, .collapsed .side-foot-text { display: none; }
+/* 折叠态：分组标题与徽标在 68px 轨道里会换行/撑破，直接隐藏；图标整体居中 */
+.collapsed .nav-group-title, .collapsed .nav-badge { display: none; }
+.collapsed .brand { justify-content: center; padding-inline: 0; }
+.collapsed .nav-item { justify-content: center; padding-inline: 0; }
 
 .nav { flex: 1; overflow-y: auto; padding: var(--sp-2) var(--sp-2) var(--sp-4); }
 .nav-group { margin-top: var(--sp-3); }
@@ -339,7 +343,7 @@ textarea.input { height: auto; padding: var(--sp-2) var(--sp-3); resize: vertica
 }
 .progress-bar {
   height: 100%; border-radius: var(--r-full);
-  background: linear-gradient(90deg, var(--brand), #7aa2ff);
+  background: var(--grad-brand);
   transition: width var(--dur) var(--ease);
 }
 .progress-bar.indeterminate {
@@ -439,6 +443,10 @@ textarea.input { height: auto; padding: var(--sp-2) var(--sp-3); resize: vertica
   cursor: pointer; font-size: var(--fs-13);
 }
 .cmdk-item.active { background: var(--bg-active); color: var(--brand); }
+/* 命令面板的图标跟着行色走：否则会出现"绿标题 + 灰图标"的割裂 */
+.cmdk-item .nav-icon .ico { color: var(--text-3); }
+.cmdk-item:hover .nav-icon .ico,
+.cmdk-item.active .nav-icon .ico { color: var(--brand); }
 .cmdk-key {
   margin-left: auto; font-size: var(--fs-11); color: var(--text-4);
   font-family: var(--font-mono);

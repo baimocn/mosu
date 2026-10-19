@@ -206,8 +206,8 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（83 例）
-docs/                  命令速查、媒体格式、SQLCipher 参数说明
+tests/                 离线测试（140 例）
+docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
 ```
 
 ## 路线图

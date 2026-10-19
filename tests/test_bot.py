@@ -134,7 +134,7 @@ class TestBotService(unittest.TestCase):
         self.tmp.cleanup()
 
     def _bot(self, replies):
-        bot = BotService(self.corpus)
+        bot = BotService(self.corpus, store=None)   # 单测走纯内存，不落盘
         bot.llm = MockLlm(replies)
         return bot
 
@@ -198,7 +198,7 @@ class TestSemanticCache(unittest.TestCase):
         self.tmp.cleanup()
 
     def _bot(self, replies):
-        bot = BotService(self.corpus)
+        bot = BotService(self.corpus, store=None)   # 单测走纯内存，不落盘
         bot.llm = MockLlm(replies)
         return bot
 

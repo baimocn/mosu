@@ -7,6 +7,7 @@
 (function (global) {
   "use strict";
   const M = global.Mosu;
+  const ico = (n) => (global.MosuIcons && global.MosuIcons[n]) || "";
 
   const Lightbox = {
     name: "Lightbox",
@@ -53,6 +54,7 @@
       window.removeEventListener("keydown", this.onKey);
     },
     methods: {
+      ico,
       reset() {
         this.zoom = 1; this.ox = 0; this.oy = 0;
         this.reloadKey++;
@@ -113,7 +115,8 @@
     <div class="lightbox" @click.self="close"
          @wheel.prevent="wheel" @mousedown="onDown"
          @mousemove="onMove" @mouseup="onUp" @mouseleave="onUp">
-      <button class="lightbox-close" @click="close" title="关闭（Esc）">✕</button>
+      <button class="lightbox-close" @click="close" title="关闭（Esc）"
+              v-html="ico('close')"></button>
 
       <div class="lightbox-stage" @click="zoom < 1 ? 0 : (zoom = 1, ox = 0, oy = 0)">
         <img v-if="displaySrc" :key="reloadKey" :src="displaySrc"
@@ -138,7 +141,8 @@
             </template>
           </div>
           <button class="btn btn-sm" style="margin-top:10px" @click="retry"
-                  v-if="stage==='error'">重新加载</button>
+                  v-if="stage==='error'"><span class="nav-icon"
+                  style="width:14px;height:14px" v-html="ico('retry')"></span>重新加载</button>
         </div>
       </div>
 

@@ -80,7 +80,46 @@
 | `core/wechat.py` | 微信侧解析 `/倾听` 等指令并回执 |
 | `tests/test_persona.py` | 16 例：注册表完整性、指令解析、prompt 组装、缓存隔离 |
 
-## 扩展一个角色
+## 会话记录与上下文
+
+### 存哪儿
+
+| 内容 | 位置 | 格式 |
+|------|------|------|
+| 对话上下文 | `~/.mosu/conversations/<安全名>-<hash8>.json` | `{convId, updatedAt, items:[{role,content}]}` |
+| 语义缓存 | 进程内存（FIFO 200 条），不落盘 | — |
+| 微信凭据与游标 | `~/.mosu/wechat.json`、`wechat_sync.json` | — |
+
+`MOSU_HOME` 可覆盖整个 `~/.mosu` 位置。文件名里的 `<hash8>` 是会话 id 的 MD5 前
+8 位——wxid 含 `@` 和中文，直接当文件名在 Windows 上有坑，哈希同时避免
+`wxid_a1` 与 `wxid_a12` 撞名。
+
+### 怎么用
+
+- 每个会话保留最近 **20 轮**（一轮 = 用户一条 + 助手一条），超出即丢最旧的
+- 加载时机：某会话**首次**被访问时从磁盘补齐（`self._loaded` 保证不重复载入）
+- 保留 30 天，过期视为空（下次写入时覆盖）
+- 磁盘不可写、文件损坏一律**静默降级为纯内存**，不让存档失败影响聊天
+- 关闭：`MOSU_BOT_HISTORY=0`，或构造时 `BotService(..., store=None)`
+
+### 隐私
+
+对话上下文是**明文**存在你本机 `~/.mosu/conversations/`。要清空直接删这个目录，
+或调 `ConversationStore.clear()`。
+
+### 一条容易踩的坑
+
+`store` 参数用哨兵值区分三态：
+
+```python
+BotService(corpus)                     # 落盘启用（产品默认）
+BotService(corpus, store=None)         # 纯内存，不读不写
+BotService(corpus, store=my_store)     # 自定义
+```
+
+早期实现写成 `store if store is not None else ConversationStore(...)`，导致
+`store=None`（本意是禁用）反而创建了默认 store，单测因此读到了磁盘上的历史。
+`tests/conftest.py` 统一把 `MOSU_HOME` 指到临时目录，避免测试污染真实数据。
 
 在 `PERSONAS` 里加一条即可，缓存键、GUI、微信指令、统计都会自动派生：
 

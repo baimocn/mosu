@@ -65,10 +65,13 @@ def _cache_key(query: str, persona: str) -> str:
     return f"{persona}:{_norm_key(query)}"
 
 
+_UNSET = object()   # 区分「没传 store」（启用落盘）与「显式传 None」（纯内存）
+
+
 class BotService:
     def __init__(self, corpus_path: str | Path, retriever=None, checker=None,
                  llm=None, max_retries: int = 2, history_limit: int = 20,
-                 sample_mode: bool = False):
+                 sample_mode: bool = False, store=_UNSET):
         """
         sample_mode: True 时用随机抽样代替相关性检索（消融对照用）。
         history_limit: 每个会话保留的最大历史条数（防内存无界增长）。
@@ -91,6 +94,12 @@ class BotService:
         self.personas = P
         self.persona_id = P.DEFAULT_PERSONA
         self.ds = None                     # 注入 Dataset 后，分析者/安慰者才有事实
+        # ---- 上下文持久化：常驻进程重启后仍能接上话 ----
+        # 不传 → 落盘启用；显式传 None → 纯内存（单测与嵌入式用）
+        from core.bot.store import ConversationStore
+        self.store = (ConversationStore(limit=history_limit)
+                      if store is _UNSET else store)
+        self._loaded: set[str] = set()   # 记录哪些会话已从磁盘载入过
         # ---- 语义缓存：高频短问题（问候/确认类）命中直接回，省额度省延迟 ----
         # 边界从严：只缓存「通过校验且 <= cache_max_len 字」的回复——
         # 长回复往往依赖上下文，缓存会露馅；MOSU_BOT_CACHE=0 可关
@@ -112,13 +121,28 @@ class BotService:
         while len(self._cache) > self.cache_limit:      # FIFO 淘汰最旧
             self._cache.pop(next(iter(self._cache)))
 
+    def _history(self, conv_id: str | None) -> list[dict]:
+        """取该会话的上下文；首次访问时从磁盘补齐。"""
+        cid = conv_id or "default"
+        hist = self.history.setdefault(cid, [])
+        if self.store is not None and cid not in self._loaded:
+            self._loaded.add(cid)
+            saved = self.store.load(cid)
+            if saved and not hist:
+                hist.extend(saved[-self.history_limit * 2:])
+        return hist
+
     def _record_history(self, conv_id: str | None, query: str, reply: str) -> None:
         cid = conv_id or "default"
         hist = self.history.setdefault(cid, [])
-        hist.extend([{"role": "user", "content": query},
-                     {"role": "assistant", "content": reply}])
+        turn = [{"role": "user", "content": query},
+                {"role": "assistant", "content": reply}]
+        hist.extend(turn)
         if len(hist) > self.history_limit * 2:
             del hist[:-self.history_limit * 2]
+        # 同步落盘：常驻进程重启后上下文还在（store 失败会静默降级为纯内存）
+        if self.store is not None:
+            self.store.append(conv_id, turn)
 
     @property
     def llm(self):
@@ -169,7 +193,7 @@ class BotService:
             msgs.append({"role": "user",
                          "content": REF_TMPL.format(n=len(retrieved), blocks=blocks)})
             msgs.append({"role": "assistant", "content": "知道了，我按这个语气回复，不照抄。"})
-        for h in self.history.get(conv_id or "", [])[-self.history_limit:]:
+        for h in self._history(conv_id)[-self.history_limit:]:
             msgs.append(h)
         msgs.append({"role": "user", "content": query})
         return msgs
@@ -231,10 +255,11 @@ class BotService:
         return self.personas.get(self.persona_id)
 
     def preview_prompt(self, query: str, topk: int = 5,
-                       persona: str | None = None) -> dict:
+                       persona: str | None = None,
+                       conv_id: str | None = None) -> dict:
         """不调 LLM，只看 prompt 组装（调试/审查用）。"""
         p = self.personas.get(persona or self.persona_id)
         retrieved = self._retrieve(query, topk) if p.id == "mimic" else []
-        return {"messages": self._build_messages(query, retrieved, None, persona=p),
+        return {"messages": self._build_messages(query, retrieved, conv_id, persona=p),
                 "retrieved": retrieved,
                 "persona": p.id}

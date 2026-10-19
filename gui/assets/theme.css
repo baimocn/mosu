@@ -79,7 +79,7 @@
   --bg-surface-2: #fafbfc;
   --bg-inset: #eef1f5;
   --bg-hover: rgba(15, 23, 42, 0.045);
-  --bg-active: rgba(47, 111, 235, 0.09);
+  --bg-active: rgba(14, 158, 86, 0.1);
   --bg-sidebar: #ffffff;
   --bg-topbar: rgba(255, 255, 255, 0.82);
 
@@ -91,7 +91,7 @@
 
   --border: #e3e8ef;
   --border-strong: #cbd5e1;
-  --border-focus: #2f6feb;
+  --border-focus: #0e9e56;
 
   --brand: #0e9e56;
   --brand-hover: #0b8548;
@@ -138,8 +138,8 @@
   --heat-5: #0d7c42;
 
   /* 图表序列色（自绘 SVG 用，深浅主题各自校准过对比度） */
-  --c1: #2f6feb;
-  --c2: #06b6d4;
+  --c1: #0e9e56;
+  --c2: #35c98a;
   --c3: #f59e0b;
   --c4: #a855f7;
   --c5: #ef4444;
@@ -156,7 +156,7 @@
   --bg-surface-2: #1a212b;
   --bg-inset: #0f151c;
   --bg-hover: rgba(255, 255, 255, 0.06);
-  --bg-active: rgba(88, 140, 255, 0.16);
+  --bg-active: rgba(47, 185, 110, 0.16);
   --bg-sidebar: #11171f;
   --bg-topbar: rgba(21, 27, 35, 0.82);
 
@@ -168,7 +168,7 @@
 
   --border: #232c38;
   --border-strong: #303b49;
-  --border-focus: #588cff;
+  --border-focus: #2fb96e;
 
   --brand: #2fb96e;
   --brand-hover: #46c982;
@@ -211,8 +211,8 @@
   --heat-4: #27b76c;
   --heat-5: #4dd98f;
 
-  --c1: #588cff;
-  --c2: #22d3ee;
+  --c1: #2fb96e;
+  --c2: #5fd9a2;
   --c3: #fbbf24;
   --c4: #c084fc;
   --c5: #f87171;

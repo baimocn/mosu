@@ -64,11 +64,11 @@
         </nav>
         <div class="side-foot">
           <button class="nav-item" @click="collapsed=!collapsed">
-            <span class="nav-icon">{{ collapsed ? '»' : '«' }}</span>
+            <span class="nav-icon" v-html="icon(collapsed ? 'chevronRight' : 'chevronLeft')"></span>
             <span class="nav-label side-foot-text">收起</span>
           </button>
           <button class="nav-item" @click="toggleTheme">
-            <span class="nav-icon">{{ theme==='dark' ? '☀' : '☾' }}</span>
+            <span class="nav-icon" v-html="icon(theme==='dark' ? 'sun' : 'moon')"></span>
             <span class="nav-label side-foot-text">
               {{ theme==='dark' ? '浅色' : '深色' }}
             </span>
@@ -78,7 +78,8 @@
 
       <div class="main">
         <header class="topbar">
-          <button class="btn btn-ghost btn-icon" @click="cmdkOpen=true" title="命令面板 Ctrl+K">⌘</button>
+          <button class="btn btn-ghost btn-icon" @click="cmdkOpen=true"
+              title="命令面板 Ctrl+K"><span class="nav-icon" v-html="icon('command')"></span></button>
           <div>
             <div class="topbar-title">{{ currentName }}</div>
             <div class="topbar-sub">{{ statusLine }}</div>

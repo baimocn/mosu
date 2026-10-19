@@ -196,7 +196,7 @@
   function avatarColor(name) {
     let h = 0;
     for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-    const hues = [210, 145, 275, 20, 340, 190, 45];
+    const hues = [145, 20, 275, 340, 190, 45, 100];
     return `hsl(${hues[h % hues.length]} 62% 92%)`;
   }
 
