@@ -93,9 +93,13 @@ mosu bot test "在吗" --corpus persona/corpus.jsonl
 mosu bot serve --port 8787                 # HTTP 服务：POST /chat {message, conversation_id?}
 ```
 bot 环境变量：MOSU_BOT_API_KEY / MOSU_BOT_BASE_URL / MOSU_BOT_MODEL /
-MOSU_BOT_PORT / MOSU_BOT_CORPUS。RAG 检索样本只作风格锚点（prompt 明确要求
-不照抄），回复超长/AI 腔/感叹号过多/疑似照抄都会被规则打回重生成（最多 3 次）。
+MOSU_BOT_PORT / MOSU_BOT_CORPUS / MOSU_BOT_CACHE（=0 关闭语义缓存）。
+RAG 检索样本只作风格锚点（prompt 明确要求不照抄），回复超长/AI 腔/感叹号
+过多/疑似照抄都会被规则打回重生成（最多 3 次）。
 发给云端的只有「当前对话 + 几条参考样本」，语料库本身不出本机。
+**语义缓存**：高频短问题（归一化去标点空白，「在吗/在吗？/在 吗」同键）
+命中后 0 LLM 调用直接回（实测 3.5s → 0ms）；只缓存「通过校验且 ≤20 字」
+的短回复，长回复不缓存（避免上下文不匹配露馅）。
 
 # 画像蒸馏（不给会话名=全库个人画像）
 mosu profile                              # 全库：作息/社交图谱/话题/风格/月度/侧写
