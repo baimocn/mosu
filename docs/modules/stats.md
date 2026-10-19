@@ -61,9 +61,12 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 
 ### `GET /api/stats/time`
 
-| 参数 | 取值 | 默认 |
-|------|------|------|
-| `by` | `hour` / `weekday` / `month` / `date` | `hour` |
+| 参数 | 取值 | HTTP 默认 | 函数默认 |
+|------|------|-----------|----------|
+| `by` | `hour` / `weekday` / `month` / `date` | `hour` | **`month`** |
+
+> 两层默认值不同：直接调 `Analytics.time_stats()` 不传 `by` 拿到的是**按月**，
+> 走 HTTP 才拿到按小时。
 
 四种取值的键格式**不同**，接入时务必按下表处理：
 
@@ -82,10 +85,12 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 
 ### `POST /api/stats/keywords`
 
-| 参数 | 类型 | 约束 |
-|------|------|------|
-| `top` | int | 1–100，越界 400 |
-| `max_msgs` | int | 1000–200000，越界 400 |
+| 参数 | 类型 | 默认 | 约束 |
+|------|------|------|------|
+| `top` | int | 30 | 1–100，越界 400 |
+| `max_msgs` | int | 20000 | 1000–200000，越界 400 |
+
+> 注意 `top=0` 会被 `or 30` 吞掉变成 30，**不触发 400**。
 
 ```json
 {"taskId": "a1b2c3", "status": "running"}
@@ -144,8 +149,11 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 
 ## 测试
 
-`tests/test_insight_invariants.py` 固化了三条契约：`weekday` 桶名与
-`WEEKDAY_NAMES` 逐日对齐、`hour` 用字符串键、类型映射不含幻觉类型。
+`tests/test_insight_invariants.py` 固化了：`weekday` 桶名与 `WEEKDAY_NAMES`
+逐日对齐、`insights` 不做未计算的推断、采样倒序能力、`social` 用 wxid 作键、
+markdown 空库不崩、`/api/contact` 子串兜底唯一性。
+
+`hour` 的字符串键与类型映射目前**没有**测试覆盖。
 
 `global_stats` / `contact_stats` / `time_stats` / `keyword_stats` 本身目前**无单测**
 （真实数据依赖太重），四个端点也无 HTTP 层测试。优先补测项：`time_stats` 四种

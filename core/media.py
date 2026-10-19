@@ -90,8 +90,8 @@ def decode_v2(raw: bytes, aes_key: bytes | None = None) -> bytes | None:
         if 15 + aes_size + 16 + xor_size != len(raw) or aes_size == 0:
             return None
         head = AES.new(key, AES.MODE_ECB).decrypt(raw[15 : 15 + aes_size])[:aes_size]
-        # xor_key 从尾部反推（JPEG 以 FF D9 结束），反推失败则用全局 0x3D
-        xk = raw[-2] ^ 0xFF if raw[-1] ^ 0xD9 == 0 or True else XOR_KEY
+        # 尾部是固定单字节 XOR（全局 0x3D）。曾有一段「从 JPEG 尾标记反推 xor_key」
+        # 的代码，但条件恒真且结果从未被使用，等于死代码 —— 已删除。
         tail = bytes(b ^ XOR_KEY for b in raw[15 + aes_size + 16 :])
         return head + tail
     except Exception:

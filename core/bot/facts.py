@@ -55,6 +55,14 @@ class FactBuilder:
         self.budget = total_budget
         self._t0 = time.time()
 
+    def _spent(self) -> float:
+        return time.time() - self._t0
+
+    def _out_of_budget(self) -> bool:
+        """整体预算用尽后，后续查询一律跳过 —— 聊天场景下宁可少给事实，
+        也不能让对方等二十秒。"""
+        return self._spent() > self.budget
+
     # ------------------------------------------------------------------ 解析对象
     def resolve_session(self) -> dict | None:
         if not self.hint:
@@ -79,6 +87,8 @@ class FactBuilder:
     # ------------------------------------------------------------------ 事实
     def global_facts(self) -> list[str]:
         out: list[str] = []
+        if self._out_of_budget():
+            return out
         try:
             g = _guarded(lambda: _global(self.ds), [])
             if g:
@@ -91,7 +101,7 @@ class FactBuilder:
         """针对某一个会话/联系人的关系事实。"""
         out: list[str] = []
         sess = self.resolve_session()
-        if not sess:
+        if not sess or self._out_of_budget():
             return out
         name = sess.get("displayName") or sess.get("sessionId")
         try:
@@ -141,6 +151,8 @@ class FactBuilder:
 
     def rhythm_facts(self) -> list[str]:
         out: list[str] = []
+        if self._out_of_budget():
+            return out
         try:
             agg = _guarded(lambda: _hours(self.ds), {})
             if agg:
@@ -179,9 +191,10 @@ def _fmt_score(v) -> str:
     return f"中性（{v:+.2f}）"
 
 
+# 键集合必须与 dataset.KIND_BY_TYPE 的产出严格一致（含未命中的 other）。
+# 曾经多一个 "link"，而后端根本不产出该类型 —— 幻觉映射。
 _KNAME = {"text": "文本", "image": "图片", "voice": "语音", "video": "视频",
-          "file": "文件", "emoji": "表情", "system": "系统", "link": "链接",
-          "other": "其他"}
+          "file": "文件", "emoji": "表情", "system": "系统", "other": "其他"}
 
 
 def _guarded(fn, default):

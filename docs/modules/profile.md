@@ -86,7 +86,7 @@ hourlyTheirs:[int×24], monthly:[{month,count}]}`。前端能同时渲染是因�
 | `sentiment.avg` | 中文情感词典逐条打分（−1~1）后平均；单条 ±0.15 以内记中性 |
 | `lengthTrend` | 后半程平均消息长度 vs 前半程：> 1.15 倍记「变长」，< 0.85 倍记「变短」，否则「持平」 |
 
-### `insights` 的 8 条触发规则
+### `insights` 的触发规则（最多产出 8 条）
 
 `insights` 由 `_self_insights()` 按固定规则生成，**非 AI 生成、可复现**：
 

@@ -87,7 +87,6 @@ class TestPromptAssembly(unittest.TestCase):
         msgs = svc.preview_prompt("你好", persona="analyst")["messages"]
         sys_msg = msgs[0]["content"]
         self.assertIn("分析者", sys_msg)
-        self.assertIn("只能引用", sys_msg.replace("\n", " ")) if False else None
         self.assertIn("红线", sys_msg)
 
     def test_mimic_has_no_persona_header(self):

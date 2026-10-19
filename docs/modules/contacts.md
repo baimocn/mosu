@@ -17,6 +17,8 @@
 
 > ⚠️ 这与 `/api/sessions` 的 `type` **不是同一套词表**：后者用 `_session_type()`，
 > 值域只有 `private | group | mp`，永远不会返回 `friend` / `former_friend` / `other`。
+两套判定还不一致：`_session_type()` 只认 `gh_` 前缀，`contact_type()` 额外认
+`wxid_gh` 前缀——同一个公众号在两处可能得到不同类型。
 > 前端共用同一个中文映射表掩盖了这个差异。两套词表统一是遗留项。
 
 `former_friend` 的文案是「已删除（保留聊天记录）」，但判定**只看 `delete_flag`**，
@@ -38,7 +40,7 @@
 ```json
 {"contacts": [{"wxid": "...", "displayName": "AI coding", "type": "group",
                "messageCount": 149369, "remark": "", "nickname": ""}],
- "total": 3742}
+ "total": 3742, "hasMore": true}
 ```
 
 **搜索不匹配 `alias`（微信号）**，但详情页会展示它——「搜得到但搜不到」的观感来自
@@ -74,8 +76,9 @@
 
 1. **往来统计不在顶层**，而在 `sessions[].stats` 里。同一联系人若存在多个会话，
    每个会话各自带一份统计；详情页需要跨会话合并。
-2. `groupTop` / `groupTotal` **仅群聊有**，且仅在「type 是 group 且 sessions 非空」
-   时写入；`group_stats` 抛 `SystemExit` 时这两个键**都不出现**。
+2. `groupTop` **恒存在**（好友返回 `[]`），但为空数组；`groupTotal` **仅群聊有**，
+   且仅在「type 是 group 且 sessions 非空」且 `group_stats` 成功时写入，失败时该键
+   整个缺失。前端用 `detail.groupTotal || 0` 兜住。
 3. `sessions[].stats` 在会话找不到时为 `null`。
 
 **wxid 不在通讯录时**的兜底：先做子串匹配，**只在唯一命中时**才采用命中项；
