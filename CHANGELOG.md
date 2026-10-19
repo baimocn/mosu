@@ -3,6 +3,39 @@
 本项目的重大变更都记录在此。格式遵循
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.3.0] - 2026-10
+
+### 新增
+
+- **密钥自动获取**（`mosu key find` / GUI 首启向导）——新电脑零门槛：
+  - 只读内存扫描（`ReadProcessMemory`，不注入不 hook），微信 4.1.15.13 实测
+    还原密钥与 HMAC 权威校验逐字节一致，约 30 秒
+  - 原理：版本 XOR 掩码从 `Weixin.dll` 代码段静态提取（零依赖 PE 解析），
+    堆内结构锚点定位候选，PBKDF2+HMAC 并行校验（hashlib 释放 GIL，8 线程）
+  - 环境预检 `/api/key/selftest`（进程/dll/掩码/数据目录逐项检查）
+  - 失败降级：手动填密钥 / 诊断摘要（不含敏感值）交给任意大模型分析
+- **GUI 全面重做为工业级界面**（设计系统 + 应用外壳 + 组件化）：
+  - 设计令牌双主题（浅/深/跟随系统），改主题不动组件
+  - 侧边栏分组导航、命令面板（Ctrl+K）、Toast、骨架屏、空态、灯箱
+  - 首启向导：欢迎 → 环境检测 → 一键取密钥（SSE 实时进度，可取消）→ 完成
+  - 数据浏览：会话搜索/筛选高亮、按天分组、连续消息归并、向上翻页保滚动位
+  - 统计/画像/年报自适应渲染（结构化递归组件，任何数据结构不白屏）
+  - 设置页：密钥管理、大模型配置（URL/API Key/模型 + 连通性测试）、外观
+- **大模型配置持久化**（`core/llmconfig.py`）：GUI 里填 URL/API Key/模型名，
+  落 `~/.mosu/config.json`；环境变量优先；`/api/llm/test` 真实连通性测试；
+  LlmClient 自动读配置（核心功能依然全离线，不需要大模型）
+- `mosu key find` 子命令（`--no-save` 只看不写）
+- `gui/assets/`：前端拆分模块（theme/app.css + core/views/app.js），无构建链
+
+### 修复
+
+- `/api/status` 的 `data.ready` 误用懒加载状态（进程刚启动必然 false，
+  导致每次重启都误弹首启向导）→ 改为判定配置链（密钥+目录）
+- 撤回消息显示原始 `<sysmsg>` XML → 翻译成「撤回了一条消息」等可读文本
+- `/api/messages` 契约补齐：稳定 id、createTime、senderName/senderId、
+  hasMore 分页元数据（前端向上翻页与归并依赖）
+- 静态资源路由泛化为 `/vendor/` + `/assets/` 双目录（前端拆分后所需）
+
 ## [0.2.0] - 2026-10
 
 ### 新增

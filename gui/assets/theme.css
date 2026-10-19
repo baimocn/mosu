@@ -1,0 +1,176 @@
+/* ==========================================================================
+   墨溯 · 设计令牌（Design Tokens）
+   所有颜色/间距/圆角/阴影/动效只在这里定义一次，其余样式一律引用变量。
+   改主题 = 改这一层，组件不写死颜色。
+   ========================================================================== */
+
+:root {
+  /* ---- 字族 ---- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Source Han Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    Menlo, monospace;
+
+  /* ---- 字阶（1.2 倍率，中文可读性调过） ---- */
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --fs-22: 22px;
+  --fs-28: 28px;
+  --fs-34: 34px;
+
+  /* ---- 行高 ---- */
+  --lh-tight: 1.3;
+  --lh-normal: 1.6;
+  --lh-relaxed: 1.75;
+
+  /* ---- 间距（4px 基准） ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ---- 圆角 ---- */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  /* ---- 动效 ---- */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 320ms;
+
+  /* ---- 层级 ---- */
+  --z-sticky: 10;
+  --z-dropdown: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}
+
+/* --------------------------------------------------------------------------
+   浅色主题（默认）
+   底色不是纯白：纯白在大屏上刺眼，用带一点蓝的浅灰更耐看
+   -------------------------------------------------------------------------- */
+:root,
+[data-theme="light"] {
+  --bg-app: #f4f6f9;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #fafbfc;
+  --bg-inset: #eef1f5;
+  --bg-hover: rgba(15, 23, 42, 0.045);
+  --bg-active: rgba(47, 111, 235, 0.09);
+  --bg-sidebar: #ffffff;
+  --bg-topbar: rgba(255, 255, 255, 0.82);
+
+  --text-1: #0f172a;
+  --text-2: #475569;
+  --text-3: #64748b;
+  --text-4: #94a3b8;
+  --text-invert: #ffffff;
+
+  --border: #e3e8ef;
+  --border-strong: #cbd5e1;
+  --border-focus: #2f6feb;
+
+  --brand: #2f6feb;
+  --brand-hover: #2563d6;
+  --brand-soft: rgba(47, 111, 235, 0.1);
+  --brand-text: #ffffff;
+
+  --wechat: #07c160;           /* 微信绿：只用于「我发出的气泡」等语义位置 */
+  --wechat-soft: rgba(7, 193, 96, 0.12);
+  --warn: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.12);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.1);
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.12);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 14px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.14);
+  --shadow-pop: 0 8px 30px rgba(15, 23, 42, 0.16);
+
+  --skeleton: linear-gradient(90deg, #eef1f5 25%, #e4e9f0 37%, #eef1f5 63%);
+  --bubble-in: #ffffff;
+  --bubble-out: #95ec69;       /* 微信气泡绿，用户心智最熟 */
+  --bubble-out-text: #0f172a;
+  --code-bg: #f1f5f9;
+}
+
+/* --------------------------------------------------------------------------
+   深色主题
+   不是把浅色反过来：对比度整体压低一档，避免深色上纯白文字的眩光
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] {
+  --bg-app: #0d1117;
+  --bg-surface: #151b23;
+  --bg-surface-2: #1a212b;
+  --bg-inset: #0f151c;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(88, 140, 255, 0.16);
+  --bg-sidebar: #11171f;
+  --bg-topbar: rgba(21, 27, 35, 0.82);
+
+  --text-1: #e6edf3;
+  --text-2: #adb7c4;
+  --text-3: #8b96a5;
+  --text-4: #6e7787;
+  --text-invert: #0d1117;
+
+  --border: #232c38;
+  --border-strong: #303b49;
+  --border-focus: #588cff;
+
+  --brand: #588cff;
+  --brand-hover: #6f9dff;
+  --brand-soft: rgba(88, 140, 255, 0.16);
+  --brand-text: #0d1117;
+
+  --wechat: #2eb872;
+  --wechat-soft: rgba(46, 184, 114, 0.16);
+  --warn: #f0a53c;
+  --warn-soft: rgba(240, 165, 60, 0.16);
+  --danger: #f2666f;
+  --danger-soft: rgba(242, 102, 111, 0.14);
+  --success: #3fb98d;
+  --success-soft: rgba(63, 185, 141, 0.16);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.5);
+
+  --skeleton: linear-gradient(90deg, #1a212b 25%, #222b36 37%, #1a212b 63%);
+  --bubble-in: #1e2632;
+  --bubble-out: #2c7a4b;
+  --bubble-out-text: #eafbef;
+  --code-bg: #0f151c;
+}
+
+/* 主题切换时不闪白：只对背景/文字/边框做过渡 */
+* {
+  transition: background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

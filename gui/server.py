@@ -225,6 +225,28 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         cred = wx.load_cred()
         sync = wx._read_json(wx.sync_path())
         age = _heartbeat_age()
+        # ready 判定看「配置是否就绪」而不是「数据层是否已初始化」：
+        # _ds 是懒加载的，进程刚启动时必然是 None，用它判定会让
+        # 每次重启都误弹首启向导。配置链（密钥+目录）才是不变的真相。
+        try:
+            from core.dataset import find_user_dir, load_accounts, load_key_hex
+            _accounts, _cur = load_accounts()
+            key_ok = bool(load_key_hex(_cur))
+            dir_ok = False
+            try:
+                dir_ok = find_user_dir(None, _cur).exists() if _cur else False
+            except Exception:
+                dir_ok = False
+            data_ready = key_ok and dir_ok
+            if not key_ok:
+                data_err = "未配置数据库密钥"
+            elif not dir_ok:
+                data_err = "数据目录不存在"
+            else:
+                data_err = _ds_err
+        except Exception as e:                       # noqa: BLE001
+            data_ready = False
+            data_err = f"{type(e).__name__}: {e}"
         return {
             "wechat": {
                 "logged_in": bool(cred.get("token")),
@@ -244,8 +266,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     "MOSU_BOT_BASE_URL", "https://api.openai.com/v1"),
             },
             "data": {
-                "ready": _ds is not None,
-                "error": _ds_err,
+                "ready": data_ready if _ds is None else True,
+                "error": data_err,
             },
         }
 
@@ -310,20 +332,32 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                                   type_=type_, direction=direction,
                                   from_ts=parse_time(q.get("from")),
                                   to_ts=parse_time(q.get("to")))
+        # 统一前端契约：id / createTime / senderName / senderId 必备，
+        # 并给出分页元数据（hasMore），前端才能做"向上加载更多"。
+        # 带筛选时总数不可知（总数指全会话），此时 total=null 由前端只信 hasMore。
+        filtered = bool(type_ or direction or q.get("from") or q.get("to"))
+        sess_meta = r["session"] or {}
         return {
-            "session": r["session"],
+            "session": sess_meta,
             "count": len(r["messages"]),
+            "limit": limit,
+            "offset": offset,
+            "hasMore": len(r["messages"]) >= limit,
+            "total": None if filtered else sess_meta.get("messageCount"),
             "messages": [{
-                "time": m["createTime"],
+                "id": f"{sess_meta.get('sessionId','')}:{m['createTime']}:{i}",
+                "createTime": m["createTime"],
                 "direction": m["direction"],
-                "sender": m.get("senderName") or "",
+                "senderName": m.get("senderName") or "",
+                "senderId": m.get("senderId") or m.get("senderName") or "",
                 "kind": m["kind"],
                 "content": m.get("content") or "",
                 "imgMd5": m.get("imgMd5") or "",
                 "voiceMs": m.get("voiceMs"),
                 "voiceText": m.get("voiceText") or "",
                 "title": m.get("title") or m.get("fileName") or "",
-            } for m in r["messages"]],
+                "fileName": m.get("fileName") or "",
+            } for i, m in enumerate(r["messages"])],
         }
 
     def api_search(q) -> dict:
@@ -336,11 +370,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         return {
             "total": r["total"],
             "messages": [{
-                "time": m["createTime"],
-                "session": m.get("sessionName") or "",
+                "createTime": m["createTime"],
+                "sessionName": m.get("sessionName") or "",
                 "sessionId": m.get("sessionId") or "",
                 "direction": m["direction"],
-                "content": (m.get("content") or "")[:120],
+                "content": (m.get("content") or "")[:200],
             } for m in r["messages"]],
         }
 
@@ -786,6 +820,134 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             return {"hmacOk": ok, "db": str(src), "salt": detail.get("salt")}
         raise ValueError("action 只支持 set/test")
 
+    # ------------------------------------------------ 密钥自动获取（只读内存扫描）
+    def _key_verify_db() -> Path:
+        """取一个用于 HMAC 校验的库：优先 session.db（小、必存在）。"""
+        with _ds_lock:
+            ds = get_ds()
+        src = ds.db_root / "session" / "session.db"
+        return src
+
+    def api_key_selftest() -> dict:
+        """环境预检：不取密钥，只报告各环节是否具备条件（供向导提前告知风险）。"""
+        from core.keyfinder import self_test
+        try:
+            with _ds_lock:
+                ds = get_ds()
+            db = ds.db_root / "session" / "session.db"
+        except Exception:
+            db = Path("")
+        out = self_test(db)
+        try:
+            from core.dataset import find_user_dir, load_accounts
+            _acc, cur = load_accounts()
+            out["account"] = cur
+            out["dataDir"] = str(find_user_dir(None, cur)) if cur else ""
+        except Exception:
+            pass
+        return out
+
+    def api_key_find_stream(self, params: dict, wfile, finish) -> None:
+        """SSE：边扫边推送进度。事件 stage=process/mask/scan/deref/verify/done/error。
+
+        为什么用 SSE 而不是轮询：扫描要 30 秒左右、中间有 4 个阶段，
+        轮询会让进度条在阶段边界"跳变"，SSE 才能给出连续、可信的反馈。
+        """
+        import threading as _th
+        from core.keyfinder import find_db_key
+
+        def emit(event: str, data: dict):
+            try:
+                wfile.write(f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                            .encode("utf-8"))
+                wfile.flush()
+            except Exception:
+                raise
+
+        try:
+            db = self._key_verify_db()
+        except Exception as e:
+            emit("error", {"stage": "config", "error": f"{type(e).__name__}: {e}",
+                           "hint": "先在数据目录设置里指定微信账号目录。"})
+            return finish()
+
+        cancel = _th.Event()
+        last_stage = {"v": ""}
+        last_emit = {"t": 0.0}
+
+        def prog(stage, cur, tot, msg):
+            now = time.time()
+            # 同一阶段内节流（扫描阶段回调太密），跨阶段立即推
+            if stage == last_stage["v"] and now - last_emit["t"] < 0.15:
+                return
+            last_stage["v"] = stage
+            last_emit["t"] = now
+            emit("progress", {"stage": stage, "current": cur, "total": tot,
+                              "message": msg})
+
+        def run():
+            try:
+                r = find_db_key(db, progress=prog, cancel=cancel)
+                if r.ok:
+                    # 校验通过才写入密钥库：等同用户已确认
+                    try:
+                        from core.dataset import load_keyvault, save_keyvault
+                        from core.dataset import load_accounts
+                        _acc, cur = load_accounts()
+                        data = load_keyvault()
+                        if cur and cur in (data.get("accounts") or {}):
+                            data["accounts"][cur]["keyHex"] = r.key_hex
+                        else:
+                            data["keyHex"] = r.key_hex
+                        save_keyvault(data)
+                        saved = True
+                    except Exception as e:                       # 保存失败也要告知拿到了
+                        saved = False
+                        emit("progress", {"stage": "save", "message":
+                                          f"密钥已取得但写入失败：{e}"})
+                    emit("done", {**r.to_dict(), "saved": saved})
+                else:
+                    emit("error", r.to_dict())
+            except Exception as e:
+                emit("error", {"stage": "unknown",
+                               "error": f"{type(e).__name__}: {e}"})
+            finally:
+                finish()
+
+        _th.Thread(target=run, daemon=True, name="mosu-keyfind").start()
+
+    # ------------------------------------------------ 大模型配置
+    def api_llm_get() -> dict:
+        from core.llmconfig import load_llm_config
+        cfg = load_llm_config()
+        cfg["apiKeyPreview"] = (
+            (load_llm_config(include_key=True)["apiKey"][:6] + "…")
+            if cfg["hasKey"] else "")
+        return cfg
+
+    def api_llm_set(payload: dict) -> dict:
+        from core.llmconfig import save_llm_config
+        base_url = (payload.get("baseUrl") or "").strip()
+        api_key = (payload.get("apiKey") or "").strip()
+        model = (payload.get("model") or "").strip()
+        temp = payload.get("temperature")
+        if temp is not None:
+            try:
+                temp = float(temp)
+            except (TypeError, ValueError):
+                raise ValueError("temperature 必须是数字")
+        if not any([base_url, api_key, model, temp is not None]):
+            raise ValueError("没有要保存的内容")
+        cfg = save_llm_config(base_url, api_key, model, temp)
+        cfg["apiKeyPreview"] = (api_key[:6] + "…") if api_key else ""
+        return {"saved": True, "config": cfg}
+
+    def api_llm_test(payload: dict) -> dict:
+        from core.llmconfig import test_connection
+        return test_connection((payload.get("baseUrl") or "").strip(),
+                               (payload.get("apiKey") or "").strip(),
+                               (payload.get("model") or "").strip())
+
     def api_config() -> dict:
         from core.dataset import (KEYVAULT, LEGACY_VAULT, load_accounts,
                                   load_keyvault, find_user_dir, load_key_hex)
@@ -858,16 +1020,23 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     return
                 self._send(f.read_bytes(), "text/html; charset=utf-8")
                 return
-            if path.startswith("/vendor/"):
-                # 只允许 vendor 目录内的静态文件，防目录穿越
-                rel = path[len("/vendor/"):].strip("/")
-                f = (GUI_DIR / "vendor" / rel).resolve()
-                if not str(f).startswith(str((GUI_DIR / "vendor").resolve())) \
-                        or not f.is_file():
+            for prefix in ("/vendor/", "/assets/"):
+                if not path.startswith(prefix):
+                    continue
+                # 只允许这两个静态目录内的文件，防目录穿越
+                rel = path[len(prefix):].strip("/")
+                base = (GUI_DIR / prefix.strip("/")).resolve()
+                f = (base / rel).resolve()
+                if not str(f).startswith(str(base)) or not f.is_file():
                     self._json({"error": "not found"}, 404)
                     return
-                ctype = ("application/javascript"
-                         if f.suffix == ".js" else "application/octet-stream")
+                ctype = {
+                    ".js": "application/javascript; charset=utf-8",
+                    ".css": "text/css; charset=utf-8",
+                    ".svg": "image/svg+xml",
+                    ".png": "image/png",
+                    ".ico": "image/x-icon",
+                }.get(f.suffix.lower(), "application/octet-stream")
                 self._send(f.read_bytes(), ctype)
                 return
             if path == "/api/status":
@@ -930,6 +1099,42 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/config":
                 self._guard(api_config)
+                return
+            if path == "/api/key/selftest":
+                self._guard(api_key_selftest)
+                return
+            if path == "/api/key/find":
+                # SSE 长连接：自己管 header，不能用 _json（那会带 Content-Length）
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")   # 别让中间层缓冲
+                self.end_headers()
+                self.close_connection = False
+
+                def _finish():
+                    try:
+                        self.wfile.write(b"event: end\ndata: {}\n\n")
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    self.close_connection = True
+
+                try:
+                    api_key_find_stream(self._params(), self.wfile, _finish)
+                except Exception as e:  # noqa: BLE001
+                    try:
+                        self.wfile.write(
+                            f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                            .encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    _finish()
+                return
+            if path == "/api/llm":
+                self._guard(api_llm_get)
                 return
             if path == "/api/moments":
                 self._guard(api_moments, self._params())
@@ -1001,6 +1206,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/key":
                 self._guard(api_key_action, payload)
+                return
+            if path == "/api/llm":
+                self._guard(api_llm_set, payload)
+                return
+            if path == "/api/llm/test":
+                self._guard(api_llm_test, payload)
                 return
             if path == "/api/export":
                 self._guard(api_export, payload)

@@ -88,12 +88,17 @@ export MOSU_IMG_KEY_HEX=<32位hex>     # 可选，V2 加密图片需要
 | `MOSU_KEY_HEX` | 64 位 hex 数据库密钥 |
 | `MOSU_IMG_KEY_HEX` | 32 位 hex 图片 AES 密钥 |
 
-**密钥从哪来**：数据库密钥是微信 SQLCipher 的 64 位 hex 口令，只能从**本机微信进程内存**
-或你此前用其他工具导出的结果里取得（社区有公开的只读内存扫描实现）。
-墨溯本身不注入、不 hook、不联网，只做纯本地解密。
-图片密钥同理，且需先在微信里打开过一张图，该 key 才会驻留内存。
+**密钥从哪来**：不用手找——墨溯自带**只读内存扫描**取密钥（微信 PC 4.x 在运行且已登录即可）：
 
-密钥管理：`mosu key get | test | set <hex>`。
+```bash
+python cli/mosu.py key find        # 约 30 秒，校验通过自动写入密钥库
+```
+
+原理与安全边界见 [docs/keyfinder.md](docs/keyfinder.md)：只读 `ReadProcessMemory`，
+不注入、不 hook、不改微信文件、不联网。GUI 首启向导里点一下按钮走同一条链路。
+
+也可以手动填入（其他工具取到的）：`mosu key set <64位hex>`。
+图片密钥（V2 加密图片需要）暂需手动提供，且需先在微信里打开过一张图。
 
 **多账号**（一台机器登过多个微信）：配置里存多个账号，随时切换。
 

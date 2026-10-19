@@ -195,6 +195,52 @@ def cmd_key(args, ds: Dataset):
         else:
             emit(out, args.format, raw=out)
         return
+    if args.key_cmd == "find":
+        # 只读内存扫描自动取密钥：新电脑上只要微信在跑就能用
+        from core.keyfinder import find_db_key
+        src = ds.db_root / "session/session.db"
+        if not src.exists():
+            sys.exit(f"[x] 找不到校验用数据库：{src}\n    先用 --db-path 指定微信账号目录（含 db_storage 的那一层）")
+
+        last = {"stage": ""}
+
+        def prog(stage, cur, tot, msg):
+            if args.quiet:
+                return
+            if stage != last["stage"]:
+                last["stage"] = stage
+                print(f"  [{stage}] {msg}", flush=True)
+            elif cur and tot and cur % 200 == 0:
+                print(f"        {cur}/{tot}", flush=True)
+
+        r = find_db_key(src, progress=prog)
+        if not r.ok:
+            out = {"ok": False, "stage": r.stage, "error": r.error, "hint": r.hint,
+                   "candidates": r.candidates, "tried": r.tried,
+                   "elapsed": round(r.elapsed, 2), "diagnostics": r.diagnostics}
+            if args.format == "table":
+                print(f"\n  [x] 自动获取失败（{r.stage}）：{r.error}")
+                if r.hint:
+                    print(f"      建议：{r.hint}")
+                print(f"      候选 {r.candidates} 个 / 校验 {r.tried} 次 / 耗时 {r.elapsed:.1f}s\n")
+            else:
+                emit(out, args.format)
+            return 1
+        saved = False
+        if not args.no_save:
+            save_config({"keyHex": r.key_hex})
+            saved = True
+        masked = r.key_hex[:8] + "*" * 48 + r.key_hex[-8:]
+        if args.format == "table":
+            print(f"\n  ✅ 已获取数据库密钥：{masked}")
+            print(f"     进程 {r.pid}  地址 0x{r.addr:x}  掩码 {r.mask_hex[:16]}…")
+            print(f"     候选 {r.candidates} 个 / 校验 {r.tried} 次 / 耗时 {r.elapsed:.1f}s")
+            print(f"     已写入密钥库：{KEYVAULT}\n")
+        else:
+            emit({"ok": True, "keyHex": masked, "saved": saved, "pid": r.pid,
+                  "addr": hex(r.addr), "candidates": r.candidates, "tried": r.tried,
+                  "elapsed": round(r.elapsed, 2)}, args.format)
+        return 0
     if args.key_cmd == "set":
         k = args.hex.strip().lower()
         if not re.fullmatch(r"[0-9a-fA-F]{64}", k):
@@ -972,9 +1018,10 @@ def build_parser():
     p.set_defaults(func=cmd_account)
 
     p = sub.add_parser("key", help="密钥管理", parents=[common])
-    p.add_argument("key_cmd", choices=["get", "test", "set", "migrate"])
+    p.add_argument("key_cmd", choices=["get", "test", "set", "find", "migrate"])
     p.add_argument("hex", nargs="?")
     p.add_argument("--full", action="store_true")
+    p.add_argument("--no-save", action="store_true", help="find 时只显示不写入密钥库")
     p.set_defaults(func=cmd_key)
 
     p = sub.add_parser("sessions", help="列出会话", parents=[common])

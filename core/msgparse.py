@@ -245,7 +245,22 @@ def parse_message(local_type: int, content, packed=None) -> dict:
                 msg["text"] = _xml_attr(xml, "appmsg", "title") or ""
 
     elif real == T_SYS:
-        msg["text"] = xml or (content if isinstance(content, str) else "")
+        txt = xml or (content if isinstance(content, str) else "")
+        # 系统消息常见是 XML（如撤回 <sysmsg type="revokemsg">），
+        # 直接显示原始 XML 对人是噪音——翻译成人话
+        if "<sysmsg" in txt:
+            try:
+                root = ET.fromstring(txt[txt.find("<sysmsg"): txt.rfind("</sysmsg>") + 8])
+                stype = root.get("type") or ""
+                if stype == "revokemsg":
+                    repl = root.findtext(".//replacemsg") or ""
+                    msg["text"] = repl or "撤回了一条消息"
+                else:
+                    msg["text"] = stype or "系统消息"
+            except Exception:
+                msg["text"] = "系统消息"
+        else:
+            msg["text"] = txt
 
     else:
         msg["text"] = (xml or "")[:200] if xml else (

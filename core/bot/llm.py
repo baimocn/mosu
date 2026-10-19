@@ -49,10 +49,18 @@ _load_dotenv()
 class LlmClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  model: str | None = None, timeout: int = 60):
+        # 环境变量优先，其次 ~/.mosu/config.json 里的 llm 配置（GUI 里填的）
+        try:
+            from core.llmconfig import load_llm_config
+            _cfg = load_llm_config(include_key=True)
+        except Exception:
+            _cfg = {}
         self.base_url = (base_url or os.environ.get("MOSU_BOT_BASE_URL")
-                         or "https://api.openai.com/v1").rstrip("/")
-        self.api_key = api_key or os.environ.get("MOSU_BOT_API_KEY", "")
-        self.model = model or os.environ.get("MOSU_BOT_MODEL", "gpt-4o-mini")
+                         or _cfg.get("baseUrl") or "https://api.openai.com/v1").rstrip("/")
+        self.api_key = (api_key or os.environ.get("MOSU_BOT_API_KEY")
+                        or _cfg.get("apiKey") or "")
+        self.model = (model or os.environ.get("MOSU_BOT_MODEL")
+                      or _cfg.get("model") or "gpt-4o-mini")
         self.timeout = timeout
         if not self.api_key:
             raise SystemExit("[x] 未配置 MOSU_BOT_API_KEY（云端 LLM 的 key）")
