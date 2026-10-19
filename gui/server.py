@@ -300,8 +300,16 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             raise ValueError("缺少 session 参数（会话 wxid）")
         limit = max(1, min(int(q.get("limit", 50)), 200))
         offset = max(0, int(q.get("offset", 0)))
+        type_ = (q.get("type") or "").strip().lower() or None
+        direction = (q.get("direction") or "").strip().lower() or None
+        if direction and direction not in ("in", "out"):
+            raise ValueError("direction 只支持 in/out")
+        from core.dataset import parse_time
         with _ds_lock:
-            r = get_ds().messages(sess, limit=limit, offset=offset)
+            r = get_ds().messages(sess, limit=limit, offset=offset,
+                                  type_=type_, direction=direction,
+                                  from_ts=parse_time(q.get("from")),
+                                  to_ts=parse_time(q.get("to")))
         return {
             "session": r["session"],
             "count": len(r["messages"]),
@@ -469,7 +477,59 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                         "zip": zip_bytes.hex()}
         return run
 
+    def _safe_dirname(s: str) -> str:
+        """会话名转安全的目录名（防路径穿越：../ 或 Windows 特殊字符）。"""
+        import re as _re
+        bad = '<>:"/\\|?*'
+        s = _re.sub(r'[\x00-\x1f]', '', s)
+        s = "".join(ch for ch in s if ch not in bad).strip().rstrip(".")
+        return s[:60] or "chat"
+
+    def _export_all_task(top_n: int, from_ts, to_ts):
+        """TaskHub worker：多会话批量导出（每会话一个子目录，打成一个 zip）。
+        top_n 限制会话数——全库 190 个会话逐个解密媒体要跑很久，
+        GUI 给「前 N 大会话」；真要全量用 CLI `mosu export --all`。"""
+        def run(tid):
+            with _ds_lock:
+                ds = get_ds()
+                from core.media import MediaStore
+                from core.exporter import ChatExporter
+                media = MediaStore(ds.user_dir, ROOT / ".cache").build()
+                sessions = sorted(ds.sessions(),
+                                  key=lambda s: -(s["messageCount"] or 0))[:top_n]
+                out_dir = EXPORT_ROOT / tid
+                out_dir.mkdir(parents=True, exist_ok=True)
+                done = []
+                for sess in sessions:
+                    sub = out_dir / _safe_dirname(sess["displayName"])
+                    sub.mkdir(parents=True, exist_ok=True)
+                    rows, names, self_id = ds.collect_session_rows(sess, from_ts, to_ts)
+                    if not rows:
+                        continue
+                    exp = ChatExporter(media, sub, voice_map={})
+                    exp.export(rows, names, self_id, title=sess["displayName"])
+                    done.append({"session": sess["displayName"], "count": len(rows)})
+                zip_bytes = _zip_dir(out_dir)
+                return {"session": f"{len(done)} 个会话", "count": sum(d["count"] for d in done),
+                        "bytes": len(zip_bytes), "sessions": done,
+                        "zip": zip_bytes.hex()}
+        return run
+
     def api_export(payload: dict):
+        scope = (payload.get("scope") or "single").strip()
+        if scope == "all":
+            top_n = int(payload.get("topN") or 10)
+            if not (1 <= top_n <= 30):
+                raise ValueError("topN 需在 1~30（全库 190 个会话逐个解密媒体很慢）")
+            from core.dataset import parse_time
+            try:
+                from_ts = parse_time(payload.get("from"))
+                to_ts = parse_time(payload.get("to"))
+            except SystemExit as e:
+                raise ValueError(str(e)) from e
+            tid = tasks.submit("export-html", _export_all_task(top_n, from_ts, to_ts))
+            return {"taskId": tid, "status": "running",
+                    "session": f"前 {top_n} 大会话"}
         sess_id = (payload.get("session") or "").strip()
         fmt = (payload.get("format") or "").lower()
         if not sess_id:

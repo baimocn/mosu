@@ -173,6 +173,16 @@
   .msg-head .name { font-size: 14px; font-weight: 600; color: #333; }
   .msg-head .sub { font-size: 11px; color: #999; }
   .msg-scroll { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg-filter {
+    display: flex; align-items: center; gap: 6px; padding: 7px 16px;
+    background: #f2f2f2; border-bottom: 1px solid #e8e8e8; flex-shrink: 0;
+    flex-wrap: wrap; font-size: 12px;
+  }
+  .msg-filter select, .msg-filter input {
+    border: 1px solid #e0e0e0; border-radius: 5px; padding: 3px 6px;
+    font-size: 12px; font-family: inherit; background: #fff;
+  }
+  .msg-filter .mini-btn { padding: 3px 10px; }
   .load-more {
     display: block; margin: 0 auto 14px; border: none; background: #fff;
     color: #666; font-size: 12px; padding: 6px 18px; border-radius: 14px;
@@ -540,6 +550,27 @@
         <span class="name" v-text="curSession.displayName"></span>
         <span class="sub" v-text="typeName(curSession.type) + ' · ' + curSession.messageCount + ' 条'"></span>
       </div>
+      <div class="msg-filter" v-if="curSession">
+        <select v-model="msgFilter.type" title="消息类型">
+          <option value="">全部类型</option>
+          <option value="text">文字</option>
+          <option value="image">图片</option>
+          <option value="voice">语音</option>
+          <option value="video">视频</option>
+          <option value="file">文件</option>
+          <option value="emoji">表情</option>
+        </select>
+        <select v-model="msgFilter.direction" title="方向">
+          <option value="">双向</option>
+          <option value="out">我发</option>
+          <option value="in">对方发</option>
+        </select>
+        <input type="date" v-model="msgFilter.from" title="起始日期">
+        <span style="color:#bbb">~</span>
+        <input type="date" v-model="msgFilter.to" title="截止日期">
+        <button class="mini-btn primary" @click="applyFilter">筛选</button>
+        <button class="mini-btn" v-if="filterActive" @click="clearFilter">清除</button>
+      </div>
       <div class="msg-scroll" ref="msgScroll">
         <div class="placeholder" v-if="msgLoading">
           <div class="spinner"></div>
@@ -754,7 +785,20 @@
       <div class="export-card">
         <h3>导出会话</h3>
         <div class="export-form">
-          <label class="field">会话（按消息数排序，可输入关键字过滤）
+          <label class="field">范围
+            <div class="fmt-row">
+              <div class="fmt-opt" :class="{active: exportForm.scope === 'single'}" @click="exportForm.scope = 'single'">
+                <div class="fmt-name">单会话</div><div class="fmt-desc">上面选的那个会话</div>
+              </div>
+              <div class="fmt-opt" :class="{active: exportForm.scope === 'all'}" @click="exportForm.scope = 'all'">
+                <div class="fmt-name">多会话</div><div class="fmt-desc">按消息数排序，每个会话一个子目录，打成 zip</div>
+              </div>
+            </div>
+          </label>
+          <label class="field" v-if="exportForm.scope === 'all'">导出前几个大会话（1~30）
+            <input type="number" v-model.number="exportForm.topN" min="1" max="30">
+          </label>
+          <label class="field" v-if="exportForm.scope === 'single'">会话（按消息数排序，可输入关键字过滤）
             <input v-model="exportKw" placeholder="过滤会话名…">
             <select v-model="exportForm.session" size="8">
               <option v-for="s in filteredExportSessions" :key="s.sessionId" :value="s.sessionId">
@@ -787,7 +831,7 @@
             语音在 HTML 里以「时长+转写文字」呈现；要真音频请用 CLI 的 <code>mosu export --with-media</code>。
           </p>
           <button class="send-btn" style="padding:10px 0"
-                  :disabled="!exportForm.session || exportTask.status === 'running'"
+                  :disabled="(exportForm.scope === 'single' && !exportForm.session) || exportTask.status === 'running'"
                   @click="doExport">
             {{ exportTask.status === 'running' ? '导出中…' : '导出并下载' }}
           </button>
@@ -1172,6 +1216,7 @@ createApp({
       sessions: [], sessLoading: false,
       curSessId: "", curSession: null,
       chatMsgs: [], msgLoading: false, msgLoadingMore: false, msgOffset: 0,
+      msgFilter: { type: "", direction: "", from: "", to: "" },
       searchKw: "", hits: [], searchTotal: 0, searchLoading: false, searched: false,
       // ---- 数据统计 ----
       statsLoaded: false,
@@ -1187,7 +1232,7 @@ createApp({
       // ---- 导出 ----
       exportLoaded: false,
       exportSessions: [], exportKw: "",
-      exportForm: { session: "", format: "html", from: "", to: "" },
+      exportForm: { session: "", format: "html", scope: "single", topN: 10, from: "", to: "" },
       exportTask: { id: "", status: "", cost: 0, result: null, error: "", session: "" },
       lightbox: "",                     // 图片灯箱（md5）
       // ---- 联系人 ----
@@ -1271,6 +1316,10 @@ createApp({
       if (!kw) return this.exportSessions;
       return this.exportSessions.filter(
         s => (s.displayName || "").toLowerCase().includes(kw));
+    },
+    filterActive() {
+      const f = this.msgFilter;
+      return !!(f.type || f.direction || f.from || f.to);
     },
     // ---- 画像/年报图表计算属性 ----
     rhythmMax() {
@@ -1423,7 +1472,7 @@ createApp({
       this.msgLoading = true;
       try {
         const d = await (await fetch(
-          `/api/messages?session=${encodeURIComponent(s.sessionId)}&limit=50`)).json();
+          `/api/messages?session=${encodeURIComponent(s.sessionId)}&limit=50` + this._filterQuery())).json();
         if (d.error) throw new Error(d.error);
         this.curSession = d.session || s;
         this.chatMsgs = (d.messages || []).map((m, i) => ({ ...m, key: s.sessionId + "-" + this.msgOffset + "-" + i }));
@@ -1436,11 +1485,26 @@ createApp({
         this.msgLoading = false;
       }
     },
+    _filterQuery() {
+      const q = [];
+      if (this.msgFilter.type) q.push("type=" + encodeURIComponent(this.msgFilter.type));
+      if (this.msgFilter.direction) q.push("direction=" + this.msgFilter.direction);
+      if (this.msgFilter.from) q.push("from=" + this.msgFilter.from);
+      if (this.msgFilter.to) q.push("to=" + this.msgFilter.to);
+      return q.length ? "&" + q.join("&") : "";
+    },
+    applyFilter() {
+      if (this.curSession) this.openSession(this.curSession);
+    },
+    clearFilter() {
+      this.msgFilter = { type: "", direction: "", from: "", to: "" };
+      if (this.curSession) this.openSession(this.curSession);
+    },
     async loadMore() {
       this.msgLoadingMore = true;
       try {
         const d = await (await fetch(
-          `/api/messages?session=${encodeURIComponent(this.curSessId)}&limit=50&offset=${this.msgOffset}`)).json();
+          `/api/messages?session=${encodeURIComponent(this.curSessId)}&limit=50&offset=${this.msgOffset}` + this._filterQuery())).json();
         if (d.error) throw new Error(d.error);
         const older = (d.messages || []).map((m, i) => ({ ...m, key: this.curSessId + "-" + this.msgOffset + "-" + i }));
         this.chatMsgs = older.concat(this.chatMsgs);
@@ -1816,15 +1880,18 @@ createApp({
       } catch (e) { /* 静默，用户可切回数据浏览触发 */ }
     },
     doExport() {
-      if (!this.exportForm.session) return;
+      if (this.exportForm.scope === "single" && !this.exportForm.session) return;
+      const scope = this.exportForm.scope;
       this.exportTask = { id: "", status: "running", cost: 0, result: null,
-                          error: "", session: this.exportForm.session };
+                          error: "", session: scope === "all" ? "多会话" : this.exportForm.session };
       fetch("/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          scope,
           session: this.exportForm.session,
-          format: this.exportForm.format,
+          topN: this.exportForm.topN,
+          format: scope === "all" ? "html" : this.exportForm.format,
           from: this.exportForm.from || undefined,
           to: this.exportForm.to || undefined,
         }),
