@@ -130,6 +130,18 @@ msg/file/<YYYY-MM>/<原文件名>                接收的文件（明文）
 
 `video_id` 来自 packed_info_data 的 field4.field8（32 位 ASCII）。
 
+### 已知偏差：`MediaStore.files` 同名覆盖
+
+`core/media.py` 的 `self.files` 字典按 key 存文件名，**同名会互相覆盖**，
+因此 `stats()` 报出的「文件」数会偏小。
+
+追完调用点确认**无真实受害路径**：`self.files` 只在 `media.py` 的 `stats()` 里被
+`len()` 报个数，**没有任何按 key 取文件的调用点**。图片走 `self.images`（按 md5）、
+视频走 `videos`、缩略图走 `thumbs`，全是哈希索引，不受影响。
+
+不改的理由：改要重设缓存格式（`build()` 会把 `files` 写进 json 缓存），
+收益只是让一个统计数字更准。记在这里而不是修掉。
+
 ---
 
 ## 五、发送者身份

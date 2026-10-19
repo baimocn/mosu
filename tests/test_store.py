@@ -138,7 +138,7 @@ class TestHistoryIntegration(_Env):
         s = _svc()
         s.chat("第一句", conv_id="c")
         s.chat("第二句", conv_id="c")
-        self.assertEqual(len(s.history["c"]), 4)
+        self.assertEqual(len(s.history["c::listener"]), 4)
 
     def test_memory_history_still_works_without_store(self):
         from core.bot.service import BotService
@@ -151,7 +151,15 @@ class TestHistoryIntegration(_Env):
         svc.llm = MagicMock()
         svc.llm.chat.return_value = "好"
         svc.chat("q", conv_id="c")
-        self.assertEqual(len(svc.history["c"]), 2)
+        self.assertEqual(len(svc.history["c::listener"]), 2)
+
+    def test_restart_does_not_leak_across_personas(self):
+        """重启后换人格，读到的必须是那个人格自己的桶（不是别人的历史）。"""
+        a = _svc()
+        a.chat("我今天有点累", conv_id="wxid_y", persona="listener")
+        b = _svc()
+        msgs = b.preview_prompt("继续", conv_id="wxid_y", persona="mimic")["messages"]
+        self.assertNotIn("我今天有点累", [m["content"] for m in msgs])
 
 
 if __name__ == "__main__":

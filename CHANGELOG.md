@@ -48,6 +48,38 @@
 - 统计接口的字段标签改为中文可读（占比显示 `50%`、时长显示「4 分钟」）；
   年报改为专属版式，不再倾倒原始 JSON
 - 统计接口统一返回 `taskId`（此前混用 `id`/`taskId`，前端读不到）
+- **默认 AI 人格改为「倾听者」**（原为「模仿者」）：logo 与文案都把墨溯定位成陪伴助手，
+  默认人格却是模仿者，等于产品承诺与第一句话不一致。倾听者「不给建议、不看数据」，
+  也是四条红线里最不容易出错的一条
+- **对话上下文按人格分桶**（`{conv_id}::{persona}`）：分桶而非过滤——过滤会让
+  「切人格后 AI 忘了刚才说的话」，分桶既保住同一人格内的连续性，又杜绝跨人格串味。
+  存量不带 `::` 的历史文件自成旧桶，不迁移不删除
+- **微信首次回复后告知可换风格**（进程内只发一次，不落盘）：微信里没有下拉框，
+  对方只看到一个陌生账号在说话，不知道能发 `/模仿`、`/分析`、`/安慰`
+- **统计口径透明化**：`global_stats` / `session_stats` 新增 `deduped: false`。
+  统计走 `count(*)` 不去重而浏览页去重，两页数字会不等——写进返回值比让用户自己
+  发现「统计怎么比列表多」要好。写死 false 是诚实的，将来真去重再改 true
+- **时间分布补零**：`hour` 恒 24 桶、`weekday` 恒 7 桶。只返回出现过的桶会让柱状图
+  **在视觉上撒谎**——凌晨没消息的小时不画，看起来像「数据缺失」而非「真的没有」。
+  `month` / `date` 刻意不补（空月份是噪声）
+- **统计接口支持时间范围**：`/api/stats/global|contacts|time` 各接受可选
+  `from` / `to`，缺省＝全量，既有行为不变
+- `/api/profile` 新增 `?async=1` 走 TaskHub（结果经 `/api/task` 取）。**不带该参数
+  仍走同步旧路径**——CLI / MCP 间接依赖 `ProfileDistiller`，一次切换爆炸半径不值
+- **README 去掉写死的工具数量**：改为描述性表述 + 罗列工具名，并指向 `tools/list`
+  返回；`tests/test_docs.py` 双向锁住「README 列出的 == 实际注册的」，防止再次腐化
+- `report()` 返回体新增 `summary.firstMessage` / `summary.lastMessage`
+  （会话口径；非会话为 `null`）——这两个值此前已查出来却没进返回值，纯浪费
+- `contact_profile` 加上限 `CONTACT_MAX_MSGS=60000`，命中时 `overview.truncated=true`。
+  原先 `raw_messages(limit=10**9)` + 同步持锁，是唯一能打挂整个服务的路径
+- `keyword_stats` 服务端硬上限从 200000 收到 20000，`_texts()` 每 5000 条让出一次 GIL
+- 快捷方式图标：macOS 生成 `.icns` 并放桌面（`.command` 在 Finder 侧绑不了图标），
+  Linux 按 freedesktop 规范写 `Icon=` 指向已安装的 PNG。四级降级，任何一级缺失都
+  不影响入口可用，退出码恒 0
+- `remove_shortcut()` 扩展到 macOS / Linux（原先非 Windows 直接返回）。
+  **不删** `~/.local/share/icons` 下那份——那是共享目录，别的 `.desktop` 可能正引用
+- `spanDays` 本人画像与联系人画像统一为 `float`：JS 里 `3 !== 3.0` 为 `true`，
+  类型不一致会让跨页分段判断错乱
 
 ### 视觉与交互升级（原生 CSS，零依赖）
 

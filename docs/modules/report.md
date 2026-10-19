@@ -80,6 +80,14 @@ GUI 年份下拉提供「全部年份」+ 最近 8 年。
 
 走**同步 GET**，全程持 `_ds_lock`。页面有骨架屏但**无进度、无取消**。
 
+## 首末消息正文
+
+`summary.firstMessage` / `summary.lastMessage`，结构 `{time, content}`，
+`content` 截断到 80 字。**只在会话口径下有值**，非会话口径为 `null`。
+
+这两个字段此前已经查出来了（两次 `raw_messages(limit=1)`，asc 与 desc 各一次），
+却没进返回值——纯浪费。现在进了返回值，不额外增加耗时。
+
 ## 测试
 
 `report()` 目前无单测，`/api/report` 无 HTTP 层测试。最该补的是口径矩阵：

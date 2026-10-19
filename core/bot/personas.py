@@ -118,7 +118,9 @@ PERSONAS: dict[str, Persona] = {
     ),
 }
 
-DEFAULT_PERSONA = "mimic"
+# 首次开口的人格。倾听者排在 PERSONAS 首位是有意的：
+# 拿到一个刚上线的 AI，第一句最该做的是接住情绪，而不是甩结论或模仿口气。
+DEFAULT_PERSONA = "listener"
 
 
 def get(persona_id: str | None) -> Persona:
@@ -139,7 +141,7 @@ ALIASES = {
     "mimic": ["模仿者", "模仿", "分身", "本人", "mimic"],
 }
 
-SWITCH_HELP = "可切换：/倾听 /分析 /安慰 /模仿（默认模仿）"
+SWITCH_HELP = "可切换：/倾听 /分析 /安慰 /模仿（默认倾听者）"
 
 
 def parse_switch(text: str) -> tuple[str | None, str]:

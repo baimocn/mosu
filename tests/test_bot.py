@@ -166,18 +166,21 @@ class TestBotService(unittest.TestCase):
         bot = self._bot(["嗯"])
         bot.chat("在吗", conv_id="c1")
         bot.chat("还在吗", conv_id="c1")
-        self.assertEqual(len(bot.history["c1"]), 4)   # 2 轮 × user+assistant
+        # 上下文按人格分桶，键不再是裸 conv_id（见 service.bucket_id）
+        self.assertEqual(len(bot.history["c1::listener"]), 4)   # 2 轮 × user+assistant
+        self.assertNotIn("c1", bot.history)
 
     def test_sample_mode(self):
+        """抽样检索只对模仿者有意义（风格语料是它的专属输入）。"""
         bot = self._bot(["嗯"])
         bot.sample_mode = True
-        r = bot.chat("随便一句")
+        r = bot.chat("随便一句", persona="mimic")
         self.assertTrue(r["retrieved"])
         self.assertEqual(r["tries"], 1)
 
     def test_prompt_structure(self):
         bot = self._bot([])
-        pv = bot.preview_prompt("去图书馆吗")
+        pv = bot.preview_prompt("去图书馆吗", persona="mimic")
         roles = [m["role"] for m in pv["messages"]]
         self.assertEqual(roles[0], "system")
         self.assertIn("user", roles)
@@ -185,6 +188,13 @@ class TestBotService(unittest.TestCase):
         # 参考样本消息必须包含"不要照抄"
         ref = next(m for m in pv["messages"] if m["role"] == "user")
         self.assertIn("不要照抄", ref["content"])
+
+    def test_default_persona_needs_no_corpus(self):
+        """默认是倾听者：不看数据也不看语料，prompt 里不该有参考片段。"""
+        bot = self._bot(["嗯"])
+        pv = bot.preview_prompt("在吗")
+        self.assertEqual(pv["persona"], "listener")
+        self.assertFalse(any("参考片段" in m["content"] for m in pv["messages"]))
 
 
 class TestSemanticCache(unittest.TestCase):
@@ -214,7 +224,7 @@ class TestSemanticCache(unittest.TestCase):
         self.assertEqual(r2["tries"], 0)
         self.assertLess(r2["cost"], 0.1)  # 0 LLM 调用
         # 命中也写历史（对话连续性不因缓存断裂）
-        self.assertEqual(len(bot.history["default"]), 4)
+        self.assertEqual(len(bot.history["default::listener"]), 4)
 
     def test_long_reply_not_cached(self):
         bot = self._bot(["这是一段很长的解释性回复" * 5])

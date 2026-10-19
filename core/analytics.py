@@ -138,6 +138,11 @@ class Analytics:
         media = sum(v for k, v in kinds.items() if k != "text")
         return {
             "totalMessages": total,
+            # count(*) 是**数据库原始行数**，跨分片可能存在重复行（同一消息落了两片）。
+            # 浏览页做了去重，两边数字会不等——把这个事实写进返回值，
+            # 比让用户自己发现"统计怎么比列表多"要好。写死 false 是诚实的：
+            # 将来真做了 SQL 侧去重，再改 true。
+            "deduped": False,
             "totalSessions": len(self.ds.sessions()),
             "totalContacts": len(self.ds.contacts()),
             "textMessages": kinds.get("text", 0),
@@ -170,6 +175,10 @@ class Analytics:
         return {"contacts": out, "total": len(agg)}
 
     # ------------------------------------------------------------ 时间分布
+    # 固定长度维度：补零后桶数恒定，柱状图不会因为"某小时没消息"而缺一根柱子。
+    # month / date **不在此表**——它们的长度随数据范围变化，补出来的空月份是噪声。
+    FIXED_BUCKETS = {"hour": 24, "weekday": 7}
+
     def time_stats(self, by: str = "month", session=None, from_ts=None, to_ts=None) -> dict:
         expr = {"hour": "%H", "weekday": "%w", "month": "%Y-%m", "date": "%Y-%m-%d"}.get(by, "%Y-%m")
         dist: Counter = Counter()
@@ -180,13 +189,22 @@ class Analytics:
                    f'FROM "{sh["table"]}"{where} GROUP BY k')
             for r in con.execute(sql, params):
                 dist[r[0]] += r[1]
-        keys = sorted(dist.keys())
         if by == "weekday":
             names = {"0": "周日", "1": "周一", "2": "周二", "3": "周三",
                      "4": "周四", "5": "周五", "6": "周六"}
-            items = [{"bucket": names.get(k, k), "key": k, "count": dist[k]} for k in keys]
+            # 补齐 0~6，顺序即周日起始——不补的话"周日没消息"会整段消失
+            keys = [str(i) for i in range(self.FIXED_BUCKETS["weekday"])]
+            items = [{"bucket": names[k], "key": k, "count": dist.get(k, 0)} for k in keys]
+        elif by == "hour":
+            # 补齐 00~23。只填计数为 0 的桶，已有数据一个不动
+            keys = [f"{i:02d}" for i in range(self.FIXED_BUCKETS["hour"])]
+            items = [{"bucket": k, "key": k, "count": dist.get(k, 0)} for k in keys]
         else:
+            keys = sorted(dist.keys())
             items = [{"bucket": k, "count": dist[k]} for k in keys]
+        # distribution 与 items 保持同一份数据：补零桶 count=0，不进累加，
+        # 所以 total 仍是真实消息数
+        dist = Counter({k: dist.get(k, 0) for k in keys})
         return {"by": by, "distribution": dict(dist), "items": items,
                 "total": sum(dist.values())}
 
@@ -226,6 +244,7 @@ class Analytics:
             "session": {"sessionId": sess["sessionId"], "displayName": sess["displayName"],
                         "type": sess["type"]},
             "totalMessages": total,
+            "deduped": False,       # 同 global_stats：原始行数，未去重
             "textMessages": kinds.get("text", 0),
             "mediaMessages": sum(v for k, v in kinds.items() if k != "text"),
             "byType": dict(kinds.most_common()),
@@ -267,6 +286,10 @@ class Analytics:
         }
 
     # ------------------------------------------------------------ 关键词
+    # 每处理 YIELD_EVERY 条让出一次 GIL。逐条解压是纯 Python 计算，
+    # 不让出的话即使跑在 TaskHub 的工作线程里，也会把持锁的主线程饿死。
+    YIELD_EVERY = 5000
+
     def _texts(self, session=None, from_ts=None, to_ts=None, max_msgs: int = 20000,
                recent: bool = True) -> list[str]:
         """抽取文本内容（需要逐条解压，max_msgs 控制上限）。"""
@@ -286,6 +309,8 @@ class Analytics:
                 if t and (m["type"] & 0xFFFFFFFF) in (1, 49):
                     texts.append(t)
                 n += 1
+                if n % self.YIELD_EVERY == 0:
+                    time.sleep(0)          # 让出 GIL，不改变任何统计结果
         return texts
 
     def keyword_stats(self, session=None, top: int = 30, from_ts=None, to_ts=None,
@@ -377,6 +402,10 @@ class Analytics:
                 "hourlyDistribution": td["distribution"],
                 "firstMessageTime": first,
                 "lastMessageTime": last,
+                # 两次 raw_messages 已经查出来了，之前算完就扔——纯浪费。
+                # 非会话口径为 null（全库首末消息没有"对方"视角，参考价值也低）。
+                "firstMessage": first_msg,
+                "lastMessage": last_msg,
             },
             "meta": {"scannedMessages": kw["scannedMessages"], "cost": kw["cost"]},
         }

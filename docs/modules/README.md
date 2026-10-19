@@ -42,16 +42,17 @@
 
 | 影响 | 问题 |
 |------|------|
-| 数据不一致 | 统计走 `count(*)` 不去重，浏览页走 `raw_messages()` 有去重；存在重复行时两页总数不等 |
-| 口径偏差 | 统计接口不接受 `from_ts/to_ts`，只能全量统计，无法按时间范围筛选 |
-| 性能 | `contact_profile` 无耗时上限，14 万条大群可能耗时以分钟计、内存数百 MB |
-| 性能 | `keyword_stats` 在 TaskHub worker 内整段持锁，`max_msgs=200000` 时阻塞数分钟 |
-| 口径 | 群聊的联系人画像沿用「我 / 对方」二分，数百成员被聚合成一个人 |
-| 一致性 | `contact_type()`（5 种）与 `_session_type()`（3 种）两套词表共用同一中文映射 |
-| 一致性 | `spanDays` 在本人画像是 `int`、联系人画像是 `float` |
-| 死代码 | `report()` 算出的首末消息正文未进入返回值 |
-| 体验 | 空库时统计页显示一屏 0 而非空态；`/api/contacts` 无 contact.db 时无空态提示 |
-| 体验 | 时间分布只返回出现的桶，不补零，凌晨无消息的小时在图上直接缺失 |
+| 数据不一致 | 统计走 `count(*)` 不去重，浏览页走 `raw_messages()` 有去重；存在重复行时两页总数不等。**已在返回值里写明**（`deduped: false`），前端磁贴加脚注。真去重需全表 DISTINCT，代价失衡，不做 |
+| 口径偏差 | ~~统计接口不接受 `from_ts/to_ts`~~ **已修**：三个统计端点均支持 `from`/`to`，缺省全量 |
+| 性能 | ~~`contact_profile` 无耗时上限~~ **已修**：`CONTACT_MAX_MSGS=60000` + `overview.truncated` + `?async=1` 走 TaskHub |
+| 性能 | ~~`keyword_stats` 在 TaskHub worker 内整段持锁~~ **已缓解**：硬上限收到 20000，`_texts()` 每 5000 条让出 GIL。worker 内仍整段持锁，这是本轮不改的结构 |
+| 口径 | 群聊的联系人画像沿用「我 / 对方」二分，数百成员被聚合成一个人。**已知口径，非缺陷**——改成员级聚合＝新增特性 |
+| 一致性 | ~~`contact_type()`（5 种）与 `_session_type()`（3 种）两套词表共用同一中文映射~~ **本轮只拆前端映射**，后端两套词表各有存在理由，不合并 |
+| 一致性 | ~~`spanDays` 在本人画像是 `int`、联系人画像是 `float`~~ **已修**：两处统一 `float`（JS 里 `3 !== 3.0`） |
+| 死代码 | ~~`report()` 算出的首末消息正文未进入返回值~~ **已修**：进 `summary.firstMessage/lastMessage` |
+| 体验 | 空库时统计页显示一屏 0 而非空态；`/api/contacts` 无 contact.db 时无空态提示。**纯前端，本轮前端改** |
+| 体验 | ~~时间分布只返回出现的桶，不补零~~ **部分修**：`hour` 补齐 24、`weekday` 补齐 7；`month`/`date` 刻意不补（空月份是噪声） |
+| 偏差 | `MediaStore.files` 同名覆盖，只让「文件」统计数偏小（无按 key 取文件的调用点）。`docs/modules/media.md` 已记 |
 
 ## 已修（本轮）
 

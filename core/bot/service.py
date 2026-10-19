@@ -68,6 +68,20 @@ def _cache_key(query: str, persona: str) -> str:
 _UNSET = object()   # 区分「没传 store」（启用落盘）与「显式传 None」（纯内存）
 
 
+def bucket_id(conv_id: str | None, persona_id: str) -> str:
+    """把人格并入会话 id —— 上下文按人格分桶。
+
+    分桶而不是过滤：过滤会让「切人格后 AI 忘了刚才说的话」，
+    分桶既保住同一人格内的连续性，又杜绝不同人格之间串味
+    （分析者的结论不会漏进倾听者的耳朵）。
+
+    这个 cid 必须**一次算出、整条链路复用**——_history() / _record_history()
+    各自都会做 `or "default"` 归一，下游任何一处重拼都会把桶拆开。
+    """
+    return f"{conv_id or 'default'}::{persona_id}"
+
+
+
 class BotService:
     def __init__(self, corpus_path: str | Path, retriever=None, checker=None,
                  llm=None, max_retries: int = 2, history_limit: int = 20,
@@ -171,7 +185,12 @@ class BotService:
             return ""
 
     def _build_messages(self, query: str, retrieved: list[dict],
-                        conv_id: str | None, persona=None) -> list[dict]:
+                        cid: str, persona=None) -> list[dict]:
+        """组装发给 LLM 的消息序列。
+
+        cid 必须是已分桶的（见 bucket_id），由调用方算好后原样传进来——
+        这里不再拼，否则上下文桶会与落盘桶对不上。
+        """
         n_corpus = len(getattr(self.retriever, "corpus", []) or [])
         p = persona or self.personas.get(self.persona_id)
         system = SYSTEM_TMPL.format(n=f"{n_corpus:,}" if n_corpus else "上万")
@@ -193,7 +212,7 @@ class BotService:
             msgs.append({"role": "user",
                          "content": REF_TMPL.format(n=len(retrieved), blocks=blocks)})
             msgs.append({"role": "assistant", "content": "知道了，我按这个语气回复，不照抄。"})
-        for h in self._history(conv_id)[-self.history_limit:]:
+        for h in self._history(cid)[-self.history_limit:]:
             msgs.append(h)
         msgs.append({"role": "user", "content": query})
         return msgs
@@ -203,11 +222,14 @@ class BotService:
         t0 = time.time()
         p = self.personas.get(persona or self.persona_id)
         key = _cache_key(query, p.id)
+        # 上下文按人格分桶：一个 cid 贯穿 _history() 与 _record_history()，
+        # 下游不得重拼（重拼会把桶拆开，人格之间又串味）
+        cid = bucket_id(conv_id, p.id)
 
         # ---- 缓存命中：0 LLM 调用，0 延迟 ----
         if self.cache_enabled and key in self._cache:
             hit = self._cache[key]
-            self._record_history(conv_id, query, hit["reply"])
+            self._record_history(cid, query, hit["reply"])
             return {
                 "reply": hit["reply"],
                 "passed": True,
@@ -221,7 +243,7 @@ class BotService:
 
         # 事实查询已内置在 _build_messages 里，这里不再单独拼装
         retrieved = self._retrieve(query, topk) if p.id == "mimic" else []
-        messages = self._build_messages(query, retrieved, conv_id, persona=p)
+        messages = self._build_messages(query, retrieved, cid, persona=p)
         reply, problems, tries = "", [], 0
         for attempt in range(self.max_retries + 1):
             tries = attempt + 1
@@ -231,7 +253,7 @@ class BotService:
                 break
             messages.append({"role": "assistant", "content": reply})
             messages.append({"role": "user", "content": self.checker.feedback(problems)})
-        self._record_history(conv_id, query, reply)
+        self._record_history(cid, query, reply)
         self._cache_put(key, reply, retrieved, passed=not problems)
         return {
             "reply": reply,
@@ -260,6 +282,7 @@ class BotService:
         """不调 LLM，只看 prompt 组装（调试/审查用）。"""
         p = self.personas.get(persona or self.persona_id)
         retrieved = self._retrieve(query, topk) if p.id == "mimic" else []
-        return {"messages": self._build_messages(query, retrieved, conv_id, persona=p),
+        return {"messages": self._build_messages(query, retrieved,
+                                                 bucket_id(conv_id, p.id), persona=p),
                 "retrieved": retrieved,
                 "persona": p.id}

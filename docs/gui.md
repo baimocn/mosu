@@ -45,10 +45,11 @@ python cli/mosu.py gui uninstall        # 卸载常驻
 | `/api/messages` | GET | `session&limit&offset` | 会话消息（limit≤200） |
 | `/api/search` | GET | `q&limit` | 全库搜索 |
 | `/api/media` | GET | `md5` | 解密图片二进制（`<img src>` 直接渲染） |
-| `/api/stats/global` | GET | — | 全局统计 |
-| `/api/stats/contacts` | GET | `top`（1~100） | 联系榜 |
-| `/api/stats/time` | GET | `by=hour\|weekday\|month\|date` | 时间分布 |
-| `/api/stats/keywords` | POST | `{top, max_msgs}` | 关键词统计（**异步任务**，全库扫描数十秒） |
+| `/api/stats/global` | GET | `from?/to?` | 全局统计（含 `deduped:false` 口径标志） |
+| `/api/stats/contacts` | GET | `top`（1~100）, `from?/to?` | 联系榜 |
+| `/api/stats/time` | GET | `by=hour\|weekday\|month\|date`, `from?/to?` | 时间分布（hour 恒 24 桶、weekday 恒 7 桶） |
+| `/api/stats/keywords` | POST | `{top, max_msgs}`（max_msgs 1000~20000） | 关键词统计（**异步任务**，全库扫描数十秒） |
+| `/api/profile` | GET | `session?`, `async?`, `from?/to?` | 画像（`async=1` → **异步任务**，kind=`profile`） |
 | `/api/moments` | GET | `limit&offset&user` | 朋友圈（limit≤50） |
 | `/api/export` | POST | `{session, format, from?, to?}` | 导出（**异步任务**） |
 | `/api/task` | GET | `id` | 任务状态（queued/running/done/error + cost + result） |
@@ -60,6 +61,10 @@ python cli/mosu.py gui uninstall        # 卸载常驻
 所以数据面板之间是串行的。关键词统计和 HTML 导出是重操作
 （全库逐条解压 / 逐张解密媒体），它们跑在独立 worker 线程的**异步任务**里，
 前端 1 秒轮询 `/api/task` 显示耗时；控制台端点不持锁，任何时候都能用。
+
+`/api/profile` 的 `?async=1` 是**可选**的：不带该参数仍走同步旧路径（CLI / MCP
+间接依赖 `ProfileDistiller` 的同步语义，一次全切爆炸半径不值）。联系人画像另有
+`CONTACT_MAX_MSGS=60000` 硬上限兜底，命中时 `overview.truncated=true`。
 
 ## 安全模型
 

@@ -46,6 +46,12 @@ LONG_POLL_TIMEOUT = 35        # 服务端 hold ~35s
 QR_TTL = 300                  # 二维码 5 分钟
 MAX_QR_REFRESH = 3
 
+# 首次回复时的风格告知。进程内只发一次（_greeted 门闩），不落盘——
+# 对方早就知道的事，重复发就是骚扰；重启后重新说一遍则可以接受。
+PERSONA_INTRO = ("我是「倾听者」：少说多听、接住情绪，不给建议。"
+                 "想换风格发 /模仿（你的口气）、/分析（用真实数据）、/安慰（先接情绪）。")
+_greeted = False
+
 
 class WeixinApiError(Exception):
     """协议层错误（HTTP 4xx/5xx）。
@@ -363,6 +369,7 @@ def run_logout() -> int:
 
 def run_serve(corpus: str, once: bool = False) -> int:
     """长轮询收消息 → 墨溯 BotService 生成回复 → 原路发回。"""
+    global _greeted
     cred = load_cred()
     if not cred.get("token"):
         print("[x] 未登录，先运行：mosu wechat login")
@@ -375,8 +382,8 @@ def run_serve(corpus: str, once: bool = False) -> int:
     try:
         from core.dataset import Dataset
         bot.ds = Dataset(quiet=True)
-    except Exception as e:      # 没有密钥/数据目录时降级：只做模仿者
-        print(f"[i] 数据层不可用（{type(e).__name__}），仅模仿者可用", flush=True)
+    except Exception as e:      # 没有密钥/数据目录时降级：只有不看数据的人格能用
+        print(f"[i] 数据层不可用（{type(e).__name__}），分析者/安慰者不可用", flush=True)
     buf = _read_json(sync_path()).get("buf", "")
     ctx = _read_json(ctx_path())
     typing_tickets: dict[str, str] = {}   # typing_ticket 按用户缓存，免每次 getconfig
@@ -454,6 +461,15 @@ def run_serve(corpus: str, once: bool = False) -> int:
                 r = bot.chat(text, conv_id="wechat")
                 reply = r.get("reply") or ""
                 client.send_text(frm, token_ctx, reply)
+                # 首次回复时补一句「我现在是谁」——微信里没有下拉框，
+                # 对方只会看到一个陌生账号在说话，不知道能换风格。
+                # 用模块级门闩保证进程内只发一次，不落盘。
+                if not _greeted and r.get("persona") == P.DEFAULT_PERSONA:
+                    try:
+                        client.send_text(frm, token_ctx, PERSONA_INTRO)
+                        _greeted = True
+                    except Exception as e:
+                        log(f"[!] 风格告知发送失败：{e}")
                 _write_json(ctx_path(), ctx)
                 log(f"[回复/{r.get('persona') or '-'}] {reply}")
             except Exception as e:

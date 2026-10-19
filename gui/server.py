@@ -529,24 +529,36 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             return _moments_unsup
 
     # ---------------------------------------------------------------- 统计
-    def api_stats_global() -> dict:
+    def _range_ts(q):
+        """统计接口统一的时间范围解析：from / to 都可选，缺省＝全量。
+
+        core 层早就全线贯通了 _where(from_ts, to_ts)，这里只是接线。
+        解析口径与 /api/messages 完全一致（core.dataset.parse_time）。
+        """
+        from core.dataset import parse_time
+        return parse_time(q.get("from")), parse_time(q.get("to"))
+
+    def api_stats_global(q) -> dict:
         from core.analytics import Analytics
+        from_ts, to_ts = _range_ts(q)
         with _ds_lock:
-            return Analytics(get_ds()).global_stats()
+            return Analytics(get_ds()).global_stats(from_ts, to_ts)
 
     def api_stats_contacts(q) -> dict:
         from core.analytics import Analytics
         top = max(1, min(int(q.get("top", 20)), 100))
+        from_ts, to_ts = _range_ts(q)
         with _ds_lock:
-            return Analytics(get_ds()).contact_stats(top=top)
+            return Analytics(get_ds()).contact_stats(top=top, from_ts=from_ts, to_ts=to_ts)
 
     def api_stats_time(q) -> dict:
         from core.analytics import Analytics
         by = (q.get("by") or "hour").lower()
         if by not in ("hour", "weekday", "month", "date"):
             raise ValueError("by 只支持 hour/weekday/month/date")
+        from_ts, to_ts = _range_ts(q)      # 与 by 正交
         with _ds_lock:
-            return Analytics(get_ds()).time_stats(by=by)
+            return Analytics(get_ds()).time_stats(by=by, from_ts=from_ts, to_ts=to_ts)
 
     def _kw_task(top: int, max_msgs: int):
         """TaskHub worker 里跑：全库逐条解压抽关键词（重操作，持锁数十秒）。"""
@@ -561,8 +573,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         max_msgs = int(payload.get("max_msgs") or 20000)
         if not (1 <= top <= 100):
             raise ValueError("top 需在 1~100")
-        if not (1000 <= max_msgs <= 200000):
-            raise ValueError("max_msgs 需在 1000~200000")
+        # 上限收到 20000（与默认值一致）。这条任务全程持 _ds_lock，
+        # 20 万条意味着 GUI 十几分钟不能响应任何其他请求——包括取消。
+        if not (1000 <= max_msgs <= 20000):
+            raise ValueError("max_msgs 需在 1000~20000")
         tid = tasks.submit("keywords", _kw_task(top, max_msgs))
         return {"taskId": tid, "status": "running"}
 
@@ -800,14 +814,35 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             return out
 
     # ---------------------------------------------------------------- 画像/年报
+    def _profile_task(sess: str, from_ts, to_ts):
+        """TaskHub worker：画像蒸馏（联系人画像逐条解压，14 万条的大群要几分钟）。
+
+        走异步的意义不只是"不阻塞 HTTP 响应"——同步路径**全程持 _ds_lock**，
+        那几分钟里 GUI 的所有数据 API 都是死的，连取消都做不到。
+        """
+        def run(tid):
+            with _ds_lock:
+                from core.profile import ProfileDistiller
+                pd = ProfileDistiller(get_ds())
+                if sess:
+                    return pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
+                return pd.self_profile(from_ts=from_ts, to_ts=to_ts)
+        return run
+
     def api_profile(q) -> dict:
         sess = (q.get("session") or "").strip()
+        from_ts, to_ts = _range_ts(q)
+        # ?async=1 走 TaskHub；不带参数仍走同步旧路径。
+        # CLI / MCP 间接依赖 ProfileDistiller 的同步语义，一次切换爆炸半径不值。
+        if str(q.get("async") or "") in ("1", "true", "yes"):
+            tid = tasks.submit("profile", _profile_task(sess, from_ts, to_ts))
+            return {"taskId": tid, "status": "running"}
         with _ds_lock:
             from core.profile import ProfileDistiller
             pd = ProfileDistiller(get_ds())
             if sess:
-                return pd.contact_profile(sess)
-            return pd.self_profile()
+                return pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
+            return pd.self_profile(from_ts=from_ts, to_ts=to_ts)
 
     def api_report(q) -> dict:
         year = q.get("year")
@@ -1292,7 +1327,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
             if path == "/api/stats/global":
-                self._guard(api_stats_global)
+                self._guard(api_stats_global, self._params())
                 return
             if path == "/api/stats/contacts":
                 self._guard(api_stats_contacts, self._params())

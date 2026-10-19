@@ -108,6 +108,8 @@ hourlyTheirs:[int×24], monthly:[{month,count}]}`。前端能同时渲染是因�
   曾硬编码成「周五/周六」而 `%w` 的 4/5 实为周四/周五。
 - **不再声称「周末高于工作日」**。那个结论需要比较周末与工作日两组总量，代码从未
   计算过，现在只陈述已计算的峰值星期。
+- **`spanDays` 两处同为 `float`**。JS 里 `3 !== 3.0` 为 `true`，本人页（曾 `int`）
+  与联系人页（`float`）跨页比较时会因类型不同走进错误分段。
 
 ### 联系人画像的「我 / 对方」二分
 
@@ -121,9 +123,31 @@ hourlyTheirs:[int×24], monthly:[{month,count}]}`。前端能同时渲染是因�
 | 参数 | 说明 |
 |------|------|
 | `session` | 可选。给出则生成该联系人画像，不给则生成本人画像 |
+| `async` | 可选。`1` 则提交 TaskHub 任务，返回 `{taskId, status:"running"}`，结果经 `/api/task` 取 |
+| `from` / `to` | 可选时间串，缺省全量 |
 
 会话名解析走 `Dataset.find_session()`，支持会话显示名或 wxid。查不到抛
 `SystemExit` → HTTP 404，GUI 显示「生成失败」。
+
+**异步是可选的，不是默认。** 同步路径仍在（CLI / MCP 间接依赖 `ProfileDistiller`
+的同步语义，一次切换爆炸半径不值）。前端本轮切异步，同步路径留一版兜底。
+
+`/api/task` 的 `kind` 新增取值 `"profile"`，返回体形状与同步路径完全一致。
+
+### 联系人画像的样本上限
+
+`contact_profile` 曾用 `raw_messages(limit=10**9)` 拉全量——**唯一能打挂服务的一条**：
+14 万条大群逐条解压要几分钟，而 GUI 是**同步持 `_ds_lock`** 调用，那几分钟里所有数据
+API 都是死的，连取消都做不到，且没有任何超时能救。
+
+两道防护：
+
+| 防护 | 做法 |
+|------|------|
+| 硬上限 | `ProfileDistiller.CONTACT_MAX_MSGS = 60000`。多取 1 条判断是否撞顶，命中则 `overview.truncated = true`（`meta.truncated` 同步一份），前端提示「样本已达上限，仅基于最近 N 条」 |
+| 异步 | `?async=1` 走 TaskHub，锁在 worker 内部拿而不是提交时拿——否则异步等于白做 |
+
+`meta.maxMsgs` 一并返回，前端不必把 60000 写死两遍。
 
 ### `POST /api/persona`
 

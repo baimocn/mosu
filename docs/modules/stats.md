@@ -21,7 +21,12 @@
 
 **已知口径差异**：统计走 `count(*)` 不去重，而消息读取路径 `raw_messages()` 用
 `_dedup_key`（`create_time + local_type + content`）显式去重。当同一分片里存在重复行时，
-本页总数会**高于**浏览页看到的条数。这是已知未对齐项，尚未修（见主文档「遗留风险」）。
+本页总数会**高于**浏览页看到的条数。
+
+这一差异现在**写进了返回值**：`global_stats` 与 `session_stats` 都带
+`"deduped": false`，前端磁贴脚注「按数据库原始行统计，跨分片重复行未去重」。
+写死 `false` 是诚实的——真做了 SQL 侧去重再改 `true`。全表 `DISTINCT` 的代价与收益
+不成比例，本轮不做。
 
 消息类型先经 `KIND_BY_TYPE` 由 `local_type` 映射为 `text/image/voice/video/emoji/
 file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射为 `file`——链接、
@@ -31,11 +36,17 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 
 ### `GET /api/stats/global`
 
-无入参。本机全量统计。
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `from` | 时间串 | 可选。`2026-01-01` / `2026-01-01 12:30` / unix 秒，走 `core.dataset.parse_time` |
+| `to` | 时间串 | 同上 |
+
+两个都缺省＝全量，**既有行为不变**。
 
 ```json
 {
-  "totalMessages": 232808, "totalSessions": 190, "totalContacts": 3742,
+  "totalMessages": 232808, "deduped": false,
+  "totalSessions": 190, "totalContacts": 3742,
   "textMessages": 137000, "mediaMessages": 95000,
   "byType": {"text": 137000, "file": 25400, "image": 25200, "emoji": 4400,
              "system": 4365, "voice": 1200, "video": 793, "other": 450},
@@ -52,6 +63,7 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 | 参数 | 类型 | 默认 | 上限 |
 |------|------|------|------|
 | `top` | int | 20 | 100 |
+| `from` / `to` | 时间串 | — | 可选，缺省全量 |
 
 ```json
 {"contacts": [{"wxid": "...", "displayName": "AI coding: The future is here",
@@ -64,22 +76,33 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 | 参数 | 取值 | HTTP 默认 | 函数默认 |
 |------|------|-----------|----------|
 | `by` | `hour` / `weekday` / `month` / `date` | `hour` | **`month`** |
+| `from` / `to` | 时间串 | — | 可选，缺省全量；与 `by` 正交 |
 
 > 两层默认值不同：直接调 `Analytics.time_stats()` 不传 `by` 拿到的是**按月**，
 > 走 HTTP 才拿到按小时。
 
 四种取值的键格式**不同**，接入时务必按下表处理：
 
-| `by` | `distribution` 键 | `items[0]` 示例 |
-|-----|-------------------|----------------|
-| `hour` | `"00"`–`"23"`（**字符串，带前导零**） | `{"bucket": "00", "count": 9789}` |
-| `weekday` | `"0"`–`"6"`（`%w`，0=周日） | `{"bucket": "周日", "key": "0", "count": 27789}` |
-| `month` | `"2026-05"` | `{"bucket": "2025-06", "count": 2035}` |
-| `date` | `"2026-05-25"` | `{"bucket": "2025-06-15", "count": 172}` |
+| `by` | `distribution` 键 | `items[0]` 示例 | 桶数 |
+|-----|-------------------|----------------|------|
+| `hour` | `"00"`–`"23"`（**字符串，带前导零**） | `{"bucket": "00", "count": 9789}` | **恒 24** |
+| `weekday` | `"0"`–`"6"`（`%w`，0=周日） | `{"bucket": "周日", "key": "0", "count": 27789}` | **恒 7** |
+| `month` | `"2026-05"` | `{"bucket": "2025-06", "count": 2035}` | 出现过的月份数 |
+| `date` | `"2026-05-25"` | `{"bucket": "2025-06-15", "count": 172}` | 出现过的日期数 |
 
 只有 `weekday` 的 `items` 带 `key`（原始 `%w` 值），其余三种 `key` 缺失，前端用
-`it.key || it.bucket` 兼容。**只返回实际出现的桶，不补零**——凌晨无消息的小时在图上
-直接缺失而非显示 0。
+`it.key || it.bucket` 兼容。
+
+**`hour` / `weekday` 补零，`month` / `date` 不补。**
+
+补零的理由：只返回出现过的桶，柱状图会**在视觉上撒谎**——凌晨没有消息的那个小时
+干脆不画，看起来像「数据缺失」而不是「真的没有」。这两种维度长度固定（24/7），
+补零零成本。
+
+不补的理由：`month` / `date` 补出来的空月份是**噪声不是信息**——跨年查询会拖出
+十几个 0，读者要自己分辨「那年没数据」和「那年真的一条都没有」。
+
+补零只影响展示，`total` 仍是真实消息数（补零桶 count 为 0，不进累加）。
 
 非法 `by` 抛 `ValueError` → HTTP 400。
 
@@ -88,7 +111,7 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 | 参数 | 类型 | 默认 | 约束 |
 |------|------|------|------|
 | `top` | int | 30 | 1–100，越界 400 |
-| `max_msgs` | int | 20000 | 1000–200000，越界 400 |
+| `max_msgs` | int | 20000 | 1000–**20000**，越界 400 |
 
 > 注意 `top=0` 会被 `or 30` 吞掉变成 30，**不触发 400**。
 
@@ -144,8 +167,13 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 | `keyword_stats` | 20–60s | 逐条解压 + jieba 分词，默认扫 20000 条 |
 
 `keyword_stats` 是唯一逐条解码消息的统计，走 `TaskHub` 异步（单 worker 串行）。
-但 worker 内部**整段持 `_ds_lock`**，期间所有数据 API 阻塞。`max_msgs` 允许到 200000，
-该规模下持锁数分钟——这是已知的体验风险。
+但 worker 内部**整段持 `_ds_lock`**，期间所有数据 API 阻塞。两道缓解：
+
+1. **服务端硬上限收到 20000**（与默认值一致）。原先允许到 200000，那个规模下
+   持锁数分钟且**没有任何超时能救**——包括用户点「取消」。
+2. **`Analytics._texts()` 每 5000 条 `sleep(0)` 让出一次 GIL**。逐条解压是纯
+   Python 计算，不主动让出的话即使跑在工作线程里也会饿死持锁的主线程。
+   `sleep(0)` 不改变任何统计结果，只是把控制权交回调度器。
 
 ## 测试
 
@@ -153,8 +181,7 @@ file/system`，未命中一律 `other`。注意 `T_APPMSG(49)` 被整体映射�
 逐日对齐、`insights` 不做未计算的推断、采样倒序能力、`social` 用 wxid 作键、
 markdown 空库不崩、`/api/contact` 子串兜底唯一性。
 
-`hour` 的字符串键与类型映射目前**没有**测试覆盖。
-
-`global_stats` / `contact_stats` / `time_stats` / `keyword_stats` 本身目前**无单测**
-（真实数据依赖太重），四个端点也无 HTTP 层测试。优先补测项：`time_stats` 四种
-`by` 的键格式快照、keywords 的 `taskId` 契约、跨分片重复计数场景。
+`tests/test_analytics_guards.py` 覆盖聚合口径本身（用内存 SQLite 造真表跑真 SQL，
+不是 mock）：`hour` 恒 24 桶 / `weekday` 恒 7 桶 / `month`·`date` 不补、补零不抬高
+`total`、`deduped` 标志、`report` 首末消息、`contact_profile` 上限与 `truncated`、
+两处 `spanDays` 同为 float、`max_msgs` 上限、统计端点 from/to 接线。

@@ -245,7 +245,10 @@ class ProfileDistiller:
                 "myShare": round(mine_n / max(1, total), 3),
                 "firstText": _ts(agg["first"]) if agg["first"] else None,
                 "lastText": _ts(agg["last"]) if agg["last"] else None,
-                "activeDays": days, "spanDays": int(span),
+                "activeDays": days,
+                # float：与 contact_profile 的 spanDays 保持同类型。
+                # JS 里 3 !== 3.0 为 true，跨页比较时类型不一致会判错分段。
+                "spanDays": float(round(span, 1)),
             },
             "rhythm": {
                 "hourly": [{"hour": h, "total": hour_total.get(h, 0),
@@ -311,14 +314,23 @@ class ProfileDistiller:
         return out
 
     # ============================================================ 单人画像
+    # 单会话画像的样本上限。14 万条的大群逐条解压要几分钟、内存数百 MB，
+    # 而 GUI 侧是同步持锁调用——不限上限就是唯一能打挂整个服务的一条路径。
+    # 命中上限时 overview.truncated=True，由调用方告知用户「只基于最近 N 条」。
+    CONTACT_MAX_MSGS = 60000
+
     def contact_profile(self, query: str, from_ts=None, to_ts=None,
-                        top: int = 10) -> dict:
+                        top: int = 10, max_msgs: int | None = None) -> dict:
         t0 = time.time()
+        cap = self.CONTACT_MAX_MSGS if max_msgs is None else int(max_msgs)
         sess = self.ds.find_session(query)
         if not sess:
             raise SystemExit(f"[x] 没找到会话「{query}」，先跑 `mosu sessions` 看看")
-        rows = self.ds.raw_messages(sess, limit=10 ** 9, from_ts=from_ts, to_ts=to_ts,
+        # 多取 1 条用来判断是否真的撞了上限（多取的那条不参与统计）
+        rows = self.ds.raw_messages(sess, limit=cap + 1, from_ts=from_ts, to_ts=to_ts,
                                     order="asc")
+        truncated = len(rows) > cap
+        rows = rows[:cap]
         msgs = []
         for shard, r in rows:
             m = self.ds.to_message(r, sess, shard=shard)
@@ -403,7 +415,8 @@ class ProfileDistiller:
             "scope": "contact",
             "session": {"sessionId": sess["sessionId"], "displayName": sess["displayName"],
                         "type": sess["type"]},
-            "meta": {"scannedMessages": len(msgs), "cost": round(time.time() - t0, 1)},
+            "meta": {"scannedMessages": len(msgs), "cost": round(time.time() - t0, 1),
+                     "truncated": truncated, "maxMsgs": cap},
             "overview": {
                 "totalMessages": len(msgs),
                 "myMessages": len(mine),
@@ -412,7 +425,10 @@ class ProfileDistiller:
                 "activeDays": len(days),
                 "firstText": _ts(msgs[0]["ts"]),
                 "lastText": _ts(msgs[-1]["ts"]),
-                "spanDays": round((msgs[-1]["ts"] - msgs[0]["ts"]) / 86400, 1),
+                # float 而非 int：JS 里 3 !== 3.0 为 true，跨页比较 spanDays
+                # （本人页 vs 联系人页）会因类型不同而走进错误分段
+                "spanDays": float(round((msgs[-1]["ts"] - msgs[0]["ts"]) / 86400, 1)),
+                "truncated": truncated,
             },
             "rhythm": {
                 "hourlyMine": [h_mine.get(h, 0) for h in range(24)],
