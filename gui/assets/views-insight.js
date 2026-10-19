@@ -575,9 +575,9 @@
     ],
   };
   /** 这些键不进卡片：meta 进页首脚注，scope/session 已在页首体现。
-      summary 是 truncated 标记的载体（见 applyProfile），由专门的 notice 呈现，
-      不该在「补充信息」里以 `summary: {truncated: true}` 的形态重复出现。 */
-  const PROFILE_HIDDEN = new Set(["meta", "scope", "session", "summary"]);
+      注意：truncated 契约在 meta.truncated（不是 summary.truncated），
+      后端不返回 summary 键，所以这里无需隐藏任何东西。 */
+  const PROFILE_HIDDEN = new Set(["meta", "scope", "session"]);
 
   const Insight = {
     components: { JsonView, ReportView },
@@ -621,13 +621,6 @@
       </template>
       <template v-else-if="data">
         <div class="tiny muted" v-if="metaLine" style="margin-bottom:12px">{{ metaLine }}</div>
-        <div class="notice" v-if="truncated" style="margin-bottom:12px">
-          <b>样本已达上限</b>
-          <div class="tiny" style="margin-top:4px;opacity:.85">
-            数据量超过单次分析上限，本次仅基于最近 {{ fmtNum(sampled) }} 条消息计算，
-            不是全量口径。下面的结论对更早的消息可能不成立。
-          </div>
-        </div>
         <div class="notice" v-if="isGroupContact" style="margin-bottom:12px">
           <b>群聊口径说明</b>
           <div class="tiny" style="margin-top:4px;opacity:.85">
@@ -671,8 +664,6 @@
       return {
         mode: "self", picked: "", year: "", years: [], sessions: [],
         data: null, loading: false, err: "",
-        /** 样本触顶时后端置 true：结果只覆盖最近 N 条，不是全量口径 */
-        truncated: false, sampled: 0,
       };
     },
     computed: {
@@ -715,13 +706,15 @@
         const bits = [];
         if (m.scannedMessages) bits.push(`扫描 ${M.fmtNum(m.scannedMessages)} 条消息`);
         if (m.textSampled) bits.push(`抽样 ${M.fmtNum(m.textSampled)} 条文本`);
+        /* 触顶说明并入页首脚注，不另起一条 notice：同一件事说两遍是噪音。
+           措辞用「本次抽样 N 条」而非「最近 N 条」：后端 contact_profile 取的是
+           按时间升序的前 N 条（profile.py 的 order="asc"），不是最近 N 条，
+           说「最近」会与实际口径不符。 */
+        if (m.truncated) {
+          bits.push(`样本已达上限，本次仅抽样 ${M.fmtNum(m.maxMsgs || m.scannedMessages)} 条`);
+        }
         if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
         return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
-      },
-      /** 触顶提示要告诉用户「按多少条算的」，取得到实际数就显示实际数 */
-      sampled() {
-        const m = (this.data && this.data.meta) || {};
-        return m.scannedMessages || 0;
       },
     },
     methods: {
@@ -738,7 +731,7 @@
       },
       async load() {
         if (this.kind === "profile" && this.mode === "contact" && !this.picked) return;
-        this.loading = true; this.err = ""; this.truncated = false;
+        this.loading = true; this.err = "";
         try {
           if (this.kind === "profile") {
             await this.loadProfile();
@@ -752,6 +745,8 @@
        * 画像改走异步任务：contact_profile 要扫全量消息，大群能跑十几秒，
        * 同步持锁会把整个 GUI 卡住且无法超时自救（后端 risk #3）。
        * 轮询写法与 Stats.runKeywords 一致：起一个 taskId，按固定间隔问 /api/task。
+       * 不按 `kind` 分流——只认自己刚拿到的那个 taskId 的 status，
+       * 所以 kind 新增取值 "profile" 不需要在这里登记，也不会误分流。
        * 服务端不支持 async 时（老版本）返回的是完整结果体，此时直接渲染——优雅降级。
        */
       async loadProfile() {
@@ -759,19 +754,14 @@
           ...(this.picked ? { session: this.picked } : {}), async: 1,
         });
         const tid = d.taskId || d.id || (d.task && d.task.id);
-        if (!tid) { this.applyProfile(d); return; }        // 未走异步分支，直接就是结果
+        if (!tid) { this.data = d || null; return; }        // 未走异步分支，直接就是结果
         for (let i = 0; i < 300; i++) {                    // 上限与关键词分析一致：约 7.5 分钟
           await new Promise((r) => setTimeout(r, 1500));
           const t = await M.api.get("/api/task", { id: tid });
-          if (t.status === "done") { this.applyProfile(t.result || {}); return; }
+          if (t.status === "done") { this.data = t.result || null; return; }
           if (t.status === "error") throw new Error(t.error || "画像生成失败");
         }
         throw new Error("画像生成超时，请重试或缩小数据范围");
-      },
-      /** 结果结构与原同步返回体一致，只多一个 summary.truncated；多余字段一律忽略 */
-      applyProfile(r) {
-        this.data = r || null;
-        this.truncated = !!(r && r.summary && r.summary.truncated);
       },
     },
     async mounted() {
