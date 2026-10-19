@@ -194,6 +194,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
     port = port or int(os.environ.get("MOSU_GUI_PORT", "8788"))
     bot = BotService(corpus_path)
+    bot.ds = None          # 首帧不建数据层（解密慢），见 _ensure_bot_ds
     n = len(getattr(bot.retriever, "corpus", []))
     print(f"[mosu-gui] 语料 {n} 条，监听 http://127.0.0.1:{port}")
 
@@ -1015,6 +1016,32 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         _th.Thread(target=run, daemon=True, name="mosu-keyfind").start()
 
     # ------------------------------------------------ 大模型配置
+    def api_personas() -> dict:
+        """人格列表 + 当前选中项。
+
+        顺带把数据层挂上 bot（分析者/安慰者要引用真实统计），懒加载：
+        只有真的切到需要数据的人格时才付出解密代价。
+        """
+        from core.bot import personas as P
+        if bot.ds is None and not _ds_err:
+            try:
+                with _ds_lock:
+                    bot.ds = get_ds()
+            except Exception:
+                pass          # 没有密钥/目录时只保留模仿者
+        return {"personas": P.list_personas(),
+                "current": bot.persona_id,
+                "switch": P.SWITCH_HELP,
+                "hasData": bot.ds is not None}
+
+    def api_persona_set(q) -> dict:
+        from core.bot import personas as P
+        pid, _ = P.parse_switch(q.get("persona") or "")
+        if not pid or pid == "__help__":
+            raise ValueError("未知的人格 id")
+        p = bot.set_persona(pid)
+        return {"current": p.id, "name": p.name, "tagline": p.tagline}
+
     def api_llm_get() -> dict:
         from core.llmconfig import load_llm_config
         cfg = load_llm_config()
@@ -1244,6 +1271,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             if path == "/api/llm":
                 self._guard(api_llm_get)
                 return
+            if path == "/api/personas":
+                self._guard(api_personas)
+                return
             if path == "/api/moments":
                 self._guard(api_moments, self._params())
                 return
@@ -1308,18 +1338,30 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 if not query:
                     self._json({"error": "message 不能为空"}, 400)
                     return
-                try:
-                    self._json(bot.chat(query, conv_id="gui"))
-                except SystemExit as e:
-                    self._json({"error": str(e)}, 500)
-                except Exception as e:  # noqa: BLE001
-                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                # 消息里可以带人格切换指令（/倾听、/分析…），返回里带上当前人格
+                from core.bot import personas as P
+                pid, rest = P.parse_switch(query)
+                if pid == "__help__":
+                    self._json({"reply": P.SWITCH_HELP, "persona": bot.persona_id,
+                                "switched": False})
+                    return
+                if pid:
+                    bot.set_persona(pid)
+                    self._json({"reply": f"切到「{bot.personas.get(pid).name}」了，"
+                                         f"{bot.personas.get(pid).tagline}",
+                                "persona": pid, "switched": True})
+                    return
+                self._json(bot.chat(query, conv_id="gui",
+                                    persona=payload.get("persona")))
                 return
             if path == "/api/stats/keywords":
                 self._guard(api_stats_keywords, payload)
                 return
             if path == "/api/persona":
                 self._guard(api_persona, payload)
+                return
+            if path == "/api/persona/set":
+                self._guard(api_persona_set, payload)
                 return
             if path == "/api/account":
                 self._guard(api_account_action, payload)

@@ -9,22 +9,22 @@
 
   const NAV = [
     { group: "开始", items: [
-      { id: "console", name: "控制台", icon: "◎", comp: "Console" },
-      { id: "browse", name: "数据浏览", icon: "💬", comp: "Browse" },
-      { id: "search", name: "全库搜索", icon: "🔍", comp: "Browse", params: { search: 1 } },
+      { id: "console", name: "控制台", icon: "console", comp: "Console" },
+      { id: "browse", name: "数据浏览", icon: "browse", comp: "Browse" },
+      { id: "search", name: "全库搜索", icon: "search", comp: "Browse", params: { search: 1 } },
     ] },
     { group: "洞察", items: [
-      { id: "stats", name: "数据统计", icon: "📊", comp: "Stats" },
-      { id: "profile", name: "画像", icon: "🧭", comp: "Insight", props: { kind: "profile" } },
-      { id: "report", name: "年报", icon: "📅", comp: "Insight", props: { kind: "report" } },
-      { id: "contacts", name: "联系人", icon: "👤", comp: "Contacts" },
+      { id: "stats", name: "数据统计", icon: "stats", comp: "Stats" },
+      { id: "profile", name: "画像", icon: "profile", comp: "Insight", props: { kind: "profile" } },
+      { id: "report", name: "年报", icon: "report", comp: "Insight", props: { kind: "report" } },
+      { id: "contacts", name: "联系人", icon: "contacts", comp: "Contacts" },
     ] },
     { group: "数据", items: [
-      { id: "moments", name: "朋友圈", icon: "🌐", comp: "Moments" },
-      { id: "export", name: "导出", icon: "📦", comp: "ExportView" },
+      { id: "moments", name: "朋友圈", icon: "moments", comp: "Moments" },
+      { id: "export", name: "导出", icon: "export", comp: "ExportView" },
     ] },
     { group: "系统", items: [
-      { id: "settings", name: "设置", icon: "⚙", comp: "Settings" },
+      { id: "settings", name: "设置", icon: "settings", comp: "Settings" },
     ] },
   ];
 
@@ -42,7 +42,7 @@
 
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">墨</div>
+          <img class="brand-mark" src="/assets/logo-512.png" alt="墨溯" />
           <div class="brand-text">
             <div class="brand-name">墨溯</div>
             <div class="brand-sub">本地微信数据</div>
@@ -54,7 +54,7 @@
             <button v-for="it in g.items" :key="it.id"
                     class="nav-item" :class="{active: route===it.id}"
                     @click="go(it.id)">
-              <span class="nav-icon">{{ it.icon }}</span>
+              <span class="nav-icon" v-html="icon(it.icon)"></span>
               <span class="nav-label">{{ it.name }}</span>
               <span v-if="it.id==='browse' && sessionCount" class="nav-badge">
                 {{ sessionCount }}
@@ -104,7 +104,7 @@
             <div v-for="(r,i) in cmdkResults" :key="r.id"
                  class="cmdk-item" :class="{active: i===cmdkIdx}"
                  @click="pickCmd(r)" @mouseenter="cmdkIdx=i">
-              <span class="nav-icon">{{ r.icon }}</span>
+              <span class="nav-icon" v-html="icon(r.icon)"></span>
               <span>{{ r.name }}</span>
               <span class="cmdk-key">{{ r.group }}</span>
             </div>
@@ -213,6 +213,7 @@
         statusLine, ready, sessionCount, toasts: M.toasts, theme: M.theme,
         cmdkOpen, cmdkQ, cmdkIdx, cmdkResults, pickCmd, toggleTheme,
         showWizard, finishWizard, booting,
+        icon: (n) => global.MosuIcons[n] || "",
       };
     },
   };

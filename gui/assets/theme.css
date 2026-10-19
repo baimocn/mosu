@@ -93,9 +93,9 @@
   --border-strong: #cbd5e1;
   --border-focus: #2f6feb;
 
-  --brand: #2f6feb;
-  --brand-hover: #2563d6;
-  --brand-soft: rgba(47, 111, 235, 0.1);
+  --brand: #0e9e56;
+  --brand-hover: #0b8548;
+  --brand-soft: rgba(14, 158, 86, 0.1);
   --brand-text: #ffffff;
 
   --wechat: #07c160;           /* 微信绿：只用于「我发出的气泡」等语义位置 */
@@ -119,13 +119,13 @@
   --code-bg: #f1f5f9;
 
   /* Aurora 渐变流：主按钮 / 强调条。background-size 200% + 位移动画 */
-  --grad-brand: linear-gradient(100deg, #2f6feb 0%, #4f8bff 30%, #7aa2ff 55%, #2f6feb 100%);
-  --grad-brand-soft: linear-gradient(100deg, rgba(47,111,235,.14), rgba(122,162,255,.2), rgba(47,111,235,.14));
+  --grad-brand: linear-gradient(100deg, #0e9e56 0%, #16b866 30%, #34cf85 55%, #0e9e56 100%);
+  --grad-brand-soft: linear-gradient(100deg, rgba(14,158,86,.14), rgba(52,207,133,.2), rgba(14,158,86,.14));
   --grad-sheen: linear-gradient(105deg, transparent 30%, rgba(255,255,255,.55) 48%, transparent 66%);
   --grad-surface: linear-gradient(160deg, #ffffff 0%, #fbfcfe 100%);
 
   /* 柔光（Soft Glow）：悬停时从品牌色外溢的呼吸感 */
-  --glow-brand: 0 0 0 4px rgba(47, 111, 235, 0.14), 0 6px 20px rgba(47, 111, 235, 0.28);
+  --glow-brand: 0 0 0 4px rgba(14, 158, 86, 0.14), 0 6px 20px rgba(14, 158, 86, 0.28);
   --glow-danger: 0 0 0 4px rgba(220, 38, 38, 0.13), 0 6px 20px rgba(220, 38, 38, 0.26);
   --glow-success: 0 0 0 4px rgba(5, 150, 105, 0.13), 0 6px 20px rgba(5, 150, 105, 0.24);
 
@@ -170,9 +170,9 @@
   --border-strong: #303b49;
   --border-focus: #588cff;
 
-  --brand: #588cff;
-  --brand-hover: #6f9dff;
-  --brand-soft: rgba(88, 140, 255, 0.16);
+  --brand: #2fb96e;
+  --brand-hover: #46c982;
+  --brand-soft: rgba(47, 185, 110, 0.16);
   --brand-text: #0d1117;
 
   --wechat: #2eb872;
@@ -195,12 +195,12 @@
   --bubble-out-text: #eafbef;
   --code-bg: #0f151c;
 
-  --grad-brand: linear-gradient(100deg, #3f74e8 0%, #588cff 30%, #7ea8ff 55%, #3f74e8 100%);
-  --grad-brand-soft: linear-gradient(100deg, rgba(88,140,255,.16), rgba(126,168,255,.24), rgba(88,140,255,.16));
+  --grad-brand: linear-gradient(100deg, #17a95e 0%, #2fb96e 30%, #57d693 55%, #17a95e 100%);
+  --grad-brand-soft: linear-gradient(100deg, rgba(47,185,110,.16), rgba(87,214,147,.24), rgba(47,185,110,.16));
   --grad-sheen: linear-gradient(105deg, transparent 30%, rgba(255,255,255,.16) 48%, transparent 66%);
   --grad-surface: linear-gradient(160deg, #151b23 0%, #1a212b 100%);
 
-  --glow-brand: 0 0 0 4px rgba(88, 140, 255, 0.16), 0 6px 22px rgba(88, 140, 255, 0.34);
+  --glow-brand: 0 0 0 4px rgba(47, 185, 110, 0.16), 0 6px 22px rgba(47, 185, 110, 0.34);
   --glow-danger: 0 0 0 4px rgba(242, 102, 111, 0.15), 0 6px 22px rgba(242, 102, 111, 0.3);
   --glow-success: 0 0 0 4px rgba(63, 185, 141, 0.15), 0 6px 22px rgba(63, 185, 141, 0.28);
 

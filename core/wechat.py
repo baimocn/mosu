@@ -371,6 +371,12 @@ def run_serve(corpus: str, once: bool = False) -> int:
 
     client = WeixinClient(cred["token"], cred.get("base_url"))
     bot = BotService(corpus)
+    # 分析者/安慰者要能引用真实统计：懒挂数据层，首条消息要用到时才解密
+    try:
+        from core.dataset import Dataset
+        bot.ds = Dataset(quiet=True)
+    except Exception as e:      # 没有密钥/数据目录时降级：只做模仿者
+        print(f"[i] 数据层不可用（{type(e).__name__}），仅模仿者可用", flush=True)
     buf = _read_json(sync_path()).get("buf", "")
     ctx = _read_json(ctx_path())
     typing_tickets: dict[str, str] = {}   # typing_ticket 按用户缓存，免每次 getconfig
@@ -414,6 +420,25 @@ def run_serve(corpus: str, once: bool = False) -> int:
             if not text or not frm:
                 continue
             log(f"[收到] {text}")
+            # 角色切换指令：/倾听 /分析 /安慰 /模仿 /帮助
+            from core.bot import personas as P
+            pid, _rest = P.parse_switch(text)
+            if pid == "__help__":
+                try:
+                    client.send_text(frm, token_ctx, P.SWITCH_HELP)
+                    log("[切换] 帮助")
+                except Exception as e:
+                    log(f"[!] 帮助发送失败：{e}")
+                continue
+            if pid:
+                p = bot.set_persona(pid)
+                try:
+                    client.send_text(frm, token_ctx,
+                                     f"切到「{p.name}」了，{p.tagline}。{P.SWITCH_HELP}")
+                    log(f"[切换] {p.id}")
+                except Exception as e:
+                    log(f"[!] 切换回执发送失败：{e}")
+                continue
             # 先给"正在输入"反馈：云端 LLM 要等 3~8 秒，不能让对方干等没反应
             try:
                 ticket = typing_tickets.get(frm)
@@ -430,7 +455,7 @@ def run_serve(corpus: str, once: bool = False) -> int:
                 reply = r.get("reply") or ""
                 client.send_text(frm, token_ctx, reply)
                 _write_json(ctx_path(), ctx)
-                log(f"[回复] {reply}")
+                log(f"[回复/{r.get('persona') or '-'}] {reply}")
             except Exception as e:
                 log(f"[!] 处理失败：{type(e).__name__}: {e}")
         if once:

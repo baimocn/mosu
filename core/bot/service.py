@@ -37,11 +37,32 @@ REF_TMPL = """下面是从白墨历史微信发言里检索到的 {n} 条片段�
 参考片段：
 {blocks}"""
 
+FACTS_HEADER = """【本次可引用的数据库事实】
+{facts}
+"""
+
+PERSONA_HEADER = """【你现在扮演的角色：{name}——{tagline}】
+{prompt}
+
+【风格要求】
+{style_hint}
+
+【红线】
+{guard}
+
+【长度】
+回复不超过 {max_words} 字，宁可少说也不要写长段。"""
+
 
 def _norm_key(query: str) -> str:
     """问题归一化：去空白/标点/大小写。用于缓存键——
     「在吗」「在吗？」「在 吗」视为同一个问题。"""
     return re.sub(r"[\s\W_]+", "", query).lower()
+
+
+def _cache_key(query: str, persona: str) -> str:
+    """人格进缓存键：同一个问题在不同人格下答案完全不同，不能共用。"""
+    return f"{persona}:{_norm_key(query)}"
 
 
 class BotService:
@@ -65,6 +86,11 @@ class BotService:
         self.history_limit = history_limit
         self.sample_mode = sample_mode
         self.history: dict[str, list[dict]] = {}
+        # ---- 人格：决定角色、语气与能看到的数据 ----
+        from core.bot import personas as P
+        self.personas = P
+        self.persona_id = P.DEFAULT_PERSONA
+        self.ds = None                     # 注入 Dataset 后，分析者/安慰者才有事实
         # ---- 语义缓存：高频短问题（问候/确认类）命中直接回，省额度省延迟 ----
         # 边界从严：只缓存「通过校验且 <= cache_max_len 字」的回复——
         # 长回复往往依赖上下文，缓存会露馅；MOSU_BOT_CACHE=0 可关
@@ -110,12 +136,35 @@ class BotService:
             return self.retriever.sample(topk)
         return self.retriever.search(query, topk=topk)
 
+    def _facts_for(self, p, query: str) -> str:
+        """给「能看数据」的人格拼一段可引用的事实；没有 Dataset 就返回空。"""
+        if p.data == "none" or self.ds is None:
+            return ""
+        try:
+            from core.bot.facts import FactBuilder
+            return FactBuilder(self.ds, session_hint=query).build(p.data)
+        except Exception:
+            return ""
+
     def _build_messages(self, query: str, retrieved: list[dict],
-                        conv_id: str | None) -> list[dict]:
+                        conv_id: str | None, persona=None) -> list[dict]:
         n_corpus = len(getattr(self.retriever, "corpus", []) or [])
-        msgs = [{"role": "system",
-                 "content": SYSTEM_TMPL.format(n=f"{n_corpus:,}" if n_corpus else "上万")}]
-        if retrieved:
+        p = persona or self.personas.get(self.persona_id)
+        system = SYSTEM_TMPL.format(n=f"{n_corpus:,}" if n_corpus else "上万")
+        # 模仿者本身就是「数字分身」，角色段会与之重复；其余角色才需要追加
+        if p.id != "mimic":
+            system += "\n\n" + PERSONA_HEADER.format(
+                name=p.name, tagline=p.tagline, prompt=p.persona_prompt,
+                style_hint=p.style_hint, guard=p.guard, max_words=p.max_words)
+        msgs = [{"role": "system", "content": system}]
+
+        facts = self._facts_for(p, query)
+        if facts:
+            msgs.append({"role": "user", "content": FACTS_HEADER.format(facts=facts)})
+            msgs.append({"role": "assistant",
+                         "content": "记住了，只引用上面给出的事实，不自己编数字。"})
+
+        if retrieved and p.id == "mimic":
             blocks = "\n".join(f"{i}. {c['text']}" for i, c in enumerate(retrieved, 1))
             msgs.append({"role": "user",
                          "content": REF_TMPL.format(n=len(retrieved), blocks=blocks)})
@@ -125,9 +174,11 @@ class BotService:
         msgs.append({"role": "user", "content": query})
         return msgs
 
-    def chat(self, query: str, conv_id: str | None = None, topk: int = 5) -> dict:
+    def chat(self, query: str, conv_id: str | None = None, topk: int = 5,
+             persona: str | None = None) -> dict:
         t0 = time.time()
-        key = _norm_key(query)
+        p = self.personas.get(persona or self.persona_id)
+        key = _cache_key(query, p.id)
 
         # ---- 缓存命中：0 LLM 调用，0 延迟 ----
         if self.cache_enabled and key in self._cache:
@@ -141,10 +192,12 @@ class BotService:
                 "retrieved": hit["retrieved"],
                 "cost": round(time.time() - t0, 3),
                 "cached": True,
+                "persona": p.id,
             }
 
-        retrieved = self._retrieve(query, topk)
-        messages = self._build_messages(query, retrieved, conv_id)
+        # 事实查询已内置在 _build_messages 里，这里不再单独拼装
+        retrieved = self._retrieve(query, topk) if p.id == "mimic" else []
+        messages = self._build_messages(query, retrieved, conv_id, persona=p)
         reply, problems, tries = "", [], 0
         for attempt in range(self.max_retries + 1):
             tries = attempt + 1
@@ -165,10 +218,23 @@ class BotService:
                           for c in retrieved],
             "cost": round(time.time() - t0, 2),
             "cached": False,
+            "persona": p.id,
         }
 
-    def preview_prompt(self, query: str, topk: int = 5) -> dict:
+    def set_persona(self, persona_id: str | None):
+        """切换默认人格，返回被选中的人格对象。
+
+        未知 id **保持当前人格不变**——静默改回默认会让人以为自己换成功了。
+        """
+        if persona_id and persona_id in self.personas.PERSONAS:
+            self.persona_id = persona_id
+        return self.personas.get(self.persona_id)
+
+    def preview_prompt(self, query: str, topk: int = 5,
+                       persona: str | None = None) -> dict:
         """不调 LLM，只看 prompt 组装（调试/审查用）。"""
-        retrieved = self._retrieve(query, topk)
-        return {"messages": self._build_messages(query, retrieved, None),
-                "retrieved": retrieved}
+        p = self.personas.get(persona or self.persona_id)
+        retrieved = self._retrieve(query, topk) if p.id == "mimic" else []
+        return {"messages": self._build_messages(query, retrieved, None, persona=p),
+                "retrieved": retrieved,
+                "persona": p.id}

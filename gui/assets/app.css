@@ -64,9 +64,7 @@ body {
 .brand-mark {
   width: 32px; height: 32px;
   border-radius: var(--r-md);
-  background: linear-gradient(140deg, var(--brand), #7aa2ff);
-  display: grid; place-items: center;
-  color: #fff; font-weight: 700; font-size: var(--fs-16);
+  object-fit: cover;
   flex: none;
   box-shadow: var(--shadow-sm);
 }
@@ -98,7 +96,10 @@ body {
   content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
   width: 3px; height: 18px; border-radius: var(--r-full); background: var(--brand);
 }
-.nav-icon { width: 18px; text-align: center; font-size: var(--fs-16); flex: none; }
+.nav-icon { width: 18px; height: 18px; flex: none; display: grid; place-items: center; }
+.nav-icon .ico { width: 18px; height: 18px; color: var(--text-3); }
+.nav-item:hover .nav-icon .ico { color: var(--text-2); }
+.nav-item.active .nav-icon .ico { color: var(--brand); }
 .nav-badge {
   margin-left: auto; font-size: var(--fs-11); padding: 1px 6px;
   border-radius: var(--r-full); background: var(--bg-inset); color: var(--text-3);
@@ -612,6 +613,26 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
   border: 1px solid var(--border);
   color: var(--text-1);
 }
+
+/* ---- 角色切换条 ---- */
+.persona-bar {
+  display: flex; gap: var(--sp-2); flex-wrap: wrap;
+  padding: 0 var(--sp-5) var(--sp-4);
+}
+.persona-chip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 6px 12px; border-radius: var(--r-md);
+  border: 1px solid var(--border); background: var(--bg-inset);
+  color: var(--text-2); cursor: pointer; text-align: left;
+  transition: all var(--dur) var(--ease);
+  font-size: var(--fs-13); font-weight: 600;
+}
+.persona-chip .tiny { font-weight: 400; color: var(--text-4); font-size: var(--fs-11); }
+.persona-chip:hover { border-color: var(--brand); color: var(--text-1); }
+.persona-chip.active {
+  border-color: var(--brand); background: var(--brand-soft); color: var(--brand);
+}
+.persona-chip.active .tiny { color: var(--brand); opacity: .8; }
 
 /* ---- 朋友圈 ---- */
 .moments {

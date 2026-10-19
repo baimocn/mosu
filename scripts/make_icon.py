@@ -1,53 +1,74 @@
-"""生成墨溯图标（一次性资产生成，不进仓库主代码目录）。"""
+"""由 gui/assets/logo.svg 生成多尺寸 ico（Windows 快捷方式 / 任务栏 / 文件图标）。
+
+流程：Edge 无头渲染 SVG → 512px PNG → PIL 缩放出各尺寸 → 打包 ICO。
+零第三方构建依赖，只需要 Pillow（可选，缺失时降级为不生成 ico）。
+用法：python scripts/make_icon.py
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
 
-OUT = Path(r"D:\Desktop\墨溯\gui\assets\mosu.ico")
+ROOT = Path(__file__).resolve().parent.parent
+SVG = ROOT / "gui" / "assets" / "logo.svg"
+ICO = ROOT / "gui" / "assets" / "mosu.ico"
+PNG = ROOT / "gui" / "assets" / "logo-512.png"
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
-BG = (7, 193, 96, 255)          # 微信绿
-BG2 = (5, 160, 80, 255)         # 深一档，做渐变底
+
+EDGE_CANDIDATES = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    shutil.which("msedge") or "",
+    shutil.which("google-chrome") or "",
+]
 
 
-def find_font(size: int):
-    for p in (r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\msyh.ttc",
-              r"C:\Windows\Fonts\simhei.ttf"):
-        if Path(p).exists():
-            try:
-                return ImageFont.truetype(p, size)
-            except Exception:
-                pass
-    return ImageFont.load_default(size)
+def _find_edge() -> str | None:
+    for c in EDGE_CANDIDATES:
+        if c and Path(c).exists():
+            return c
+    return None
 
 
-def render(size: int) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # 圆角矩形底（微信绿竖向渐变）
-    r = int(size * 0.22)
-    for y in range(size):
-        t = y / max(1, size - 1)
-        c = tuple(int(BG[i] * (1 - t) + BG2[i] * t) for i in range(4))
-        d.line([(0, y), (size, y)], fill=c)
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=r, fill=255)
-    img.putalpha(mask)
-    # 白色「溯」字——取水回溯之意
-    f = find_font(int(size * 0.62))
-    text = "溯"
-    bb = d.textbbox((0, 0), text, font=f)
-    w, h = bb[2] - bb[0], bb[3] - bb[1]
-    d.text(((size - w) / 2 - bb[0], (size - h) / 2 - bb[1] - size * 0.02),
-           text, font=f, fill=(255, 255, 255, 255))
-    return img
+def render_png(out: Path) -> bool:
+    """用无头浏览器把 SVG 渲染成透明底 PNG。找不到浏览器就跳过（不硬失败）。"""
+    edge = _find_edge()
+    if not edge:
+        print("[i] 没找到 Edge/Chrome，跳过渲染；ico 保持原样")
+        return False
+    uri = SVG.resolve().as_uri()
+    # 注意：subprocess 传列表时不能自己加引号（那是 shell 的活），
+    # 否则路径里会带引号，浏览器写不出文件。
+    cmd = [edge, "--headless=new", "--disable-gpu", "--no-proxy-server",
+           "--default-background-color=00000000",
+           f"--screenshot={out.resolve()}",
+           "--window-size=512,512", "--virtual-time-budget=6000", uri]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=90)
+    except Exception as e:
+        print(f"[x] 渲染失败：{type(e).__name__}: {e}")
+        return False
+    return out.exists() and out.stat().st_size > 1024
 
 
-def main() -> None:
-    base = render(256)
-    base.save(OUT, format="ICO",
-              sizes=[(s, s) for s in SIZES],
-              bitmap_format="png")
-    print(f"icon -> {OUT} ({OUT.stat().st_size} bytes)")
+def main() -> int:
+    if not SVG.exists():
+        print(f"[x] 找不到 {SVG}")
+        return 1
+    if not render_png(PNG):
+        return 0
+    try:
+        from PIL import Image
+    except Exception:
+        print("[i] 没有 Pillow，无法打包 ico")
+        return 0
+    base = Image.open(PNG).convert("RGBA")
+    base.save(ICO, format="ICO", sizes=[(s, s) for s in SIZES], bitmap_format="png")
+    print(f"✅ {ICO} ({ICO.stat().st_size} bytes, {len(SIZES)} sizes)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

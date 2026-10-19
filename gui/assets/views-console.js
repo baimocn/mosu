@@ -73,7 +73,18 @@
           <div class="card-title">
             试着和「你」聊一句
             <div class="spacer"></div>
+            <span class="tiny muted" v-if="persona">{{ curPersona.tagline }}</span>
             <button class="btn btn-sm btn-ghost" @click="log=[]" v-if="log.length">清空</button>
+          </div>
+
+          <!-- 角色切换：AI 能扮演谁，决定它说什么、能不能引用数据 -->
+          <div class="persona-bar">
+            <button v-for="p in personas" :key="p.id" class="persona-chip"
+                    :class="{active: persona === p.id}"
+                    :title="p.intent" @click="pickPersona(p.id)">
+              {{ p.name }}
+              <span class="tiny">{{ p.tagline }}</span>
+            </button>
           </div>
 
           <div class="chat-log" ref="logEl" style="flex:1;overflow-y:auto">
@@ -133,9 +144,14 @@
       </div>
     </div>`,
     data() {
-      return { q: "", log: [], sending: false, events: [], art: EmptyArt, suggestions: SUGGESTIONS };
+      return { q: "", log: [], sending: false, events: [], art: EmptyArt,
+               suggestions: SUGGESTIONS, personas: [], persona: "" };
     },
     computed: {
+      curPersona() {
+        return this.personas.find((p) => p.id === this.persona)
+          || { name: "模仿者", tagline: "", intent: "" };
+      },
       status() { return M.store.status; },
       llm() { return M.store.llm; },
       wxOk() { return !!(this.status && this.status.wechat && this.status.wechat.logged_in); },
@@ -192,10 +208,12 @@
         const t0 = performance.now();
         try {
           const d = await M.api.post("/api/chat", { message: text });
+          if (d && d.persona) this.persona = d.persona;
           const reply = (d && (d.reply || d.text)) || "（没有返回内容）";
           const item = {
             role: "bot", text: reply, shown: "", typing: true,
-            meta: Math.round(performance.now() - t0) + "ms"
+            meta: (this.persona ? this.curPersona.name + " · " : "")
+              + Math.round(performance.now() - t0) + "ms"
               + (d && d.cached ? " · 缓存" : "")
               + (d && d.model ? " · " + d.model : ""),
           };
@@ -209,6 +227,14 @@
           this.loadLog();
         }
       },
+      async pickPersona(id) {
+        if (this.persona === id) return;
+        try {
+          const d = await M.api.post("/api/persona/set", { persona: id });
+          this.persona = d.current || id;
+          M.toast.ok("已切到「" + (d.name || id) + "」");
+        } catch (e) { M.toast.err("切换失败：" + e.message); }
+      },
       async loadLog() {
         try {
           const d = await M.api.get("/api/log", { n: 40 });
@@ -218,6 +244,10 @@
     },
     mounted() {
       this.loadLog();
+      M.api.get("/api/personas").then((d) => {
+        this.personas = d.personas || [];
+        this.persona = d.current || "";
+      }).catch(() => {});
       clearInterval(this._t);
       this._t = setInterval(() => { M.refreshStatus(); this.loadLog(); }, 5000);
     },
