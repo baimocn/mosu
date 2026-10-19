@@ -658,10 +658,18 @@ def cmd_bot(args, ds: Dataset):
 # ---------------------------------------------------------------- gui（本地 Web 控制台）
 def cmd_gui(args, ds: Dataset):
     from core import task as tk
+    from core import shortcut as sc
     if args.gui_cmd == "install":
+        # 先建入口再注册常驻——用户装完就能在桌面上看到它
+        sc.create_shortcut()
         return tk.install_task("MosuGui", "gui")
     if args.gui_cmd == "uninstall":
+        sc.remove_shortcut()
         return tk.uninstall_task("MosuGui")
+    if args.gui_cmd == "shortcut":
+        return sc.create_shortcut()
+    if args.gui_cmd == "unshortcut":
+        return sc.remove_shortcut()
     if args.gui_cmd == "task":
         return tk.task_status("MosuGui")
     from gui.server import run_gui
@@ -1084,8 +1092,10 @@ def build_parser():
     p = sub.add_parser("gui", help="本地 Web 控制台：对话调试 + 通道状态 + 消息流水 + 数据浏览",
                        parents=[common])
     p.add_argument("gui_cmd", nargs="?",
-                   choices=["install", "uninstall", "task"], default=None,
-                   help="install=常驻(登录自启) uninstall/task=管理")
+                   choices=["install", "uninstall", "task",
+                            "shortcut", "unshortcut"], default=None,
+                   help="install=常驻+桌面快捷方式 shortcut/unshortcut=桌面入口 "
+                        "uninstall/task=管理")
     p.add_argument("--corpus", help="语料 jsonl 路径，默认 persona/corpus.jsonl")
     p.add_argument("--port", type=int, default=int(os.environ.get("MOSU_GUI_PORT", "8788")))
     p.add_argument("--no-browser", action="store_true", help="只起服务，不自动开浏览器")

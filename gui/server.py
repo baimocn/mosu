@@ -1020,6 +1020,13 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     return
                 self._send(f.read_bytes(), "text/html; charset=utf-8")
                 return
+            if path == "/favicon.ico":
+                f = GUI_DIR / "assets" / "mosu.ico"
+                if f.is_file():
+                    self._send(f.read_bytes(), "image/x-icon")
+                else:
+                    self._json({"error": "not found"}, 404)
+                return
             for prefix in ("/vendor/", "/assets/"):
                 if not path.startswith(prefix):
                     continue

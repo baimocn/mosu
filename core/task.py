@@ -65,7 +65,49 @@ def _install_scheduled(task_name: str, args: str) -> bool:
         return False
 
 
-# ---------------------------------------------------------------- 降级：启动文件夹
+# ---------------------------------------------------------------- 降级 1：schtasks 原生通道
+def _install_schtasks(task_name: str, args: str) -> bool:
+    """PowerShell 的 Register-ScheduledTask 在某些机器上被策略拒绝
+    （AtLogOn 触发器报 0x80070005）。schtasks.exe 走的是另一条 API 路径，
+    个别机器只堵 PowerShell 而不堵 schtasks，值得单独试一次。
+
+    注意 MSYS/Git Bash 会把 /tr 这类参数当路径转换掉，直接拼命令行必坏；
+    这里用 subprocess 传列表，绕开外壳。
+    """
+    py = sys.executable
+    tr = f'"{py}" -u "{ROOT / "cli" / "mosu.py"}" {args} --no-browser'
+    cmd = ["schtasks", "/create", "/tn", task_name, "/tr", tr,
+           "/sc", "onlogon", "/f"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=120)
+    except Exception as e:
+        print(f"[!] schtasks 注册异常：{type(e).__name__}: {e}")
+        return False
+
+    def _text() -> str:
+        # 中文 Windows 的 schtasks 输出是 GBK；utf-8 严解码会把错误信息
+        # 变成乱码，导致「拒绝访问」识别失效
+        for enc in ("gbk", "utf-8"):
+            try:
+                return (r.stdout or b"").decode(enc) + (r.stderr or b"").decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return (r.stdout or b"").decode("utf-8", "replace")
+
+    if r.returncode == 0:
+        print(f"✅ 常驻任务已注册：{task_name}（schtasks 登录触发）")
+        print("   · 登录即自动启动")
+        print("   · 用 schtasks 查询/管理：schtasks /query /tn " + task_name)
+        return True
+    detail = _text().strip()
+    if "拒绝访问" in detail or "Access is denied" in detail:
+        print("[!] schtasks 也被本机策略拒绝（登录触发器受限）")
+    else:
+        print(f"[!] schtasks 注册失败：{detail[:200]}")
+    return False
+
+
+# ---------------------------------------------------------------- 降级 2：启动文件夹
 def _install_startup(task_name: str, args: str) -> int:
     """启动文件夹 + VBS 守护。VBS 按系统 ANSI（中文 Windows = GBK）读写，
     文件用 GBK 编码写，避免中文路径乱码。"""
@@ -108,6 +150,9 @@ Loop
 def install_task(task_name: str, args: str) -> int:
     if _install_scheduled(task_name, args):
         return 0
+    print("[i] 计划任务通道不可用，试 schtasks 原生通道…")
+    if _install_schtasks(task_name, args):
+        return 0
     print("[i] 降级到「启动文件夹 + VBS 守护」通道…")
     return _install_startup(task_name, args)
 
@@ -124,7 +169,16 @@ def uninstall_task(task_name: str) -> int:
             ok = True
     except Exception:
         pass
-    # 通道 2：启动文件夹守护脚本
+    # 通道 2：schtasks 注册的任务
+    try:
+        r = subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
+                           capture_output=True, timeout=120)
+        if r.returncode == 0:
+            print(f"✅ 已卸载计划任务 {task_name}（schtasks）")
+            ok = True
+    except Exception:
+        pass
+    # 通道 3：启动文件夹守护脚本
     vbs = _startup_dir() / f"{task_name}.vbs"
     if vbs.exists():
         try:
@@ -135,7 +189,7 @@ def uninstall_task(task_name: str) -> int:
             print(f"[x] 删守护脚本失败：{type(e).__name__}: {e}")
     if not ok:
         print(f"[i] 没找到常驻任务 {task_name}（可能本来就没装）")
-    print("[i] 当前正在运行的服务进程不受影响；下次登录不再自启")
+    print("[i] 正在运行的服务若由计划任务拉起，会随之停止；可随时用桌面快捷方式重启")
     return 0
 
 
