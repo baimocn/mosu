@@ -326,7 +326,7 @@
           <div v-if="!cur" class="empty">
             <div class="empty-icon">👤</div>
             <div class="empty-title">选择一位联系人</div>
-            <div class="empty-desc">查看你与 TA 的往来统计、共同群聊、活跃时段。</div>
+            <div class="empty-desc">右侧是通讯录，按消息量或名称找。选中后展示基本资料与往来统计；群聊会额外给出成员排行。</div>
           </div>
           <div v-else-if="detailLoading" class="skeleton" style="height:300px"></div>
           <div v-else-if="detail">
@@ -334,12 +334,68 @@
               <div class="card-title">{{ detail.displayName || cur.displayName }}</div>
               <dl class="kv">
                 <dt>微信 ID</dt><dd class="mono">{{ cur.wxid }}</dd>
-                <dt>备注</dt><dd>{{ cur.remark || '—' }}</dd>
-                <dt>昵称</dt><dd>{{ cur.nickname || '—' }}</dd>
-                <dt>类型</dt><dd>{{ typeName(cur.type) }}</dd>
+                <dt>微信号</dt><dd>{{ detail.alias || '—' }}</dd>
+                <dt>备注</dt><dd>{{ detail.remark || '—' }}</dd>
+                <dt>昵称</dt><dd>{{ detail.nickname || '—' }}</dd>
+                <dt>类型</dt><dd>{{ typeName(detail.type) }}</dd>
               </dl>
             </div>
-            <json-view v-if="detailObj" :data="detailObj" :title="'往来分析'" />
+            <template v-if="isGroup">
+              <div class="card" style="margin-top:16px">
+                <div class="card-title">群活跃度</div>
+                <div class="card-sub">按数据库中本群保存的全部消息统计。</div>
+                <dl class="kv">
+                  <dt>消息总数</dt><dd>{{ fmtNum(detail.groupTotal || 0) }}</dd>
+                  <dt>上榜成员</dt><dd>{{ fmtNum((detail.groupTop || []).length) }} 人</dd>
+                </dl>
+              </div>
+              <div class="card" style="margin-top:16px">
+                <div class="card-title">成员发言排行</div>
+                <div class="card-sub">按发言条数排序，你的发言会标出来。</div>
+                <div v-for="m in (detail.groupTop || []).slice(0,15)" :key="m.senderId" class="bar-row">
+                  <div class="bar-label">
+                    {{ m.displayName }}
+                    <span v-if="m.isSelf" class="chip" style="margin-left:4px">我</span>
+                  </div>
+                  <div class="bar-track">
+                    <div class="bar-fill" :style="{width: barPct(m.messageCount, topMax)}"></div>
+                  </div>
+                  <div class="bar-value">{{ fmtNum(m.messageCount) }}</div>
+                </div>
+                <div v-if="!(detail.groupTop || []).length" class="muted tiny">（无记录）</div>
+              </div>
+            </template>
+            <div class="card" style="margin-top:16px" v-else-if="agg">
+              <div class="card-title">往来统计</div>
+              <div class="card-sub">按数据库中你们会话的全部消息统计{{ agg.sessions > 1 ? '（合并 ' + agg.sessions + ' 个会话）' : '' }}。</div>
+              <dl class="kv">
+                <dt>消息总数</dt><dd>{{ fmtNum(agg.total) }}</dd>
+                <dt>我发出</dt><dd>{{ fmtNum(agg.sent) }}（{{ share(agg.sent, agg.total) }}）</dd>
+                <dt>对方发出</dt><dd>{{ fmtNum(agg.recv) }}（{{ share(agg.recv, agg.total) }}）</dd>
+                <dt>文本 / 媒体</dt>
+                <dd>{{ fmtNum(agg.text) }} / {{ fmtNum(agg.media) }}</dd>
+                <dt>有消息的天数</dt><dd>{{ fmtNum(agg.days) }}</dd>
+                <dt>首条消息</dt><dd>{{ agg.first || '—' }}</dd>
+                <dt>最近消息</dt><dd>{{ agg.last || '—' }}</dd>
+              </dl>
+            </div>
+            <div class="card" style="margin-top:16px" v-else>
+              <div class="card-title">往来统计</div>
+              <div class="muted tiny">数据库里没有你们的消息记录（可能只有通讯录条目，或聊天记录未同步到本机）。</div>
+            </div>
+            <div class="card" style="margin-top:16px" v-if="multiSessions.length">
+              <div class="card-title">会话列表</div>
+              <div class="card-sub">同一联系人存在多个会话时逐一列出。</div>
+              <dl class="kv">
+                <template v-for="s in multiSessions" :key="s.sessionId">
+                  <dt>{{ s.displayName }}</dt>
+                  <dd>{{ fmtNum(s.messageCount) }} 条 · 最近 {{ tsDay(s.lastTime) }}</dd>
+                </template>
+              </dl>
+            </div>
+            <div class="card" style="margin-top:16px" v-if="extraKeys.length">
+              <json-view :data="extraData" title="其他记录" />
+            </div>
           </div>
         </div>
       </div>
@@ -349,19 +405,74 @@
                cur: null, detail: null, detailLoading: false };
     },
     computed: {
-      detailObj() {
-        if (!this.detail) return null;
-        const { displayName, ...rest } = this.detail;
-        return rest;
+      isGroup() { return (this.cur && this.cur.type === "group"); },
+      topMax() {
+        return Math.max(1, ...(this.detail && this.detail.groupTop || [])
+          .map((m) => m.messageCount));
+      },
+      /** 跨会话合并的往来统计（私聊）；无消息记录时为 null */
+      agg() {
+        const d = this.detail;
+        if (!d || this.isGroup) return null;
+        const ss = (d.sessions || []).filter((s) => s.stats);
+        if (!ss.length) return null;
+        const sum = (f) => ss.reduce((a, s) => a + (s.stats[f] || 0), 0);
+        const fmtTs = (t) => {
+          if (!t) return null;
+          const x = new Date(t * 1000);
+          const p = (n) => (n < 10 ? "0" + n : n);
+          return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}`;
+        };
+        return {
+          sessions: ss.length,
+          total: sum("totalMessages"),
+          sent: sum("sentMessages"),
+          recv: sum("receivedMessages"),
+          text: sum("textMessages"),
+          media: sum("mediaMessages"),
+          days: sum("activeDays"),
+          first: ss.map((s) => s.stats.firstMessageText)
+            .filter(Boolean).sort()[0] || null,
+          last: ss.map((s) => s.stats.lastMessageText)
+            .filter(Boolean).sort().pop() || null,
+          _fmtTs: fmtTs,
+        };
+      },
+      multiSessions() {
+        const d = this.detail;
+        if (!d || this.isGroup) return [];
+        return (d.sessions || []).length > 1 ? d.sessions : [];
+      },
+      /** 已有专属呈现的字段，不再进「其他记录」 */
+      covered() {
+        return new Set(["wxid", "displayName", "type", "remark", "nickname",
+          "alias", "sessions", "groupTop", "groupTotal"]);
+      },
+      extraKeys() {
+        if (!this.detail) return [];
+        return Object.keys(this.detail).filter((k) => !this.covered.has(k));
+      },
+      extraData() {
+        return Object.fromEntries(this.extraKeys.map((k) => [k, this.detail[k]]));
       },
     },
     methods: {
       ...{ fmtNum: M.fmtNum, initial: M.initial, highlight: M.highlight },
       avatarBg(c) { return M.avatarColor(c.displayName); },
       hl(t) { return M.highlight(t, this.kw); },
+      barPct(v, max) { return Math.max(2, (v / Math.max(1, max)) * 100) + "%"; },
+      share(part, total) {
+        return Math.round((part || 0) / Math.max(1, total || 0) * 1000) / 10 + "%";
+      },
+      tsDay(t) {
+        if (!t) return "—";
+        const x = new Date(t * 1000);
+        const p = (n) => (n < 10 ? "0" + n : n);
+        return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`;
+      },
       typeName(t) {
-        return { friend: "好友", group: "群聊", mp: "公众号",
-                 former_friend: " former" }[t] || t || "—";
+        return { friend: "好友", private: "好友", group: "群聊", mp: "公众号",
+                 former_friend: "已删除（保留聊天记录）" }[t] || t || "—";
       },
       async fetch_() {
         this.loading = true;
@@ -375,13 +486,24 @@
       },
       async open(c) {
         this.cur = c; this.detail = null; this.detailLoading = true;
+        location.hash = "#/contacts?wxid=" + encodeURIComponent(c.wxid);
         try {
           this.detail = await M.api.get("/api/contact", { wxid: c.wxid });
         } catch (e) { M.toast.err("详情加载失败：" + e.message); }
         finally { this.detailLoading = false; }
       },
     },
-    mounted() { this.fetch_(); },
+    async mounted() {
+      await this.fetch_();
+      /* 深链：#/contacts?wxid=xxx 直接打开对应联系人 */
+      const h = location.hash.match(/wxid=([^&]+)/);
+      if (h) {
+        const id = decodeURIComponent(h[1]);
+        const c = this.list.find((x) => x.wxid === id) ||
+          { wxid: id, displayName: id, type: "" };
+        this.open(c);
+      }
+    },
   };
 
   global.MosuViews = global.MosuViews || {};

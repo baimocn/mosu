@@ -1,7 +1,8 @@
 /* ==========================================================================
-   页面 · 洞察（统计 / 画像 / 年报）+ 通用结构化渲染器
-   画像与年报的返回结构由后端算法决定、字段较深，前端不做硬编码假设：
-   用递归渲染器自适应展示，任何结构都不会白屏或报错。
+   页面 · 洞察（数据统计 / 画像 / 年报）+ 通用结构化渲染器
+   后端字段是统计口径的原始输出，直接倾倒会变成「给人机看的 JSON」。
+   这里的原则：已知字段 → 专属布局 + 口径注释；未知字段 → 自适应兜底，
+   任何结构都不会白屏。所有数值在展示层转成人类单位（%、分钟）。
    ========================================================================== */
 (function (global) {
   "use strict";
@@ -13,6 +14,78 @@
     const r = c / Math.max(1, max);
     return r > 0.66 ? 5 : r > 0.45 ? 4 : r > 0.28 ? 3 : r > 0.14 ? 2 : 1;
   }
+
+  /** 把后端的原始数值转成人类单位：占比→百分比，秒→分钟，大数→千分位 */
+  function humanVal(v, key) {
+    if (typeof v !== "number") return v;
+    const k = key || "";
+    if (/(^|_)(share|ratio|rate)$/i.test(k) || /^(myShare|emojiRate|questionRate)$/.test(k)) {
+      return Math.round(v * 1000) / 10 + "%";
+    }
+    if (k === "avgLength") return v + " 字";
+    if (/Seconds$/.test(k)) {
+      if (v >= 3600) return (v / 3600).toFixed(1) + " 小时";
+      if (v >= 60) return Math.round(v / 60) + " 分钟";
+      return v + " 秒";
+    }
+    return M.fmtNum(v);
+  }
+
+  /* ------------------------------------------------- 字段名 → 中文标签 */
+  const FIELD_LABELS = {
+    // 规模
+    totalMessages: "总消息", myMessages: "我发出", theirMessages: "对方发出",
+    sentMessages: "我发出", receivedMessages: "对方发出",
+    textMessages: "文本", mediaMessages: "图片视频等媒体",
+    activeDays: "活跃天数", spanDays: "跨越天数",
+    firstText: "首条时间", lastText: "最近时间",
+    firstMessageTime: "首条消息", lastMessageTime: "最近消息",
+    firstMessage: "首条消息", lastMessage: "最近消息",
+    // 元信息
+    scannedMessages: "扫描消息", textSampled: "抽样文本", cost: "用时",
+    // 节奏
+    peakHour: "最活跃小时", peakWeekday: "最活跃星期",
+    quietest4hStart: "最安静时段", nightMessages: "凌晨消息（0-6 点）",
+    morningMessages: "清晨消息（5-9 点）", hourly: "逐小时",
+    hourlyMine: "我（逐小时）", hourlyTheirs: "对方（逐小时）",
+    weekday: "按星期", monthly: "按月", byKind: "按消息类型",
+    // 风格
+    avgLength: "平均消息长度", emojiRate: "表情占比", questionRate: "带问号占比",
+    // 互动
+    initiatedByMe: "我开启的对话", initiatedByThem: "对方开启的对话",
+    myAvgReplySeconds: "我的平均回复", theirAvgReplySeconds: "对方的平均回复",
+    // 话题
+    byTopic: "话题", keywords: "高频词", keywordsMine: "我的常用词",
+    keywordsTheirs: "对方的常用词", bigrams: "高频二字组合",
+    mine: "我", theirs: "对方", topic: "话题", hits: "命中消息", word: "词",
+    // 情绪
+    avg: "平均分", positive: "偏正面条数", negative: "偏负面条数",
+    neutral: "中性条数", positiveRate: "正面占比", curve: "逐月情绪曲线",
+    // 信号
+    laughPer100: "每百条「哈」字数", lengthTrend: "消息长度走势",
+    mediaShare: "非文本占比", voiceMine: "我的语音", voiceTheirs: "对方的语音",
+    imageMine: "我的图片", imageTheirs: "对方的图片",
+    // 时刻
+    time: "时间", who: "说话人", content: "内容", sample: "内容样本",
+    day: "日期", busiestDay: "最热闹的一天", firstVoice: "第一条语音",
+    firstImage: "第一张图片", firstVideo: "第一个视频",
+    // 年报
+    topContacts: "最常联系", topKeywords: "高频词",
+    hourlyDistribution: "时段分布",
+    // 联系人 / 群
+    activeMembers: "活跃成员", topMembers: "成员排行",
+    messageCount: "消息数", count: "数量", total: "合计", ratio: "占比",
+    share: "占比", isSelf: "是我", displayName: "名称", senderId: "微信 ID",
+    sessions: "会话", messages: "消息", name: "名称", nickname: "昵称",
+    remark: "备注", wxid: "微信 ID", traits: "特征", summary: "摘要",
+    sentiment: "情感", score: "分值", firstTime: "首次", lastTime: "最近",
+    year: "年份", replyLatency: "回复时延", style: "风格",
+    myShare: "我发出的占比", avgLength: "平均消息长度",
+    // 消息类型（后端 byKind 的键是英文小写）
+    text: "文本", image: "图片", voice: "语音", video: "视频",
+    file: "文件", emoji: "表情", system: "系统", link: "链接", other: "其他",
+  };
+  function label(k) { return FIELD_LABELS[k] || k; }
 
   /* ---------------------------------------------------------------- 通用渲染 */
   const JsonView = {
@@ -27,18 +100,23 @@
         <div v-if="title" class="card-title" style="font-size:13px">{{ title }}</div>
         <template v-if="isList">
           <div v-for="(v,i) in data" :key="i" style="margin-bottom:6px">
-            <template v-if="isPrimitive(v)">
-              <span class="muted tiny">{{ i+1 }}.</span> {{ v }}
+            <template v-if="isPrimitive(v)">{{ v }}</template>
+            <template v-else-if="isObj(v) && v.word !== undefined">
+              {{ v.word }} <span class="muted tiny">× {{ M.fmtNum(v.count) }}</span>
+            </template>
+            <template v-else-if="isObj(v) && v.topic !== undefined">
+              {{ v.topic }} <span class="muted tiny">
+                {{ M.fmtNum(v.hits) }} 条 · 占{{ pctOf(v.ratio) }}</span>
             </template>
             <json-view v-else :data="v" :depth="depth+1" />
           </div>
-          <div v-if="!data.length" class="muted tiny">（空）</div>
+          <div v-if="!data.length" class="muted tiny">（这一项没有数据）</div>
         </template>
         <dl v-else-if="isObj" class="kv">
-          <template v-for="(v,k) in data" :key="k">
+          <template v-for="(v,k) in visible" :key="k">
             <dt>{{ label(k) }}</dt>
             <dd>
-              <template v-if="isPrimitive(v)">{{ v }}</template>
+              <template v-if="isPrimitive(v)">{{ fmtVal(v, k) }}</template>
               <json-view v-else :data="v" :depth="depth+1" />
             </dd>
           </template>
@@ -48,28 +126,32 @@
     computed: {
       isList() { return Array.isArray(this.data); },
       isObj() { return this.data && typeof this.data === "object" && !Array.isArray(this.data); },
+      /** 空值字段直接不渲染，不占版面 */
+      visible() {
+        const out = {};
+        for (const [k, v] of Object.entries(this.data || {})) {
+          if (v === null || v === undefined || v === "") continue;
+          if (Array.isArray(v) && !v.length) continue;
+          if (v && typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+          out[k] = v;
+        }
+        return out;
+      },
     },
     methods: {
+      M,
+      label,
       isPrimitive(v) {
         return v === null || v === undefined
           || ["string", "number", "boolean"].includes(typeof v);
       },
-      label(k) {
-        const map = {
-          name: "名称", nickname: "昵称", remark: "备注", wxid: "微信 ID",
-          sessions: "会话", messages: "消息", messageCount: "消息数",
-          keywords: "高频词", topics: "话题", traits: "特征", summary: "摘要",
-          style: "风格", emotion: "情感", sentiment: "情感倾向", score: "分值",
-          activeHours: "活跃时段", peakHour: "最活跃小时", firstTime: "首次",
-          lastTime: "最近", year: "年份", total: "合计", ratio: "占比",
-          count: "次数", word: "词", replyLatency: "回复时延",
-        };
-        return map[k] || k;
-      },
+      isObj(v) { return v && typeof v === "object" && !Array.isArray(v); },
+      fmtVal(v, k) { return humanVal(v, k); },
+      pctOf(r) { return typeof r === "number" ? Math.round(r * 1000) / 10 + "%" : "—"; },
     },
   };
 
-  /* ---------------------------------------------------------------- 统计 */
+  /* ---------------------------------------------------------------- 数据统计 */
   const Stats = {
     components: { JsonView },
     template: `
@@ -82,40 +164,32 @@
           <div class="tile rise">
             <div class="tile-head">消息总数</div>
             <div class="tile-value">{{ fmtNum(g.totalMessages) }}</div>
-            <div class="tile-foot">
-              <span class="trend trend-flat">{{ fmtNum(g.totalSessions) }} 个会话</span>
-            </div>
+            <div class="tile-foot">分布在 {{ fmtNum(g.totalSessions) }} 个会话</div>
           </div>
           <div class="tile rise">
             <div class="tile-head">联系人</div>
             <div class="tile-value">{{ fmtNum(g.totalContacts) }}</div>
-            <div class="tile-foot">去重后的往来对象</div>
+            <div class="tile-foot">通讯录全部条目，含群聊与公众号</div>
           </div>
           <div class="tile rise">
-            <div class="tile-head">最活跃一天</div>
+            <div class="tile-head">最活跃的一天</div>
             <div class="tile-value" style="font-size:20px">{{ peakDayText }}</div>
             <div class="tile-foot">{{ peakDayCount }}</div>
           </div>
           <div class="tile rise">
-            <div class="tile-head">时间跨度</div>
+            <div class="tile-head">记录时间跨度</div>
             <div class="tile-value" style="font-size:15px;line-height:1.35">
               {{ (g.timeRange && g.timeRange.firstText) || '—' }}
               <span class="muted">→</span>
               {{ (g.timeRange && g.timeRange.lastText) || '—' }}
             </div>
-            <div class="tile-foot">{{ spanDays ? ('跨越 ' + fmtNum(spanDays) + ' 天') : '' }}</div>
+            <div class="tile-foot">{{ spanDays ? '共 ' + fmtNum(spanDays) + ' 天' : '' }}</div>
           </div>
         </div>
 
         <div class="card" style="margin-top:16px">
-          <div class="card-title">
-            活跃度日历
-            <div class="spacer"></div>
-            <span class="tiny muted" v-if="heatLoading">正在按天聚合…</span>
-          </div>
-          <div class="card-sub">
-            最近一年每天的消息密度。颜色越深，那天聊得越多。
-          </div>
+          <div class="card-title">活跃度日历</div>
+          <div class="card-sub">最近一年每天的消息条数，颜色越深聊得越多。悬停可看具体数字。</div>
           <div v-if="heatLoading" class="skeleton" style="height:110px"></div>
           <template v-else-if="heatCells.length">
             <div class="heat">
@@ -142,15 +216,16 @@
               <span class="heat-cell heat-l5"></span>
               <span>多</span>
               <div class="spacer" style="flex:1"></div>
-              <span>活跃 {{ fmtNum(activeDays) }} 天 · 最长连续 {{ fmtNum(maxStreak) }} 天</span>
+              <span>有消息 {{ fmtNum(activeDays) }} 天 · 最长连续 {{ fmtNum(maxStreak) }} 天</span>
             </div>
           </template>
-          <div v-else class="muted tiny">这段时间没有可统计的消息。</div>
+          <div v-else class="muted tiny">最近一年没有消息记录。</div>
         </div>
 
         <div class="grid grid-2" style="margin-top:16px">
           <div class="card">
-            <div class="card-title">消息类型分布</div>
+            <div class="card-title">消息构成</div>
+            <div class="card-sub">文本之外的消息按类型列出，可以用来估计聊天里图片、语音的分量。</div>
             <div v-for="(v,k) in g.byType" :key="k" class="bar-row">
               <div class="bar-label">{{ typeName(k) }}</div>
               <div class="bar-track">
@@ -161,7 +236,8 @@
           </div>
 
           <div class="card">
-            <div class="card-title">消息最多的会话</div>
+            <div class="card-title">聊得最多的会话</div>
+            <div class="card-sub">按消息条数取前 12 个，群聊也算在内。</div>
             <div v-for="c in contacts.slice(0,12)" :key="c.wxid" class="bar-row">
               <div class="bar-label" :title="c.displayName">{{ c.displayName }}</div>
               <div class="bar-track">
@@ -174,12 +250,13 @@
 
         <div class="card" style="margin-top:16px">
           <div class="card-title">
-            时间分布
+            什么时间在聊
             <div class="spacer"></div>
             <button class="chip" :class="{active: by==='hour'}" @click="switchBy('hour')">按小时</button>
             <button class="chip" :class="{active: by==='weekday'}" @click="switchBy('weekday')">按星期</button>
             <button class="chip" :class="{active: by==='month'}" @click="switchBy('month')">按月</button>
           </div>
+          <div class="card-sub">消息条数在 24 小时 / 星期 / 月份上的分布，按数据库记录时间统计。</div>
           <div v-if="!time" class="skeleton" style="height:120px"></div>
           <div v-else>
             <div v-for="it in time.items" :key="it.key || it.bucket" class="bar-row">
@@ -201,6 +278,7 @@
               {{ kwRunning ? '分析中…' : '开始分析' }}
             </button>
           </div>
+          <div class="card-sub">对全部文本消息分词计数，字号代表出现次数。全库较大时需要一两分钟，在后台跑。</div>
           <div v-if="kwRunning" class="progress progress-bar indeterminate"
                style="margin-bottom:8px"></div>
           <div v-if="keywords.length" style="display:flex;flex-wrap:wrap;gap:8px">
@@ -209,15 +287,13 @@
               {{ k.word }} · {{ k.count }}
             </span>
           </div>
-          <div v-else class="muted tiny">
-            分词统计要扫全库（约 20 万条消息），在后台跑，完成后自动显示。
-          </div>
+          <div v-else-if="!kwRunning" class="muted tiny">点「开始分析」生成。</div>
         </div>
       </template>
       <div v-else class="empty">
         <div class="empty-icon">📊</div>
-        <div class="empty-title">统计数据不可用</div>
-        <div class="empty-desc">{{ err || '请先完成数据配置（密钥 + 数据目录）。' }}</div>
+        <div class="empty-title">还没有可统计的数据</div>
+        <div class="empty-desc">{{ err || '先在「设置」里配好密钥和数据目录，再回到这一页。' }}</div>
       </div>
     </div>`,
     data() {
@@ -231,8 +307,6 @@
       maxType() { return Math.max(1, ...Object.values(this.g ? this.g.byType : { x: 1 })); },
       maxContact() { return Math.max(1, ...this.contacts.map((c) => c.messageCount)); },
       maxTime() { return Math.max(1, ...(this.time ? this.time.items.map((i) => i.count) : [1])); },
-
-      /* ---- 活跃度日历 ---- */
       heatCells() {
         const dist = (this.heat && this.heat.distribution) || {};
         if (!Object.keys(dist).length) return [];
@@ -254,10 +328,6 @@
           cur.setDate(cur.getDate() + 1);
         }
         return cells;
-      },
-      heatMax() {
-        const dist = (this.heat && this.heat.distribution) || {};
-        return Math.max(1, ...Object.values(dist).map(Number));
       },
       heatMonths() {
         /* 只在「该列包含 1 号」的列标注月份，一个月最多出现一次，避免重叠 */
@@ -284,7 +354,7 @@
         return { key: k, count: v };
       },
       peakDayText() { return this.peakDay.key || "—"; },
-      peakDayCount() { return this.peakDay.count ? `${M.fmtNum(this.peakDay.count)} 条` : ""; },
+      peakDayCount() { return this.peakDay.count ? `${M.fmtNum(this.peakDay.count)} 条消息` : "暂无数据"; },
       spanDays() {
         const r = this.g && this.g.timeRange;
         if (!r || !r.first || !r.last) return 0;
@@ -295,7 +365,8 @@
       ...{ fmtNum: M.fmtNum },
       typeName(k) {
         return { text: "文本", image: "图片", voice: "语音", video: "视频",
-                 file: "文件", emoji: "表情", system: "系统", link: "链接" }[k] || k;
+                 file: "文件", emoji: "表情", system: "系统", link: "链接",
+                 other: "其他" }[k] || k;
       },
       pct(v, max) { return Math.max(2, (v / Math.max(1, max)) * 100) + "%"; },
       kwSize(c) {
@@ -347,13 +418,155 @@
     },
   };
 
-  /* ---------------------------------------------------------------- 画像 / 年报 */
+  /* ---------------------------------------------------------------- 年报 */
+  /* 年报后端只有一个 summary 大对象，值得专属排版而不是 KV 倾倒 */
+  const ReportView = {
+    name: "ReportView",
+    props: { data: { type: Object, required: true } },
+    template: `
+    <div>
+      <div class="tiny muted" v-if="metaLine" style="margin-bottom:12px">{{ metaLine }}</div>
+      <div class="grid grid-4">
+        <div class="tile rise">
+          <div class="tile-head">总消息</div>
+          <div class="tile-value">{{ fmtNum(s.totalMessages) }}</div>
+          <div class="tile-foot">{{ title }}</div>
+        </div>
+        <div class="tile rise">
+          <div class="tile-head">我发出</div>
+          <div class="tile-value">{{ fmtNum(s.sentMessages) }}</div>
+          <div class="tile-foot">占 {{ shareSent }}</div>
+        </div>
+        <div class="tile rise">
+          <div class="tile-head">对方发出</div>
+          <div class="tile-value">{{ fmtNum(s.receivedMessages) }}</div>
+          <div class="tile-foot">占 {{ shareRecv }}</div>
+        </div>
+        <div class="tile rise">
+          <div class="tile-head">有消息的天数</div>
+          <div class="tile-value">{{ fmtNum(s.activeDays) }}</div>
+          <div class="tile-foot">首条 {{ firstText }} · 末条 {{ lastText }}</div>
+        </div>
+      </div>
+
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="card">
+          <div class="card-title">最常联系</div>
+          <div class="card-sub">这一年消息条数最多的会话。</div>
+          <div v-for="c in s.topContacts.slice(0,10)" :key="c.wxid" class="bar-row">
+            <div class="bar-label" :title="c.displayName">{{ c.displayName }}</div>
+            <div class="bar-track">
+              <div class="bar-fill" :style="{width: pct(c.count, maxContact)}"></div>
+            </div>
+            <div class="bar-value">{{ fmtNum(c.count) }}</div>
+          </div>
+          <div v-if="!(s.topContacts || []).length" class="muted tiny">（无记录）</div>
+        </div>
+        <div class="card">
+          <div class="card-title">时段分布</div>
+          <div class="card-sub">24 小时里什么点最热闹，按小时合计全部消息。</div>
+          <div v-for="h in hourRows" :key="h.h" class="bar-row">
+            <div class="bar-label">{{ h.h }} 点</div>
+            <div class="bar-track">
+              <div class="bar-fill" :style="{width: pct(h.count, maxHour)}"></div>
+            </div>
+            <div class="bar-value">{{ fmtNum(h.count) }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">这一年常说什么</div>
+        <div class="card-sub">全部文本消息分词后出现最多的词。</div>
+        <div v-if="(s.topKeywords || []).length" style="display:flex;flex-wrap:wrap;gap:8px">
+          <span v-for="k in s.topKeywords.slice(0,40)" :key="k.word" class="chip"
+                :style="{fontSize: kwSize(k.count)}">{{ k.word }} · {{ fmtNum(k.count) }}</span>
+        </div>
+        <div v-else class="muted tiny">（无记录）</div>
+      </div>
+    </div>`,
+    computed: {
+      s() { return this.data.summary || {}; },
+      title() {
+        return this.data.year ? `${this.data.year} 年` : "全部年份合计";
+      },
+      shareSent() {
+        const t = Math.max(1, this.s.totalMessages || 0);
+        return Math.round((this.s.sentMessages || 0) / t * 1000) / 10 + "%";
+      },
+      shareRecv() {
+        const t = Math.max(1, this.s.totalMessages || 0);
+        return Math.round((this.s.receivedMessages || 0) / t * 1000) / 10 + "%";
+      },
+      firstText() { return this.tsShort(this.s.firstMessageTime); },
+      lastText() { return this.tsShort(this.s.lastMessageTime); },
+      hourRows() {
+        const dist = this.s.hourlyDistribution || {};
+        return Object.keys(dist).sort()
+          .map((h) => ({ h: parseInt(h, 10), count: Number(dist[h]) || 0 }));
+      },
+      maxHour() { return Math.max(1, ...this.hourRows.map((r) => r.count)); },
+      maxContact() {
+        return Math.max(1, ...(this.s.topContacts || []).map((c) => c.count));
+      },
+      metaLine() {
+        const m = this.data.meta;
+        if (!m) return "";
+        const bits = [];
+        if (m.scannedMessages) bits.push(`扫描 ${M.fmtNum(m.scannedMessages)} 条消息`);
+        if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
+        return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
+      },
+    },
+    methods: {
+      fmtNum: M.fmtNum,
+      pct(v, max) { return Math.max(2, (v / Math.max(1, max)) * 100) + "%"; },
+      kwSize(c) {
+        const mx = Math.max(1, ...(this.s.topKeywords || []).map((k) => k.count));
+        return (12 + Math.round((c / mx) * 8)) + "px";
+      },
+      tsShort(ts) {
+        if (!ts) return "—";
+        const d = new Date(ts * 1000);
+        const pad = (n) => (n < 10 ? "0" + n : n);
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      },
+    },
+  };
+
+  /* ---------------------------------------------------------------- 画像 */
+  /* 已知字段的呈现顺序与口径注释。没列出的键走「补充信息」兜底。 */
+  const PROFILE_SECTIONS = {
+    self: [
+      ["insights", "结论速览", "由本页各项统计按固定规则归纳，非 AI 生成，可复现。"],
+      ["overview", "总览"],
+      ["style", "表达风格"],
+      ["rhythm", "作息节奏"],
+      ["topics", "话题与词汇"],
+      ["social", "往来对象", "按你发出的消息条数排序，占比指你在该会话里的发言份额。"],
+      ["monthly", "月度走势"],
+    ],
+    contact: [
+      ["overview", "总览"],
+      ["interaction", "互动质量",
+        "「开启对话」指间隔超过 6 小时的第一条消息由谁发出；回复时长按相邻一来回估算，间隔超过 12 小时的不计入。"],
+      ["signals", "聊天信号", "由消息文本与类型统计得出，反映聊天形式的变化，不评判任何一方。"],
+      ["sentiment", "情绪", "基于中文情感词典逐条打分（-1 到 1），得分不明显时记为中性。"],
+      ["topics", "话题与词汇", "两边分开统计，可以直接对比彼此聊的内容。"],
+      ["timeline", "关键节点", "取消息量最大的三个月，各配当月第一条消息，用来回忆当时在做什么。"],
+      ["milestones", "重要时刻"],
+      ["rhythm", "时段分布"],
+    ],
+  };
+  /** 这些键不进卡片：meta 进页首脚注，scope/session 已在页首体现 */
+  const PROFILE_HIDDEN = new Set(["meta", "scope", "session"]);
+
   const Insight = {
-    components: { JsonView },
+    components: { JsonView, ReportView },
     props: { kind: { type: String, default: "profile" } },   // profile | report
     template: `
     <div class="page">
-      <div class="row" style="margin-bottom:16px">
+      <div class="row" style="margin-bottom:12px">
         <button class="chip" :class="{active: mode==='self'}" @click="setMode('self')"
                 v-if="kind==='profile'">我的画像</button>
         <button class="chip" :class="{active: mode==='contact'}" @click="setMode('contact')"
@@ -385,21 +598,41 @@
         <div class="empty-title">生成失败</div>
         <div class="empty-desc">{{ err }}</div>
       </div>
-      <div v-else-if="data">
-        <!-- 顶层是对象：按卡片分块；是数组：直接渲染 -->
-        <div class="grid grid-2">
-          <div v-for="(v,k) in topBlocks" :key="k" class="card">
-            <json-view :data="v" :title="label(k)" />
+      <template v-else-if="data && kind==='report'">
+        <report-view :data="data" />
+      </template>
+      <template v-else-if="data">
+        <div class="tiny muted" v-if="metaLine" style="margin-bottom:12px">{{ metaLine }}</div>
+        <div v-for="sec in sections" :key="sec.key" class="card" style="margin-bottom:16px">
+          <div class="card-title">{{ sec.title }}</div>
+          <div class="card-sub" v-if="sec.note">{{ sec.note }}</div>
+          <div v-if="sec.key==='insights'" style="display:flex;flex-direction:column;gap:8px">
+            <div v-for="(s,i) in data.insights" :key="i" style="display:flex;gap:8px">
+              <span style="color:var(--brand)">›</span><span>{{ s }}</span>
+            </div>
           </div>
+          <json-view v-else :data="data[sec.key]" />
         </div>
-        <div v-if="topRest && Object.keys(topRest).length" class="card" style="margin-top:16px">
-          <json-view :data="topRest" title="其他维度" />
+        <div v-if="restKeys.length" class="card">
+          <json-view :data="restData" title="补充信息" />
+        </div>
+      </template>
+      <div v-else-if="kind==='profile' && mode==='contact'" class="empty">
+        <div class="empty-icon">🧭</div>
+        <div class="empty-title">选择一位联系人</div>
+        <div class="empty-desc">
+          生成你与 TA 的往来画像：消息量与占比、谁更常开启话题、回复快慢、
+          高频词对比、情绪走向和关键节点。全部在本机计算，结果顶部会标明扫描了多少条消息。
         </div>
       </div>
       <div v-else class="empty">
         <div class="empty-icon">🧭</div>
-        <div class="empty-title">{{ kind==='profile' ? '选择一个会话生成画像' : '生成你的微信年报' }}</div>
-        <div class="empty-desc">全部在本机完成，不上传任何数据。</div>
+        <div class="empty-title">{{ kind==='profile' ? '正在生成你的画像' : '生成你的微信年报' }}</div>
+        <div class="empty-desc">
+          {{ kind==='profile'
+            ? '基于全部聊天记录归纳你的表达风格、作息节奏与常聊话题。'
+            : '选定年份后生成：这一年聊了多少、和谁聊得最多、常说什么、什么时段最活跃。全部在本机完成，不上传任何数据。' }}
+        </div>
       </div>
     </div>`,
     data() {
@@ -409,32 +642,44 @@
       };
     },
     computed: {
-      topBlocks() {
-        if (!this.data || Array.isArray(this.data)) return {};
-        // 前 6 个「复杂值」单独成卡，其余合并，避免几十张卡片刷屏
-        const entries = Object.entries(this.data)
-          .filter(([, v]) => v && typeof v === "object").slice(0, 6);
-        return Object.fromEntries(entries);
+      sectionConf() {
+        return this.kind === "profile"
+          ? (PROFILE_SECTIONS[this.mode === "self" ? "self" : "contact"] || [])
+          : [];
       },
-      topRest() {
-        if (!this.data || Array.isArray(this.data)) return null;
-        const used = new Set(Object.keys(this.topBlocks));
-        const rest = {};
-        for (const [k, v] of Object.entries(this.data)) {
-          if (used.has(k)) continue;
-          if (v && typeof v === "object") continue;
-          rest[k] = v;
+      /** 只呈现后端实际返回了的分区，顺序按配置来 */
+      sections() {
+        if (!this.data) return [];
+        const out = [];
+        for (const [key, title, note] of this.sectionConf) {
+          const v = this.data[key];
+          if (v === undefined || v === null || v === "") continue;
+          if (Array.isArray(v) && !v.length) continue;
+          if (v && typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+          out.push({ key, title, note });
         }
-        return rest;
+        return out;
+      },
+      restKeys() {
+        if (!this.data) return [];
+        const known = new Set(this.sectionConf.map((s) => s[0]));
+        return Object.keys(this.data)
+          .filter((k) => !known.has(k) && !PROFILE_HIDDEN.has(k));
+      },
+      restData() {
+        return Object.fromEntries(this.restKeys.map((k) => [k, this.data[k]]));
+      },
+      metaLine() {
+        const m = this.data && this.data.meta;
+        if (!m) return "";
+        const bits = [];
+        if (m.scannedMessages) bits.push(`扫描 ${M.fmtNum(m.scannedMessages)} 条消息`);
+        if (m.textSampled) bits.push(`抽样 ${M.fmtNum(m.textSampled)} 条文本`);
+        if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
+        return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
       },
     },
     methods: {
-      label(k) {
-        return { basic: "基本信息", stats: "互动统计", style: "语言风格",
-                 topics: "话题偏好", emotion: "情绪特征", keywords: "高频词",
-                 timeline: "时间线", highlights: "年度亮点", summary: "总览",
-                 monthly: "月度分布", contacts: "关系", profile: "画像" }[k] || k;
-      },
       setMode(m) {
         this.mode = m;
         if (m === "self") { this.picked = ""; this.load(); }
@@ -460,12 +705,11 @@
       try {
         const d = await M.api.get("/api/sessions", { limit: 300 });
         this.sessions = d.sessions || [];
-      } catch (e) { /* 忽略 */ }
-      if (this.kind === "report") this.load();
-      else this.load();
+      } catch (e) { /* 会话列表拉不到时，联系人画像无法选择，保持空态 */ }
+      this.load();
     },
   };
 
   global.MosuViews = global.MosuViews || {};
-  Object.assign(global.MosuViews, { JsonView, Stats, Insight });
+  Object.assign(global.MosuViews, { JsonView, Stats, Insight, ReportView });
 })(window);
