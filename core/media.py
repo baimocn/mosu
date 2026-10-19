@@ -153,6 +153,20 @@ class MediaStore:
                     pass
         return m
 
+    def _cache_fingerprint(self) -> float:
+        """cache 目录（微信 4.x 图片缓存）的 mtime 指纹。"""
+        cdir = self.user_dir / "cache"
+        if not cdir.exists():
+            return 0.0
+        m = cdir.stat().st_mtime
+        for dp, dns, _ in os.walk(cdir):
+            for d in dns:
+                try:
+                    m = max(m, os.path.getmtime(os.path.join(dp, d)))
+                except OSError:
+                    pass
+        return m
+
     def build(self, use_cache: bool = True) -> "MediaStore":
         if self._built:
             return self
@@ -161,7 +175,8 @@ class MediaStore:
             try:
                 d = json.loads(cache.read_text(encoding="utf-8"))
                 # 缓存失效：目录指纹对不上（微信又存了新图）就重建
-                if d.get("fingerprint") == self._dir_fingerprint():
+                if d.get("fingerprint") == self._dir_fingerprint() \
+                        and d.get("cache_fp") == self._cache_fingerprint():
                     self.images = d.get("images", {})
                     self.videos = d.get("videos", {})
                     self.thumbs = d.get("thumbs", {})
@@ -204,6 +219,23 @@ class MediaStore:
             for dp, _, fn in os.walk(fdir):
                 for f in fn:
                     self.files.setdefault(f, os.path.join(dp, f))
+
+        # cache 目录（微信 4.x 图片缓存）：{md5} / {md5}.dat / {md5}_b.dat，
+        # 命名规则与聊天图片一致，因此朋友圈按 md5 反查也能命中这里。
+        cdir = self.user_dir / "cache"
+        if cdir.exists():
+            for dp, _, fn in os.walk(cdir):
+                for f in fn:
+                    stem, _, suffix = f.partition(".")
+                    if len(stem) != 32:
+                        continue
+                    try:
+                        int(stem, 16)
+                    except ValueError:
+                        continue
+                    part = suffix.split("_")[0].lower() or "main"
+                    self.images.setdefault(stem.lower(), {}) \
+                        .setdefault(part, os.path.join(dp, f))
 
         self._built = True
         if cache:

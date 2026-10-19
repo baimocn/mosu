@@ -18,6 +18,43 @@ def _xml_text(node) -> str:
     return (node.text or "") if node is not None else ""
 
 
+def _first_text(node) -> str:
+    """取节点文本；为空时退到首个子节点（微信有时把地址包一层）。"""
+    if node is None:
+        return ""
+    t = (node.text or "").strip()
+    if t:
+        return t
+    for sub in node:
+        t = (sub.text or "").strip()
+        if t:
+            return t
+    return ""
+
+
+def _parse_media(m) -> dict:
+    """解析单个 <media> 节点。
+
+    微信 4.x 的图片地址必须带 token：token 是 <url>/<thumb> 上的属性，
+    裸地址直接丢给浏览器一定拉不到。这里把原图地址（…/0）、缩略图地址
+    （…/150）、token 与原始尺寸一起带出去，由服务端带 token 抓取并落盘缓存。
+    """
+    url_node = m.find("url")
+    thumb_node = m.find("thumb")
+    size = m.find("size")
+    return {
+        "md5": (url_node.get("md5") if url_node is not None else "") or "",
+        "key": (url_node.get("key") if url_node is not None else "") or "",
+        "token": (url_node.get("token") if url_node is not None else "") or "",
+        "url": _first_text(url_node),
+        "thumbUrl": _first_text(thumb_node),
+        "thumbToken": (thumb_node.get("token") if thumb_node is not None else "") or "",
+        "width": int(size.get("width") or 0) if size is not None else 0,
+        "height": int(size.get("height") or 0) if size is not None else 0,
+        "bytes": int(size.get("totalSize") or 0) if size is not None else 0,
+    }
+
+
 class Moments:
     def __init__(self, ds):
         self.ds = ds
@@ -66,6 +103,8 @@ class Moments:
             "createTime": int(create_time) if create_time.isdigit() else None,
             "contentText": find_text("contentDesc"),
             "mediaUrls": [],
+            "mediaMd5": [],
+            "mediaItems": [],
             "mediaCount": 0,
             "likes": 0,
             "likeUsers": [],
@@ -162,6 +201,7 @@ class Moments:
                 "mediaCount": e.get("mediaCount", 0),
                 "mediaUrls": e.get("mediaUrls", []),
                 "mediaMd5": e.get("mediaMd5", []),
+                "mediaItems": e.get("mediaItems", []),
                 "likes": e.get("likes", 0),
                 "likeUsers": e.get("likeUsers", []),
                 "comments": e.get("comments", 0),

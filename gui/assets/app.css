@@ -595,6 +595,24 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
 }
 .lightbox-close:hover { background: rgba(255, 255, 255, 0.22); }
 
+/* ---- 图片占位与提示条 ---- */
+.moment-img-cell { position: relative; }
+.moment-img-fallback {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 6px;
+  background: var(--bg-inset); color: var(--text-3);
+  font-size: var(--fs-12); border-radius: var(--r-sm);
+  border: 1px dashed var(--border);
+}
+.notice {
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+}
+
 /* ---- 朋友圈 ---- */
 .moments {
   columns: 3; column-gap: var(--sp-4);
@@ -616,6 +634,8 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
   width: 100%; aspect-ratio: 1; object-fit: cover;
   border-radius: var(--r-sm); cursor: zoom-in;
 }
+.moment-img-cell { position: relative; aspect-ratio: 1; border-radius: var(--r-sm); }
+.moment-img-cell img { display: block; }
 .moment-foot {
   display: flex; gap: var(--sp-4); margin-top: var(--sp-3);
   font-size: var(--fs-11); color: var(--text-4);

@@ -12,12 +12,17 @@
       <div class="row" style="margin-bottom:16px">
         <div>
           <div class="topbar-title" style="font-size:16px">朋友圈</div>
-          <div class="tiny muted">共 {{ total }} 条 · 图片走远程地址，失效会显示占位</div>
+          <div class="tiny muted">{{ total }} 条 ·{{ imgStat }}</div>
         </div>
         <div class="spacer"></div>
         <input class="input" style="width:200px" v-model="user" placeholder="按作者 wxid 过滤"
                @keyup.enter="reload" />
         <button class="btn btn-sm" @click="reload">刷新</button>
+      </div>
+
+      <div v-if="probeInfo" class="notice" style="margin-bottom:14px">
+        <b>{{ probeInfo.title }}</b>
+        <div class="tiny" style="margin-top:4px;opacity:.85">{{ probeInfo.desc }}</div>
       </div>
 
       <div v-if="unsupported" class="empty">
@@ -49,11 +54,16 @@
             <div class="moment-text">{{ e.contentText }}</div>
             <div v-if="imgList(e).length" class="moment-imgs">
               <div v-for="(m,i) in imgList(e)" :key="i" class="moment-img-cell">
-                <img :src="m.thumb + (m.bust || '')" loading="lazy"
-                     @click="openImg(m)" @error="onImgErr(m, i)" />
-                <div v-if="m.failed" class="moment-img-fallback">
-                  <span>图片不可用</span>
-                  <button class="btn btn-sm" @click.stop="retryImg(m)">重试</button>
+                <template v-if="m">
+                  <img :src="m.thumb + (m.bust || '')" loading="lazy"
+                       @click="openImg(m)" @error="onImgErr(m)" />
+                  <div v-if="m.failed" class="moment-img-fallback">
+                    <span>图片不可用</span>
+                    <button class="btn btn-sm" @click.stop="retryImg(m)">重试</button>
+                  </div>
+                </template>
+                <div v-else class="moment-img-fallback" style="cursor:default">
+                  <span>本机没有这张图</span>
                 </div>
               </div>
             </div>
@@ -84,7 +94,8 @@
     components: { Lightbox: global.MosuViews.Lightbox },
     data() {
       return { items: [], total: 0, hasMore: false, loading: true, loadingMore: false,
-               unsupported: false, user: "", lightbox: null };
+               unsupported: false, user: "", lightbox: null,
+               probeOk: {}, probeState: "idle" };
     },
     methods: {
       ...{ fmtTime: M.fmtTime, initial: M.initial },
@@ -103,6 +114,7 @@
           this.unsupported = !!d.unsupported;
         } catch (e) { M.toast.err("加载失败：" + e.message); }
         finally { this.loading = false; }
+        this.probe(0);
       },
       async more() {
         this.loadingMore = true;
@@ -113,26 +125,97 @@
         } catch (e) { M.toast.err(e.message); }
         finally { this.loadingMore = false; }
       },
-      /* 图片列表：本地库优先（可靠、可拿到原图），没有才用微信 CDN 远程地址。
-         列表只取缩略图，点开时才请求原图 —— 首屏因此不会拖着一堆大图。 */
+      /* 图片列表按来源分三种取法（服务端已标注 mediaSrc）：
+         local  → 本地媒体库，最快；
+         remote → 微信 CDN 地址缺 token，浏览器直连必失败，必须走服务端代理；
+         none   → 探测确认已经取不到（token 过期且本地无文件），直接占位。
+         列表一律取缩略图，点开时才请求原图。 */
       imgList(e) {
-        const md5 = e.mediaMd5 || [];
-        const loc = e.mediaLocal || [];
-        const urls = e.mediaUrls || [];
+        const items = e.mediaItems || [];
+        const src = e.mediaSrc || [];
         const out = [];
-        for (let i = 0; i < Math.min(urls.length, 9); i++) {
-          if (md5[i] && loc[i]) {
-            out.push({ thumb: M.mediaUrl(md5[i], true), full: M.mediaUrl(md5[i], false),
-                       local: true, bust: "" });
-          } else {
-            out.push({ thumb: urls[i], full: urls[i], local: false, bust: "" });
+        for (let i = 0; i < Math.min(items.length, 9); i++) {
+          const it = items[i];
+          const md5 = (it.md5 || "").toLowerCase();
+          const kind = src[i] || "none";
+          if (!md5 || kind === "none") { out.push(null); continue; }
+          if (kind === "remote" && this.probeOk[md5] === false) {
+            out.push(null);                       // 已确认取不到，别让用户白点
+            continue;
           }
+          const base = kind === "local" ? "/api/media" : "/api/remote";
+          out.push({
+            thumb: base + "?md5=" + encodeURIComponent(md5) + "&thumb=1",
+            full: base + "?md5=" + encodeURIComponent(md5),
+            local: kind === "local", bust: "",
+            size: it.width ? (it.width + "×" + it.height) : "",
+          });
         }
         return out;
       },
-      openImg(m) { this.lightbox = { ...m, note: m.local ? "本地原图" : "远程原图（微信 CDN）" }; },
+      openImg(m) {
+        this.lightbox = {
+          ...m,
+          note: (m.local ? "本地原图" : "微信 CDN 原图")
+            + (m.size ? ` · ${m.size}` : "") + " · 滚轮缩放 · Esc 关闭",
+        };
+      },
       onImgErr(m) { m.failed = true; },
       retryImg(m) { m.failed = false; m.bust = (m.bust ? "" : "&") + "_=" + Date.now(); },
+
+      /* 后台探测本页远程图是否还可取；结果一天缓存，不阻塞首屏 */
+      async probe(offset) {
+        this.probeState = "running";
+        try {
+          const d = await M.api.get("/api/moments/probe", { limit: 30, offset });
+          if (d.empty) { this.probeState = "done"; return; }
+          const tid = d.id;
+          if (!tid) { this.probeState = "done"; return; }
+          for (let i = 0; i < 60; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const t = await M.api.get("/api/task", { id: tid });
+            if (t.status === "done") {
+              this.probeOk = Object.assign({}, this.probeOk, (t.result || {}).ok || {});
+              this.probeState = "done";
+              break;
+            }
+            if (t.status === "error") { this.probeState = "failed"; break; }
+          }
+          if (this.probeState === "running") this.probeState = "done";
+        } catch (e) { this.probeState = "failed"; }
+      },
+    },
+    computed: {
+      imgStat() {
+        let local = 0, remote = 0, dead = 0;
+        for (const e of this.items) {
+          (e.mediaSrc || []).forEach((k, i) => {
+            const md5 = ((e.mediaItems || [])[i] || {}).md5 || "";
+            if (k === "local") local++;
+            else if (k === "remote" && this.probeOk[md5.toLowerCase()] === false) dead++;
+            else if (k === "remote") remote++;
+          });
+        }
+        const bits = [];
+        if (local) bits.push(`本机有 ${local} 张`);
+        if (remote) bits.push(`需联网 ${remote} 张`);
+        if (dead) bits.push(`已失效 ${dead} 张`);
+        return bits.length ? bits.join(" · ") : "本页没有图片";
+      },
+      probeInfo() {
+        if (this.probeState === "running") {
+          return { title: "正在检查图片是否还能取到…",
+                   desc: "朋友圈图片存在微信服务器上，地址带临时凭证；这一步只对缩略图做一次探测，不会拉大图。" };
+        }
+        let dead = 0;
+        for (const [k, v] of Object.entries(this.probeOk)) if (!v) dead++;
+        if (!dead) return null;
+        return {
+          title: `本页有 ${dead} 张图已无法取到`,
+          desc: "原因：这些图片的微信临时凭证（token）已过期，且本机没有缓存副本。"
+              + "补救办法：在电脑版微信里重新刷一遍这条朋友圈，微信会把图片缓存到本机，之后这里就能正常显示了。",
+        };
+      },
     },
     mounted() { this.reload(); },
   };

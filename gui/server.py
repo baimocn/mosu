@@ -189,6 +189,7 @@ def _zip_dir(src_dir: Path) -> bytes:
 
 def run_gui(corpus_path, port: int | None = None) -> None:
     from core.bot.service import BotService
+    import core.remoteimg as remoteimg
     import core.wechat as wx
 
     port = port or int(os.environ.get("MOSU_GUI_PORT", "8788"))
@@ -419,6 +420,65 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                    "X-Mosu-Source": source}
         return (data, _MIME.get(ext.lstrip(".").lower(), "image/jpeg"), headers)
 
+    def _find_moment_media(md5: str) -> dict | None:
+        """按 md5 在朋友圈缓存里反查图片描述（含 token / 原图与缩略图两条地址）。
+
+        只接受 md5、不接受任意 URL：既是缓存键，也避免把服务变成任意网址的
+        代理（SSRF）。
+        """
+        md5 = (md5 or "").strip().lower()
+        if len(md5) != 32:
+            return None
+        try:
+            with _ds_lock:
+                for e in get_moments():
+                    for it in e.get("mediaItems") or []:
+                        if (it.get("md5") or "").lower() == md5:
+                            return it
+        except Exception:
+            return None
+        return None
+
+    def api_remote_media(q) -> tuple[bytes, str]:
+        """朋友圈图片代理：服务端带 token 抓微信 CDN 并落盘缓存。"""
+        md5 = (q.get("md5") or "").strip()
+        thumb = str(q.get("thumb") or "") in ("1", "true", "yes")
+        item = _find_moment_media(md5)
+        if not item:
+            raise ValueError("朋友圈里没有这张图（或地址已失效）")
+        from core.remoteimg import RemoteError
+        try:
+            data, ext, source = remoteimg.get(ROOT / ".cache", md5, item, thumb=thumb)
+        except RemoteError as e:
+            raise ValueError(str(e)) from e
+        headers = {"X-Mosu-Variant": "thumb" if thumb else "full",
+                   "X-Mosu-Source": source}
+        return data, _MIME.get(ext, "image/jpeg"), headers
+
+    def api_moments_probe(q) -> dict:
+        """探测当前页朋友圈图现在还能不能取到（异步任务，不阻塞首屏）。
+
+        前端拿到结果后直接把取不到的图显示成占位，不再让用户点了才发现失败。
+        """
+        limit = max(1, min(int(q.get("limit", 30)), 50))
+        offset = max(0, int(q.get("offset", 0)))
+
+        def run(tid):
+            return {"ok": remoteimg.probe_many(ROOT / ".cache", work)}
+
+        with _ds_lock:
+            rows = get_moments()[offset:offset + limit]
+            store = get_media()
+            work = []
+            for e in rows:
+                for it in e.get("mediaItems") or []:
+                    md5 = (it.get("md5") or "").lower()
+                    if md5 and not store.has_image(md5) and it.get("url"):
+                        work.append((md5, it))
+        if not work:
+            return {"ok": {}, "empty": True}
+        return {"id": tasks.submit("moments-probe", run)}
+
     def get_moments():
         """朋友圈：首屏全量解析后缓存 rows，翻页直接切片（sns.db 静态假设，
         GUI 会话内不失效）。"""
@@ -439,11 +499,20 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 rows = [e for e in rows if user in (e["author"]["wxid"],)]
             total = len(rows)
             page = rows[offset:offset + limit]
-            # 标注每张图本地是否存在：本地优先（可靠且快），没有才用远程 URL
+            # 每张图标注来源：local=本地媒体库（最快）| remote=走服务端代理
+            # 抓微信 CDN（带 token）| none=两条路都拿不到
             store = get_media()
             for e in page:
-                e["mediaLocal"] = [bool(m) and store.has_image(m)
-                                   for m in (e.get("mediaMd5") or [])]
+                flags = []
+                for it in e.get("mediaItems") or []:
+                    md5 = (it.get("md5") or "").lower()
+                    if md5 and store.has_image(md5):
+                        flags.append("local")
+                    elif it.get("url"):
+                        flags.append("remote")
+                    else:
+                        flags.append("none")
+                e["mediaSrc"] = flags
         return {
             "total": total, "offset": offset, "limit": limit,
             "hasMore": total > offset + len(page),
@@ -1177,6 +1246,18 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/moments":
                 self._guard(api_moments, self._params())
+                return
+            if path == "/api/moments/probe":
+                self._guard(api_moments_probe, self._params())
+                return
+            if path == "/api/remote":
+                try:
+                    data, mime, headers = api_remote_media(self._params())
+                    self._send(data, mime, headers=headers)
+                except ValueError as e:
+                    self._json({"error": str(e)}, 404)
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
             if path == "/api/stats/global":
                 self._guard(api_stats_global)

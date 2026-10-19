@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
 import time
@@ -151,3 +152,95 @@ def stats(root: str | os.PathLike) -> dict:
     files = list(d.glob("*"))
     return {"files": len(files),
             "bytes": sum(f.stat().st_size for f in files if f.is_file())}
+
+
+# ---------------------------------------------------------------- 可用性探测
+_PROBE_TTL = 3600 * 24          # 结果缓存一天：token 过期是不可逆的，没必要反复试
+_PROBE_LOCK = threading.Lock()
+
+
+def _probe_file(root: str | os.PathLike) -> Path:
+    return cache_dir(root) / "probe.json"
+
+
+def probe_load(root: str | os.PathLike) -> dict:
+    f = _probe_file(root)
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def probe_save(root: str | os.PathLike, data: dict) -> None:
+    try:
+        _probe_file(root).write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def probe(root: str | os.PathLike, md5: str, item: dict) -> bool:
+    """这张图现在还能不能取到？结果按天缓存。
+
+    sns.db 里的 token 会过期，历史朋友圈图通常取不到。提前判定后前端才能
+    直接显示「本机没有这张图」，而不是让用户一次次点开再失败。
+    """
+    md5 = (md5 or "").lower()
+    if not md5:
+        return False
+    now = time.time()
+    with _PROBE_LOCK:
+        table = probe_load(root)
+    hit = table.get(md5)
+    if hit and now - hit.get("ts", 0) < _PROBE_TTL:
+        return bool(hit.get("ok"))
+
+    url = item.get("thumbUrl") or item.get("url") or ""
+    token = item.get("thumbToken") or item.get("token") or ""
+    ok = False
+    if url and _host_ok(url):
+        try:
+            # 缩略图最小，用它探；带 Range 只取头部，省流量
+            data = _fetch(_with_token(url, token, item.get("key") or ""), timeout=10)
+            ok = len(data) > 0
+        except RemoteError:
+            ok = False
+        except Exception:
+            ok = False
+    with _PROBE_LOCK:
+        table = probe_load(root)
+        table[md5] = {"ok": ok, "ts": now}
+        probe_save(root, table)
+    return ok
+
+
+def probe_many(root: str | os.PathLike, jobs: list[tuple[str, dict]],
+               workers: int = 4) -> dict[str, bool]:
+    """并发探测一批图，返回 {md5: ok}。网络类耗时必须异步，别拖住页面首屏。"""
+    out: dict[str, bool] = {}
+    if not jobs:
+        return out
+    todo = []
+    for md5, item in jobs:
+        table_hit = None
+        md5 = (md5 or "").lower()
+        if not md5:
+            continue
+        rec = probe_load(root).get(md5)
+        if rec and time.time() - rec.get("ts", 0) < _PROBE_TTL:
+            out[md5] = bool(rec.get("ok"))
+        else:
+            todo.append((md5, item))
+    if not todo:
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(probe, root, m, it): m for m, it in todo}
+        for fut, m in futs.items():
+            try:
+                out[m] = bool(fut.result())
+            except Exception:
+                out[m] = False
+    return out
