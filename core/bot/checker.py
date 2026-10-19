@@ -18,7 +18,7 @@ AI_CLICHES = [
 
 
 class StyleChecker:
-    def __init__(self, max_len: int = 80, max_exclaim: int = 2,
+    def __init__(self, max_len: int = 200, max_exclaim: int = 2,
                  copy_threshold: float = 0.85):
         self.max_len = max_len
         self.max_exclaim = max_exclaim

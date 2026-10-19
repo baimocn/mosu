@@ -34,6 +34,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# 捕获原始 system 模板，供 build_variant 在变体间正确还原（避免 V1 污染后续变体）
+import core.bot.service as _svc
+_REAL_SYSTEM_TMPL = _svc.SYSTEM_TMPL
+
 TEST_QUERIES = [
     "明天要不要去图书馆", "这个 bug 怎么解", "客户问报价多少", "晚上吃什么",
     "教程看了没", "在吗", "帮我看看这个报错", "周末有空吗", "部署到哪台服务器",
@@ -108,15 +112,17 @@ def build_variant(name: str, corpus: str, with_prompt: bool, rag: str, check: bo
         def feedback(problems):
             return "重说"
 
+    import core.bot.service as svc
+    # SYSTEM_TMPL 是模块级全局，必须每个变体显式设回，否则 V1（弱 prompt）
+    # 会污染后续 V2~V6，导致"仅 prompt / 全组件"的对比失真。
+    svc.SYSTEM_TMPL = ("你是白墨的微信聊天分身。" if not with_prompt else
+                       _REAL_SYSTEM_TMPL)
     bot = BotService(corpus,
                      retriever=StyleRetriever(corpus),
                      checker=StyleChecker() if check else _NoChecker(),
                      sample_mode=(rag == "random"))
     if rag == "none":
         bot._retrieve = lambda q, k: []
-    if not with_prompt:
-        import core.bot.service as svc
-        svc.SYSTEM_TMPL = "你是白墨的微信聊天分身。"
     return bot
 
 
@@ -124,7 +130,7 @@ def main():
     n = 30
     if "--n" in sys.argv:
         n = int(sys.argv[sys.argv.index("--n") + 1])
-    corpus = r"D:\Desktop\分析\_个人bot\corpus.jsonl"
+    corpus = str(ROOT / "persona" / "corpus.jsonl")
     if "--corpus" in sys.argv:
         corpus = sys.argv[sys.argv.index("--corpus") + 1]
 

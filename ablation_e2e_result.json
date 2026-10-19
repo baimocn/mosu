@@ -1,0 +1,80 @@
+{
+  "V1 全裸": {
+    "n": 10,
+    "avgLen": 34.2,
+    "lenW1": 24.451,
+    "emojiRate": 0.0,
+    "emojiRateDelta": -0.229,
+    "aiClicheRate": 0.0,
+    "verbalRate": 0.2,
+    "verbalDelta": 0.138,
+    "ackRate": 0.0,
+    "uniqueRate": 1.0,
+    "cost": 34.2
+  },
+  "V2 仅prompt": {
+    "n": 10,
+    "avgLen": 10.9,
+    "lenW1": 4.044,
+    "emojiRate": 0.5,
+    "emojiRateDelta": 0.271,
+    "aiClicheRate": 0.0,
+    "verbalRate": 0.6,
+    "verbalDelta": 0.538,
+    "ackRate": 0.2,
+    "uniqueRate": 1.0,
+    "cost": 34.0
+  },
+  "V3 prompt+RAG": {
+    "n": 10,
+    "avgLen": 7.8,
+    "lenW1": 4.167,
+    "emojiRate": 0.1,
+    "emojiRateDelta": -0.129,
+    "aiClicheRate": 0.0,
+    "verbalRate": 0.3,
+    "verbalDelta": 0.238,
+    "ackRate": 0.2,
+    "uniqueRate": 1.0,
+    "cost": 32.0
+  },
+  "V4 全组件(当前)": {
+    "n": 10,
+    "avgLen": 9.1,
+    "lenW1": 3.416,
+    "emojiRate": 0.3,
+    "emojiRateDelta": 0.071,
+    "aiClicheRate": 0.0,
+    "verbalRate": 0.4,
+    "verbalDelta": 0.338,
+    "ackRate": 0.1,
+    "uniqueRate": 1.0,
+    "cost": 33.2
+  },
+  "V5 RAG换随机": {
+    "n": 10,
+    "avgLen": 9.3,
+    "lenW1": 4.935,
+    "emojiRate": 0.3,
+    "emojiRateDelta": 0.071,
+    "aiClicheRate": 0.0,
+    "verbalRate": 0.2,
+    "verbalDelta": 0.138,
+    "ackRate": 0.2,
+    "uniqueRate": 1.0,
+    "cost": 34.8
+  },
+  "V6 无RAG有校验": {
+    "n": 10,
+    "avgLen": 8.0,
+    "lenW1": 3.767,
+    "emojiRate": 0.3,
+    "emojiRateDelta": 0.071,
+    "aiClicheRate": 0.0,
+    "verbalRate": 0.3,
+    "verbalDelta": 0.238,
+    "ackRate": 0.2,
+    "uniqueRate": 1.0,
+    "cost": 32.5
+  }
+}

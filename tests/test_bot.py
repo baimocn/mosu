@@ -36,9 +36,15 @@ class TestChecker(unittest.TestCase):
             self.assertTrue(any("AI 腔" in p for p in probs))
 
     def test_too_long_rejected(self):
-        ok, probs = self.c.check("字" * 100)
+        # 长度上限 200（2026-10-19 放宽：需要解释的话题要能答开）
+        ok, probs = self.c.check("字" * 250)
         self.assertFalse(ok)
         self.assertTrue(any("太长" in p for p in probs))
+
+    def test_medium_length_passes(self):
+        # 放宽后 100 字内的解释性回复应通过（风格是约束，不是知识枷锁）
+        ok, probs = self.c.check("全局解释器锁 一个进程里同一时刻只有一个线程跑字节码 多核用不上 想并行就多进程")
+        self.assertTrue(ok, probs)
 
     def test_exclaim_rejected(self):
         ok, _ = self.c.check("太好了！！！真不错！！！")

@@ -609,6 +609,39 @@ def cmd_bot(args, ds: Dataset):
     not_implemented("bot", "可用: serve | test")
 
 
+# ---------------------------------------------------------------- gui（本地 Web 控制台）
+def cmd_gui(args, ds: Dataset):
+    from gui.server import run_gui
+    corpus = Path(args.corpus) if args.corpus else ROOT / "persona" / "corpus.jsonl"
+    if not corpus.exists():
+        sys.exit(f"[x] 语料不存在：{corpus}\n    先跑 `mosu persona --output persona/` 生成")
+    return run_gui(corpus, port=args.port)
+
+
+# ---------------------------------------------------------------- wechat（微信通道，自研）
+def cmd_wechat(args, ds: Dataset):
+    import core.wechat as wx
+    sub = args.wechat_cmd or "status"
+    if sub == "login":
+        return wx.run_login()
+    if sub == "status":
+        return wx.run_status()
+    if sub == "logout":
+        return wx.run_logout()
+    if sub == "install":
+        return wx.run_install()
+    if sub == "uninstall":
+        return wx.run_uninstall()
+    if sub == "task":
+        return wx.run_task_status()
+    if sub == "serve":
+        corpus = Path(args.corpus) if args.corpus else ROOT / "persona" / "corpus.jsonl"
+        if not corpus.exists():
+            sys.exit(f"[x] 语料不存在：{corpus}\n"
+                     f"    先跑 `mosu persona --output persona/` 生成")
+        return wx.run_serve(str(corpus), once=args.once)
+
+
 # ---------------------------------------------------------------- persona（个人 bot 语料）
 def cmd_persona(args, ds: Dataset):
     from core.persona import build_persona
@@ -1009,6 +1042,22 @@ def build_parser():
     p.add_argument("--port", type=int, default=int(os.environ.get("MOSU_BOT_PORT", "8787")))
     p.add_argument("--dry", action="store_true", help="只看 prompt 组装，不调 LLM")
     p.set_defaults(func=cmd_bot)
+
+    p = sub.add_parser("gui", help="本地 Web 控制台：对话调试 + 通道状态 + 消息流水",
+                       parents=[common])
+    p.add_argument("--corpus", help="语料 jsonl 路径，默认 persona/corpus.jsonl")
+    p.add_argument("--port", type=int, default=int(os.environ.get("MOSU_GUI_PORT", "8788")))
+    p.add_argument("--no-browser", action="store_true", help="只起服务，不自动开浏览器")
+    p.set_defaults(func=cmd_gui)
+
+    p = sub.add_parser("wechat", help="微信通道（ClawBot/iLink，自研不依赖 OpenClaw）",
+                       parents=[common])
+    p.add_argument("wechat_cmd", nargs="?",
+                   choices=["login", "serve", "status", "logout",
+                            "install", "uninstall", "task"], default="status")
+    p.add_argument("--corpus", help="语料 jsonl 路径，默认 persona/corpus.jsonl")
+    p.add_argument("--once", action="store_true", help="只轮询一轮就退出（调试用）")
+    p.set_defaults(func=cmd_wechat)
 
     p = sub.add_parser("persona", help="个人 bot 素材：本人发言语料 + 风格画像",
                        parents=[common])
