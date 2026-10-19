@@ -119,5 +119,35 @@ class TestFormatters(unittest.TestCase):
         self.assertIn("| a | b |", out)
 
 
+class TestSenderPrefix(unittest.TestCase):
+    """微信 4.x 群聊文本以「发送者:」独占一行开头，解析层必须剥掉。"""
+
+    NL = chr(10)  # 换行（避免在源码里写转义）
+
+    def test_wxid_prefix(self):
+        from core.msgparse import strip_sender_prefix
+        self.assertEqual(strip_sender_prefix("wxid_abc123:\n你好"), "你好")
+
+    def test_nickname_prefix(self):
+        from core.msgparse import strip_sender_prefix
+        self.assertEqual(strip_sender_prefix("小笨蛋:\r\nhi"), "hi")
+
+    def test_plain_text_untouched(self):
+        from core.msgparse import strip_sender_prefix
+        self.assertEqual(strip_sender_prefix("普通消息"), "普通消息")
+        self.assertEqual(strip_sender_prefix("第一行\n第二行"), "第一行\n第二行")
+
+    def test_url_untouched(self):
+        from core.msgparse import strip_sender_prefix
+        nl = self.NL
+        self.assertEqual(strip_sender_prefix("https://x.com:" + nl + "ok"),
+                         "https://x.com:" + nl + "ok")
+
+    def test_parse_message_integration(self):
+        from core.msgparse import parse_message
+        m = parse_message(1, "wxid_x:" + self.NL + "正文")
+        self.assertEqual(m["text"], "正文")
+
+
 if __name__ == "__main__":
     unittest.main()

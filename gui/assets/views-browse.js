@@ -10,6 +10,25 @@
   const M = global.Mosu;
   const T = (s) => s;   // 预留：若将来做多语言，这里替换
 
+  /* 空态插画：细线风，随主题变色（currentColor） */
+  const ART = {
+    search: `<svg viewBox="0 0 132 96" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <circle cx="58" cy="42" r="24"/><path d="M76 60l18 18"/>
+      <path d="M48 42h20M58 32v20" opacity=".45"/>
+      <circle cx="104" cy="24" r="2" opacity=".4"/><circle cx="26" cy="70" r="2" opacity=".4"/>
+    </svg>`,
+    chat: `<svg viewBox="0 0 132 96" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="18" y="22" width="58" height="38" rx="10" opacity=".55"/>
+      <path d="M32 40h30M32 49h20" opacity=".4"/>
+      <rect x="60" y="42" width="54" height="34" rx="10"/>
+      <path d="M72 58h30M72 66h18" opacity=".55"/>
+    </svg>`,
+    folder: `<svg viewBox="0 0 132 96" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 32l8-10h26l6 8h44a6 6 0 016 6v34a6 6 0 01-6 6H28a6 6 0 01-6-6V32z"/>
+      <path d="M46 58h40M66 48v20" opacity=".45"/>
+    </svg>`,
+  };
+
   const Browse = {
     template: `
     <div class="browse">
@@ -31,7 +50,7 @@
                  style="height:52px;margin-bottom:8px"></div>
           </div>
           <div v-else-if="!shown.length" class="empty">
-            <div class="empty-icon">🔍</div>
+            <div class="empty-art" v-html="art.search"></div>
             <div class="empty-title">没有匹配的会话</div>
             <div class="empty-desc">换个关键词，或确认数据目录与密钥是否正确。</div>
           </div>
@@ -94,7 +113,7 @@
             <div v-else style="text-align:center;padding:8px" class="tiny muted">已到最早</div>
 
             <div v-if="!msgs.length && !loading" class="empty">
-              <div class="empty-icon">💬</div>
+              <div class="empty-art" v-html="art.chat"></div>
               <div class="empty-title">这个会话没有消息</div>
               <div class="empty-desc">可能是空会话，或筛选条件太窄。</div>
             </div>
@@ -102,12 +121,12 @@
             <template v-for="g in groups" :key="g.key">
               <div class="day-sep"><span>{{ g.day }}</span></div>
               <div v-for="m in g.items" :key="m.id" class="msg" :class="{out: m.direction==='out'}">
-                <div class="avatar avatar-sm">
+                <div class="avatar avatar-sm" :style="m._merged ? {opacity: 0} : {}">
                   <span>{{ initial(m.senderName || (m.direction==='out' ? '我' : '?')) }}</span>
                 </div>
                 <div class="msg-body">
                   <div class="msg-sender" v-if="isGroup && m.direction!=='out'">
-                    {{ m.senderName || m.senderId }}
+                    {{ senderLabel(m) }}
                   </div>
                   <div class="bubble" :class="bubbleClass(m)">
                     <!-- 图片 -->
@@ -135,6 +154,8 @@
                   <div class="msg-meta">
                     <span>{{ fmtTime(m.createTime) }}</span>
                     <span v-if="m.kind==='voice'" class="tiny">{{ (m.voiceMs/1000).toFixed(1) }}s</span>
+                    <button v-if="m.kind==='text' && m.content" class="copy-btn"
+                            title="复制原文" @click="copyMsg(m)">复制</button>
                   </div>
                 </div>
               </div>
@@ -147,7 +168,7 @@
         </template>
 
         <div v-else class="empty" style="height:100%">
-          <div class="empty-icon">📂</div>
+          <div class="empty-art" v-html="art.folder"></div>
           <div class="empty-title">选择一个会话开始浏览</div>
           <div class="empty-desc">
             左侧是你的全部会话。支持按类型/方向/日期筛选，也支持全库关键词搜索。
@@ -207,6 +228,7 @@
         fType: "", fDir: "", fFrom: "", fTo: "",
         searchOpen: false, sq: "", sResults: [], searched: false, searching: false,
         lightbox: "",
+        art: ART,
       };
     },
     computed: {
@@ -254,6 +276,19 @@
       voiceText(m) {
         const t = (m.voiceText || "").trim();
         return t || `[语音 ${Math.round((m.voiceMs || 0) / 1000)} 秒]`;
+      },
+      async copyMsg(m) {
+        try {
+          await navigator.clipboard.writeText(m.content || "");
+          M.toast.ok("已复制");
+        } catch (e) { M.toast.err("复制失败：" + e.message); }
+      },
+      /** 群成员显示名兜底：拿不到昵称时别甩一串 wxid 在用户脸上 */
+      senderLabel(m) {
+        const n = (m.senderName || "").trim();
+        if (n) return n;
+        const id = m.senderId || "";
+        return id.startsWith("wxid_") ? "群成员" : (id || "群成员");
       },
       async load() {
         this.loading = true;

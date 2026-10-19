@@ -94,6 +94,20 @@ def parse_pb(data: bytes) -> dict[int, list]:
     return out
 
 
+# 群聊文本原文以「发送者ID:」独占一行开头（微信 4.x 实测格式），正文从第二行起。
+# 限制：首行 ≤64 字符、半角冒号结尾、必须紧跟换行——三者同时满足才剥，
+# 用户自己打「备注:\nxxx」这类内容的误伤概率可以忽略。
+_SENDER_PREFIX = re.compile(r"^.{1,64}:\r?\n")
+
+
+def strip_sender_prefix(text: str) -> str:
+    if text and "\n" in text:
+        m = _SENDER_PREFIX.match(text)
+        if m and not m.group(0).lstrip().lower().startswith(("http://", "https://")):
+            return text[m.end():]
+    return text
+
+
 def decompress(blob: bytes, max_size: int = 8 << 20) -> bytes | None:
     """zstd 解压；非 zstd 数据原样返回。"""
     if not isinstance(blob, (bytes, bytearray)):
@@ -201,6 +215,7 @@ def parse_message(local_type: int, content, packed=None) -> dict:
         msg["text"] = (body.decode("utf-8", "ignore") if body else (content or ""))
         if isinstance(msg["text"], bytes):
             msg["text"] = msg["text"].decode("utf-8", "ignore")
+        msg["text"] = strip_sender_prefix(msg["text"])
 
     elif real == T_IMAGE:
         msg["img_md5"] = pinfo.get("img_md5")

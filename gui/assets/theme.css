@@ -59,6 +59,13 @@
   --z-overlay: 200;
   --z-modal: 300;
   --z-toast: 400;
+
+  /* ---- 玻璃拟态（Liquid Glass）---- */
+  --glass-blur: 20px;
+  --glass-sat: 180%;
+  --glass-bd: rgba(255, 255, 255, 0.6);   /* 玻璃上缘高光 */
+  --glass-bd2: rgba(255, 255, 255, 0.18); /* 玻璃外框 */
+  --glass-hi: rgba(255, 255, 255, 0.7);   /* 内高光 */
 }
 
 /* --------------------------------------------------------------------------
@@ -110,6 +117,33 @@
   --bubble-out: #95ec69;       /* 微信气泡绿，用户心智最熟 */
   --bubble-out-text: #0f172a;
   --code-bg: #f1f5f9;
+
+  /* Aurora 渐变流：主按钮 / 强调条。background-size 200% + 位移动画 */
+  --grad-brand: linear-gradient(100deg, #2f6feb 0%, #4f8bff 30%, #7aa2ff 55%, #2f6feb 100%);
+  --grad-brand-soft: linear-gradient(100deg, rgba(47,111,235,.14), rgba(122,162,255,.2), rgba(47,111,235,.14));
+  --grad-sheen: linear-gradient(105deg, transparent 30%, rgba(255,255,255,.55) 48%, transparent 66%);
+  --grad-surface: linear-gradient(160deg, #ffffff 0%, #fbfcfe 100%);
+
+  /* 柔光（Soft Glow）：悬停时从品牌色外溢的呼吸感 */
+  --glow-brand: 0 0 0 4px rgba(47, 111, 235, 0.14), 0 6px 20px rgba(47, 111, 235, 0.28);
+  --glow-danger: 0 0 0 4px rgba(220, 38, 38, 0.13), 0 6px 20px rgba(220, 38, 38, 0.26);
+  --glow-success: 0 0 0 4px rgba(5, 150, 105, 0.13), 0 6px 20px rgba(5, 150, 105, 0.24);
+
+  /* 热力图（活跃度日历）：从不活跃 → 极活跃，微信绿语义 */
+  --heat-0: #eceff4;
+  --heat-1: #cdeed8;
+  --heat-2: #8fdfae;
+  --heat-3: #4fc983;
+  --heat-4: #1fa85f;
+  --heat-5: #0d7c42;
+
+  /* 图表序列色（自绘 SVG 用，深浅主题各自校准过对比度） */
+  --c1: #2f6feb;
+  --c2: #06b6d4;
+  --c3: #f59e0b;
+  --c4: #a855f7;
+  --c5: #ef4444;
+  --c6: #10b981;
 }
 
 /* --------------------------------------------------------------------------
@@ -160,6 +194,29 @@
   --bubble-out: #2c7a4b;
   --bubble-out-text: #eafbef;
   --code-bg: #0f151c;
+
+  --grad-brand: linear-gradient(100deg, #3f74e8 0%, #588cff 30%, #7ea8ff 55%, #3f74e8 100%);
+  --grad-brand-soft: linear-gradient(100deg, rgba(88,140,255,.16), rgba(126,168,255,.24), rgba(88,140,255,.16));
+  --grad-sheen: linear-gradient(105deg, transparent 30%, rgba(255,255,255,.16) 48%, transparent 66%);
+  --grad-surface: linear-gradient(160deg, #151b23 0%, #1a212b 100%);
+
+  --glow-brand: 0 0 0 4px rgba(88, 140, 255, 0.16), 0 6px 22px rgba(88, 140, 255, 0.34);
+  --glow-danger: 0 0 0 4px rgba(242, 102, 111, 0.15), 0 6px 22px rgba(242, 102, 111, 0.3);
+  --glow-success: 0 0 0 4px rgba(63, 185, 141, 0.15), 0 6px 22px rgba(63, 185, 141, 0.28);
+
+  --heat-0: #1c242e;
+  --heat-1: #14432c;
+  --heat-2: #166b40;
+  --heat-3: #1d9155;
+  --heat-4: #27b76c;
+  --heat-5: #4dd98f;
+
+  --c1: #588cff;
+  --c2: #22d3ee;
+  --c3: #fbbf24;
+  --c4: #c084fc;
+  --c5: #f87171;
+  --c6: #34d399;
 }
 
 /* 主题切换时不闪白：只对背景/文字/边框做过渡 */

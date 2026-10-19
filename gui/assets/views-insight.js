@@ -7,6 +7,13 @@
   "use strict";
   const M = global.Mosu;
 
+  /** 热力图分级：按当天占峰值的比例划 5 档，0 档留白 */
+  function levelOf(c, max) {
+    if (!c) return 0;
+    const r = c / Math.max(1, max);
+    return r > 0.66 ? 5 : r > 0.45 ? 4 : r > 0.28 ? 3 : r > 0.14 ? 2 : 1;
+  }
+
   /* ---------------------------------------------------------------- 通用渲染 */
   const JsonView = {
     name: "JsonView",
@@ -72,26 +79,73 @@
       </div>
       <template v-else-if="g">
         <div class="grid grid-4">
-          <div class="stat-card">
-            <div class="stat-value">{{ fmtNum(g.totalMessages) }}</div>
-            <div class="stat-label">消息总数</div>
+          <div class="tile rise">
+            <div class="tile-head">消息总数</div>
+            <div class="tile-value">{{ fmtNum(g.totalMessages) }}</div>
+            <div class="tile-foot">
+              <span class="trend trend-flat">{{ fmtNum(g.totalSessions) }} 个会话</span>
+            </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-value">{{ fmtNum(g.totalSessions) }}</div>
-            <div class="stat-label">会话数</div>
+          <div class="tile rise">
+            <div class="tile-head">联系人</div>
+            <div class="tile-value">{{ fmtNum(g.totalContacts) }}</div>
+            <div class="tile-foot">去重后的往来对象</div>
           </div>
-          <div class="stat-card">
-            <div class="stat-value">{{ fmtNum(g.totalContacts) }}</div>
-            <div class="stat-label">联系人</div>
+          <div class="tile rise">
+            <div class="tile-head">最活跃一天</div>
+            <div class="tile-value" style="font-size:20px">{{ peakDayText }}</div>
+            <div class="tile-foot">{{ peakDayCount }}</div>
           </div>
-          <div class="stat-card">
-            <div class="stat-value" style="font-size:18px">
+          <div class="tile rise">
+            <div class="tile-head">时间跨度</div>
+            <div class="tile-value" style="font-size:15px;line-height:1.35">
               {{ (g.timeRange && g.timeRange.firstText) || '—' }}
               <span class="muted">→</span>
               {{ (g.timeRange && g.timeRange.lastText) || '—' }}
             </div>
-            <div class="stat-label">时间跨度</div>
+            <div class="tile-foot">{{ spanDays ? ('跨越 ' + fmtNum(spanDays) + ' 天') : '' }}</div>
           </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-title">
+            活跃度日历
+            <div class="spacer"></div>
+            <span class="tiny muted" v-if="heatLoading">正在按天聚合…</span>
+          </div>
+          <div class="card-sub">
+            最近一年每天的消息密度。颜色越深，那天聊得越多。
+          </div>
+          <div v-if="heatLoading" class="skeleton" style="height:110px"></div>
+          <template v-else-if="heatCells.length">
+            <div class="heat">
+              <div style="display:inline-block">
+                <div class="heat-months">
+                  <div v-for="(m,i) in heatMonths" :key="i" style="position:relative;width:13px">
+                    <span v-if="m" style="position:absolute;left:0;top:0;white-space:nowrap">{{ m }}</span>
+                  </div>
+                </div>
+                <div class="heat-grid">
+                  <div v-for="(c,i) in heatCells" :key="i"
+                       class="heat-cell" :class="'heat-l' + c.level"
+                       :title="c.title"></div>
+                </div>
+              </div>
+            </div>
+            <div class="heat-legend">
+              <span>少</span>
+              <span class="heat-cell"></span>
+              <span class="heat-cell heat-l1"></span>
+              <span class="heat-cell heat-l2"></span>
+              <span class="heat-cell heat-l3"></span>
+              <span class="heat-cell heat-l4"></span>
+              <span class="heat-cell heat-l5"></span>
+              <span>多</span>
+              <div class="spacer" style="flex:1"></div>
+              <span>活跃 {{ fmtNum(activeDays) }} 天 · 最长连续 {{ fmtNum(maxStreak) }} 天</span>
+            </div>
+          </template>
+          <div v-else class="muted tiny">这段时间没有可统计的消息。</div>
         </div>
 
         <div class="grid grid-2" style="margin-top:16px">
@@ -170,12 +224,72 @@
       return {
         loading: true, g: null, contacts: [], time: null, by: "hour",
         keywords: [], kwRunning: false, err: "",
+        heat: null, heatLoading: true,
       };
     },
     computed: {
       maxType() { return Math.max(1, ...Object.values(this.g ? this.g.byType : { x: 1 })); },
       maxContact() { return Math.max(1, ...this.contacts.map((c) => c.messageCount)); },
       maxTime() { return Math.max(1, ...(this.time ? this.time.items.map((i) => i.count) : [1])); },
+
+      /* ---- 活跃度日历 ---- */
+      heatCells() {
+        const dist = (this.heat && this.heat.distribution) || {};
+        if (!Object.keys(dist).length) return [];
+        const end = new Date(); end.setHours(0, 0, 0, 0);
+        const endDay = end.getDay();                 // 0 = 周日，网格按列填充，必须从周日起步
+        const cur = new Date(end);
+        cur.setDate(end.getDate() - endDay - 364);
+        const cells = [];
+        const pad = (n) => (n < 10 ? "0" + n : String(n));
+        const top = Math.max(1, ...Object.values(dist).map(Number));
+        for (let i = 0; i <= 364 + endDay; i++) {
+          const key = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`;
+          const c = dist[key] || 0;
+          cells.push({
+            key, count: c, level: levelOf(c, top),
+            month: cur.getMonth() + 1 + "月",
+            title: c ? `${key} · ${c} 条` : `${key} · 无消息`,
+          });
+          cur.setDate(cur.getDate() + 1);
+        }
+        return cells;
+      },
+      heatMax() {
+        const dist = (this.heat && this.heat.distribution) || {};
+        return Math.max(1, ...Object.values(dist).map(Number));
+      },
+      heatMonths() {
+        /* 只在「该列包含 1 号」的列标注月份，一个月最多出现一次，避免重叠 */
+        const out = [];
+        for (let i = 0; i < this.heatCells.length; i += 7) {
+          const first = this.heatCells.slice(i, i + 7).find((c) => c.key.endsWith("-01"));
+          out.push(first ? first.month : "");
+        }
+        return out;
+      },
+      activeDays() { return this.heatCells.filter((c) => c.count > 0).length; },
+      maxStreak() {
+        let best = 0, run = 0;
+        for (const c of this.heatCells) {
+          if (c.count > 0) { run++; if (run > best) best = run; }
+          else run = 0;
+        }
+        return best;
+      },
+      peakDay() {
+        const dist = (this.heat && this.heat.distribution) || {};
+        let k = "", v = 0;
+        for (const [key, n] of Object.entries(dist)) { if (n > v) { v = n; k = key; } }
+        return { key: k, count: v };
+      },
+      peakDayText() { return this.peakDay.key || "—"; },
+      peakDayCount() { return this.peakDay.count ? `${M.fmtNum(this.peakDay.count)} 条` : ""; },
+      spanDays() {
+        const r = this.g && this.g.timeRange;
+        if (!r || !r.first || !r.last) return 0;
+        return Math.max(0, Math.round((r.last - r.first) / 86400));
+      },
     },
     methods: {
       ...{ fmtNum: M.fmtNum },
@@ -191,6 +305,13 @@
       async switchBy(by) {
         this.by = by; this.time = null;
         this.time = await M.api.get("/api/stats/time", { by });
+      },
+      /** 逐日聚合要扫全库，单独加载，不拖慢首屏 */
+      async loadHeat() {
+        this.heatLoading = true;
+        try { this.heat = await M.api.get("/api/stats/time", { by: "date" }); }
+        catch (e) { this.heat = null; }
+        finally { this.heatLoading = false; }
       },
       async runKeywords() {
         this.kwRunning = true;
@@ -222,6 +343,7 @@
         this.g = g; this.contacts = c.contacts || []; this.time = t;
       } catch (e) { this.err = e.message; }
       finally { this.loading = false; }
+      this.loadHeat();
     },
   };
 

@@ -304,9 +304,22 @@
               <button class="btn btn-primary btn-lg" @click="findKey">开始自动获取</button>
             </div>
             <div v-else-if="running" class="scan-stage">
-              <div class="progress"><div class="progress-bar indeterminate"></div></div>
+              <div class="ring" style="width:120px;height:120px">
+                <svg width="120" height="120" viewBox="0 0 120 120">
+                  <defs>
+                    <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" style="stop-color: var(--brand)" />
+                      <stop offset="100%" style="stop-color: var(--c2)" />
+                    </linearGradient>
+                  </defs>
+                  <circle class="ring-track" cx="60" cy="60" r="52" fill="none" stroke-width="8" />
+                  <circle class="ring-fill" cx="60" cy="60" r="52" fill="none" stroke-width="8"
+                          :stroke-dasharray="ringC" :stroke-dashoffset="ringC * (1 - pct/100)" />
+                </svg>
+                <div class="ring-label">{{ pct }}%<span class="ring-sub">{{ stageName }}</span></div>
+              </div>
               <div class="scan-msg">{{ stageMsg }}</div>
-              <div class="scan-meta">{{ stage }} · {{ stageMeta }}</div>
+              <div class="scan-meta">{{ stageMeta }}</div>
               <button class="btn btn-sm" @click="cancel">取消</button>
             </div>
             <div v-else-if="result && result.ok" class="scan-stage">
@@ -379,12 +392,19 @@
       return {
         step: 0, steps: ["欢迎", "环境检测", "获取密钥", "完成"],
         probe: null, running: false, result: null, es: null,
-        stage: "", stageMsg: "", stageMeta: "",
+        stage: "", stageMsg: "", stageMeta: "", pct: 0,
         manualKey: "", aiHelp: false, sessionCount: 0, msgCount: 0,
       };
     },
     computed: {
       llm() { return M.store.llm; },
+      ringC() { return 2 * Math.PI * 52; },
+      stageName() {
+        return {
+          process: "检测进程", mask: "提取掩码", scan: "扫描内存",
+          deref: "解析候选", verify: "校验密钥", save: "保存",
+        }[this.stage] || this.stage;
+      },
       title() {
         return ["欢迎使用墨溯", "检查运行环境", "获取数据库密钥", "准备就绪"][this.step];
       },
@@ -433,21 +453,29 @@
         catch (e) { M.toast.err("检测失败：" + e.message); this.probe = { ok: false }; }
       },
       findKey() {
-        this.running = true; this.result = null;
+        this.running = true; this.result = null; this.pct = 2;
         this.stage = "process"; this.stageMsg = "正在检测微信进程…"; this.stageMeta = "";
         const label = {
           process: "检测微信进程", mask: "提取版本适配信息",
           scan: "扫描进程内存", deref: "解析候选密钥",
           verify: "校验候选（PBKDF2 + HMAC）", save: "写入密钥库",
         };
+        const order = ["process", "mask", "scan", "deref", "verify", "save"];
         this.es = M.api.stream("/api/key/find", {
           progress: (d) => {
             this.stage = d.stage;
             this.stageMsg = d.message || (label[d.stage] || d.stage);
             this.stageMeta = d.total ? `${d.current}/${d.total}` : "";
+            const i = order.indexOf(d.stage);
+            if (i >= 0) {
+              const frac = d.total ? Math.min(1, (d.current || 0) / d.total) : 0.5;
+              this.pct = Math.max(this.pct,
+                Math.round(((i + frac) / order.length) * 100));
+            }
           },
           done: (d) => {
             this.running = false; this.result = d;
+            this.pct = 100;
             if (d.ok) {
               M.toast.ok("密钥已获取并保存");
               M.store.sessionsLoaded = false;
