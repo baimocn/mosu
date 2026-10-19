@@ -34,7 +34,15 @@
   .dot.off { background: #d9d9d9; }
   .dot.err { background: #fa5151; box-shadow: 0 0 0 3px rgba(250,81,81,.15); }
 
-  /* ---------- 主区 ---------- */
+  /* ---------- tab ---------- */
+  .tabs { display: flex; gap: 2px; background: #fff; padding: 0 16px; flex-shrink: 0;
+          border-bottom: 1px solid #e0e0e0; }
+  .tab {
+    padding: 9px 18px; font-size: 13px; color: #666; cursor: pointer;
+    border: none; background: none; border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: #07c160; border-bottom-color: #07c160; font-weight: 600; }
+
   .main { flex: 1; display: flex; min-height: 0; }
   .chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .side-col {
@@ -45,16 +53,13 @@
 
   /* ---------- 对话 ---------- */
   .chat-scroll { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
-  .sys-tip {
-    text-align: center; color: #999; font-size: 12px; margin: 8px 0 16px;
-  }
+  .sys-tip { text-align: center; color: #999; font-size: 12px; margin: 8px 0 16px; }
   .sys-tip span { background: rgba(0,0,0,.06); border-radius: 4px; padding: 3px 10px; }
   .msg-row { display: flex; margin-bottom: 14px; }
   .msg-row.me { justify-content: flex-end; }
   .bubble {
     max-width: 62%; padding: 9px 12px; border-radius: 8px;
     line-height: 1.55; word-break: break-word; white-space: pre-wrap;
-    position: relative;
   }
   .msg-row.bot .bubble { background: #fff; border-top-left-radius: 2px; }
   .msg-row.me .bubble { background: #95ec69; border-top-right-radius: 2px; }
@@ -66,27 +71,19 @@
   .tag-ok { color: #07c160; }
   .tag-bad { color: #fa5151; }
   .refs { margin-top: 6px; }
-  .refs summary {
-    font-size: 11px; color: #888; cursor: pointer; user-select: none;
-    list-style: none;
-  }
+  .refs summary { font-size: 11px; color: #888; cursor: pointer; user-select: none; list-style: none; }
   .refs summary::-webkit-details-marker { display: none; }
   .refs summary::before { content: "▸ "; }
   .refs[open] summary::before { content: "▾ "; }
   .refs ul { margin: 6px 0 0 14px; }
-  .refs li {
-    font-size: 12px; color: #666; margin-bottom: 3px; line-height: 1.5;
-  }
+  .refs li { font-size: 12px; color: #666; margin-bottom: 3px; line-height: 1.5; }
   .refs .from { color: #07c160; margin-right: 4px; }
 
   .typing {
     display: inline-flex; align-items: center; gap: 4px;
     color: #999; font-size: 12px; margin-bottom: 14px; padding-left: 4px;
   }
-  .typing i {
-    width: 6px; height: 6px; border-radius: 50%; background: #bbb;
-    animation: blink 1.2s infinite;
-  }
+  .typing i { width: 6px; height: 6px; border-radius: 50%; background: #bbb; animation: blink 1.2s infinite; }
   .typing i:nth-child(2) { animation-delay: .2s; }
   .typing i:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
@@ -119,10 +116,8 @@
   }
   .panel-title .count { font-weight: 400; color: #aaa; font-size: 11px; }
   .log-scroll { overflow-y: auto; padding: 0 14px 12px; flex: 1; }
-  .log-item {
-    display: flex; gap: 8px; font-size: 12px; line-height: 1.5;
-    padding: 4px 0; border-bottom: 1px dashed #eee;
-  }
+  .log-item { display: flex; gap: 8px; font-size: 12px; line-height: 1.5; padding: 4px 0;
+              border-bottom: 1px dashed #eee; }
   .log-item:last-child { border-bottom: none; }
   .log-time { color: #bbb; flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .log-text { color: #555; word-break: break-all; }
@@ -130,14 +125,125 @@
   .log-item.err .log-text { color: #fa5151; }
   .log-empty { color: #bbb; font-size: 12px; text-align: center; padding: 18px 0; }
   .kv { padding: 0 14px 14px; }
-  .kv-row {
-    display: flex; justify-content: space-between; font-size: 12px;
-    padding: 3px 0; gap: 8px;
-  }
+  .kv-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; gap: 8px; }
   .kv-row .k { color: #999; flex-shrink: 0; }
   .kv-row .v { color: #444; text-align: right; word-break: break-all; }
   .kv-row .v.ok { color: #07c160; }
   .kv-row .v.bad { color: #fa5151; }
+
+  /* ================================================================
+     数据浏览（三栏：会话列表 | 消息流 | 搜索）
+     ================================================================ */
+  .browse { flex: 1; display: flex; min-height: 0; }
+
+  /* 左：会话列表 */
+  .sess-col { width: 280px; flex-shrink: 0; border-right: 1px solid #e0e0e0;
+              background: #f7f7f7; display: flex; flex-direction: column; min-height: 0; }
+  .sess-filters { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 8px; }
+  .sess-filters input, .search-box input {
+    border: 1px solid #e0e0e0; border-radius: 6px; outline: none;
+    padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%;
+  }
+  .sess-filters input:focus, .search-box input:focus { border-color: #07c160; }
+  .type-tabs { display: flex; gap: 4px; }
+  .type-tab {
+    flex: 1; border: none; background: #ececec; color: #666; font-size: 12px;
+    padding: 5px 0; border-radius: 6px; cursor: pointer;
+  }
+  .type-tab.active { background: #07c160; color: #fff; }
+  .sess-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+  .sess-item {
+    display: flex; gap: 10px; padding: 9px 10px; border-radius: 8px;
+    cursor: pointer; align-items: center;
+  }
+  .sess-item:hover { background: #ececec; }
+  .sess-item.active { background: #e4e4e4; }
+  .sess-avatar {
+    width: 38px; height: 38px; border-radius: 6px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; color: #fff; font-weight: 600;
+  }
+  .sess-info { min-width: 0; flex: 1; }
+  .sess-name { font-size: 13px; color: #1a1a1a; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  .sess-sub { font-size: 11px; color: #999; margin-top: 2px; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+  .sess-count { font-size: 10px; color: #bbb; flex-shrink: 0; }
+
+  /* 中：消息流 */
+  .msg-col { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #ededed; }
+  .msg-head {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    background: #f7f7f7; border-bottom: 1px solid #e8e8e8; flex-shrink: 0;
+  }
+  .msg-head .name { font-size: 14px; font-weight: 600; color: #333; }
+  .msg-head .sub { font-size: 11px; color: #999; }
+  .msg-scroll { flex: 1; overflow-y: auto; padding: 16px; }
+  .load-more {
+    display: block; margin: 0 auto 14px; border: none; background: #fff;
+    color: #666; font-size: 12px; padding: 6px 18px; border-radius: 14px;
+    cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .load-more:hover { color: #07c160; }
+  .load-more:disabled { opacity: .5; cursor: default; }
+  .wmsg { display: flex; margin-bottom: 16px; align-items: flex-start; gap: 8px; }
+  .wmsg.out { flex-direction: row-reverse; }
+  .wmsg .avatar {
+    width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: #fff; font-weight: 600;
+  }
+  .wmsg .body { max-width: 60%; min-width: 0; }
+  .wmsg .sender { font-size: 11px; color: #999; margin-bottom: 3px; }
+  .wmsg.out .sender { text-align: right; }
+  .wmsg .bubble2 {
+    padding: 8px 11px; border-radius: 8px; line-height: 1.55;
+    word-break: break-word; white-space: pre-wrap; font-size: 14px;
+  }
+  .wmsg.in .bubble2 { background: #fff; border-top-left-radius: 2px; }
+  .wmsg.out .bubble2 { background: #95ec69; border-top-right-radius: 2px; }
+  .wmsg .bubble2 img {
+    max-width: 240px; max-height: 240px; border-radius: 6px; display: block; cursor: zoom-in;
+  }
+  .wmsg .bubble2 .media-tag { color: #576b95; font-size: 13px; }
+  .wmsg .mtime { font-size: 10px; color: #bbb; margin-top: 3px; }
+  .wmsg.out .mtime { text-align: right; }
+  .wmsg .mtime.hl { color: #07c160; }
+
+  /* 右：搜索 */
+  .search-col { width: 300px; flex-shrink: 0; border-left: 1px solid #e0e0e0;
+                background: #f7f7f7; display: flex; flex-direction: column; min-height: 0; }
+  .search-box { padding: 12px 12px 8px; position: relative; }
+  .search-results { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+  .hit-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+  .hit-item:hover { background: #ececec; }
+  .hit-top { display: flex; justify-content: space-between; font-size: 11px; color: #999; }
+  .hit-top .sess { color: #07c160; }
+  .hit-text { font-size: 12px; color: #555; margin-top: 3px; line-height: 1.5;
+              display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+              overflow: hidden; }
+  .hit-text mark { background: #fff3a3; color: inherit; padding: 0 1px; }
+
+  /* 空态/加载态 */
+  .placeholder {
+    flex: 1; display: flex; flex-direction: column; gap: 8px;
+    align-items: center; justify-content: center; color: #aaa; font-size: 13px;
+  }
+  .placeholder .big { font-size: 34px; }
+  .spinner {
+    width: 22px; height: 22px; border: 3px solid #e0e0e0; border-top-color: #07c160;
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err-card {
+    margin: 40px auto; max-width: 420px; background: #fff; border-radius: 10px;
+    padding: 22px 24px; box-shadow: 0 2px 8px rgba(0,0,0,.06); text-align: center;
+  }
+  .err-card h3 { color: #fa5151; font-size: 15px; margin-bottom: 8px; }
+  .err-card p { color: #888; font-size: 12px; line-height: 1.7; }
+  .err-card code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; color: #07c160; }
+  @media (max-width: 1100px) { .search-col { display: none; } }
+  @media (max-width: 760px) { .sess-col { width: 200px; } }
 </style>
 </head>
 <body>
@@ -158,8 +264,16 @@
     </div>
   </header>
 
-  <div class="main">
-    <!-- 对话列 -->
+  <!-- tab：控制台 / 数据浏览 -->
+  <nav class="tabs">
+    <button class="tab" :class="{active: tab === 'chat'}" @click="tab = 'chat'">控制台</button>
+    <button class="tab" :class="{active: tab === 'browse'}" @click="switchBrowse">
+      数据浏览{{ data.ready ? '' : '（首次进入需解密）' }}
+    </button>
+  </nav>
+
+  <!-- ==================== 控制台 ==================== -->
+  <div class="main" v-show="tab === 'chat'">
     <section class="chat-col">
       <div class="chat-scroll" ref="scrollBox">
         <p class="sys-tip"><span>墨溯控制台就绪 —— 随便发点什么，我用你的口气回你</span></p>
@@ -193,7 +307,6 @@
       </div>
     </section>
 
-    <!-- 侧栏：消息流水 + 状态详情 -->
     <aside class="side-col">
       <div class="panel panel-log">
         <div class="panel-title">
@@ -237,6 +350,113 @@
       </div>
     </aside>
   </div>
+
+  <!-- ==================== 数据浏览 ==================== -->
+  <div class="main" v-show="tab === 'browse'">
+    <!-- 左：会话列表 -->
+    <aside class="sess-col">
+      <div class="sess-filters">
+        <input v-model="sessKeyword" placeholder="搜索会话名…" @input="loadSessions">
+        <div class="type-tabs">
+          <button class="type-tab" :class="{active: sessType === ''}" @click="sessType = ''; loadSessions()">全部</button>
+          <button class="type-tab" :class="{active: sessType === 'private'}" @click="sessType = 'private'; loadSessions()">私聊</button>
+          <button class="type-tab" :class="{active: sessType === 'group'}" @click="sessType = 'group'; loadSessions()">群聊</button>
+          <button class="type-tab" :class="{active: sessType === 'mp'}" @click="sessType = 'mp'; loadSessions()">公众号</button>
+        </div>
+      </div>
+      <div class="sess-list">
+        <p class="log-empty" v-if="sessLoading">加载中…</p>
+        <p class="log-empty" v-else-if="!sessions.length">没有会话</p>
+        <div class="sess-item" v-for="s in sessions" :key="s.sessionId"
+             :class="{active: s.sessionId === curSessId}" @click="openSession(s)">
+          <div class="sess-avatar" :style="{background: avatarColor(s.displayName)}">
+            {{ (s.displayName || '?').slice(0, 1) }}
+          </div>
+          <div class="sess-info">
+            <div class="sess-name" v-text="s.displayName"></div>
+            <div class="sess-sub" v-text="s.lastMessage || typeName(s.type)"></div>
+          </div>
+          <span class="sess-count" v-text="s.messageCount"></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中：消息流 -->
+    <section class="msg-col">
+      <div class="msg-head" v-if="curSession">
+        <span class="name" v-text="curSession.displayName"></span>
+        <span class="sub" v-text="typeName(curSession.type) + ' · ' + curSession.messageCount + ' 条'"></span>
+      </div>
+      <div class="msg-scroll" ref="msgScroll">
+        <div class="placeholder" v-if="msgLoading">
+          <div class="spinner"></div>
+          <span>正在解密读取…（首次约 10 秒）</span>
+        </div>
+        <div class="placeholder" v-else-if="!curSession">
+          <span class="big">💬</span>
+          <span>左边选个会话，开始看消息</span>
+        </div>
+        <template v-else>
+          <button class="load-more" :disabled="msgLoadingMore" @click="loadMore">
+            {{ msgLoadingMore ? '加载中…' : '加载更早的消息' }}
+          </button>
+          <div class="wmsg" v-for="(m, i) in chatMsgs" :key="m.key"
+               :class="m.direction === 'out' ? 'out' : 'in'">
+            <div class="avatar" :style="{background: avatarColor(m.direction === 'out' ? '我' : m.sender)}">
+              {{ (m.direction === 'out' ? '我' : (m.sender || '?')).slice(0, 1) }}
+            </div>
+            <div class="body">
+              <div class="sender" v-if="curSession.type === 'group'" v-text="m.direction === 'out' ? '我' : (m.sender || '')"></div>
+              <div class="bubble2">
+                <img v-if="m.kind === 'image' && m.imgMd5" :src="'/api/media?md5=' + m.imgMd5"
+                     @error="m.imgFailed = true" v-show="!m.imgFailed">
+                <span class="media-tag" v-else-if="m.kind === 'image'">[图片]</span>
+                <span class="media-tag" v-else-if="m.kind === 'voice'">[语音 {{ m.voiceMs ? Math.round(m.voiceMs/1000) + 's' : '' }}] {{ m.voiceText }}</span>
+                <span class="media-tag" v-else-if="m.kind === 'video'">[视频]</span>
+                <span class="media-tag" v-else-if="m.kind === 'file'">[文件] {{ m.title }}</span>
+                <span class="media-tag" v-else-if="m.kind === 'emoji'">[表情] {{ m.content }}</span>
+                <template v-else>{{ m.content }}</template>
+              </div>
+              <div class="mtime" :class="{hl: m.hit}" v-text="fmtMsgTime(m.time)"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- 右：全局搜索 -->
+    <aside class="search-col">
+      <div class="search-box">
+        <input v-model="searchKw" placeholder="全库搜索，回车"
+               @keydown.enter="doSearch">
+      </div>
+      <div class="search-results">
+        <p class="log-empty" v-if="searchLoading">搜索中…</p>
+        <p class="log-empty" v-else-if="searchKw && !hits.length && searched">没有找到「{{ searchKw }}」</p>
+        <p class="log-empty" v-else-if="!searched">输入关键词，搜全库消息</p>
+        <template v-else>
+          <p class="log-empty" v-if="hits.length">共 {{ searchTotal }} 条，显示前 {{ hits.length }} 条</p>
+          <div class="hit-item" v-for="(h, i) in hits" :key="i" @click="openHit(h)">
+            <div class="hit-top">
+              <span class="sess" v-text="h.session"></span>
+              <span v-text="fmtMsgTime(h.time)"></span>
+            </div>
+            <div class="hit-text" v-html="hl(h.content)"></div>
+          </div>
+        </template>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 数据源错误卡片 -->
+  <div class="err-card" v-if="data.error && tab === 'browse'">
+    <h3>数据源没配好</h3>
+    <p>{{ data.error }}</p>
+    <p style="margin-top:10px">
+      先跑 <code>mosu init --db-path &lt;目录&gt; --key &lt;hex&gt;</code>，
+      或 <code>mosu key set &lt;hex&gt;</code> 配好密钥再试。
+    </p>
+  </div>
 </div>
 
 <script>
@@ -244,11 +464,21 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
-      status: { wechat: {}, service: {}, bot: null },
+      tab: "chat",
+      status: { wechat: {}, service: {}, bot: null, data: { ready: false, error: null } },
+      data: { ready: false, error: null },
       events: [],
       messages: [],
       draft: "",
       sending: false,
+      // ---- 数据浏览 ----
+      browseLoaded: false,
+      sessKeyword: "", sessType: "",
+      sessions: [], sessLoading: false,
+      curSessId: "", curSession: null,
+      chatMsgs: [], msgLoading: false, msgLoadingMore: false, msgOffset: 0,
+      searchKw: "", hits: [], searchTotal: 0, searchLoading: false, searched: false,
+      _pendingSid: "", _openPending: null, _waitSid: null,
     };
   },
   computed: {
@@ -273,17 +503,35 @@ createApp({
     },
   },
   mounted() {
+    // ?tab=browse[&session=<wxid>] 可直达数据浏览/指定会话（收藏/演示用）
+    try {
+      const p = new URLSearchParams(location.search);
+      if (p.get("tab") === "browse") {
+        this.switchBrowse();
+        const sid = p.get("session");
+        if (sid) {
+          this._pendingSid = sid;
+          this._openPending = () => {
+            const s = this.sessions.find(x => x.sessionId === sid);
+            if (s) { this.openSession(s); clearInterval(this._waitSid); }
+          };
+          this._waitSid = setInterval(this._openPending, 500);
+        }
+      }
+    } catch (e) { /* file:// 等场景忽略 */ }
     this.refreshStatus();
     this.refreshLog();
     this._t1 = setInterval(this.refreshStatus, 5000);
     this._t2 = setInterval(this.refreshLog, 3000);
   },
-  unmounted() { clearInterval(this._t1); clearInterval(this._t2); },
+  unmounted() { clearInterval(this._t1); clearInterval(this._t2); clearInterval(this._waitSid); },
   methods: {
+    // ---------------- 控制台 ----------------
     async refreshStatus() {
       try {
         const r = await fetch("/api/status");
         this.status = await r.json();
+        this.data = this.status.data || { ready: false, error: null };
       } catch (e) { /* 网络抖动时静默，下次轮询恢复 */ }
     },
     async refreshLog() {
@@ -340,6 +588,125 @@ createApp({
         this.sending = false;
         this.$nextTick(() => this.$refs.inputBox && this.$refs.inputBox.focus());
       }
+    },
+
+    // ---------------- 数据浏览 ----------------
+    switchBrowse() {
+      this.tab = "browse";
+      if (!this.browseLoaded) {
+        this.browseLoaded = true;
+        this.loadSessions();
+      }
+    },
+    async loadSessions() {
+      this.sessLoading = true;
+      try {
+        const q = new URLSearchParams({ limit: 300 });
+        if (this.sessType) q.set("type", this.sessType);
+        if (this.sessKeyword.trim()) q.set("q", this.sessKeyword.trim());
+        const r = await fetch("/api/sessions?" + q);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        this.sessions = d.sessions || [];
+      } catch (e) {
+        this.data = { ready: false, error: String(e.message || e) };
+        this.sessions = [];
+      } finally {
+        this.sessLoading = false;
+      }
+    },
+    async openSession(s) {
+      this.curSessId = s.sessionId;
+      this.curSession = s;
+      this.chatMsgs = [];
+      this.msgOffset = 0;
+      this.msgLoading = true;
+      try {
+        const d = await (await fetch(
+          `/api/messages?session=${encodeURIComponent(s.sessionId)}&limit=50`)).json();
+        if (d.error) throw new Error(d.error);
+        this.curSession = d.session || s;
+        this.chatMsgs = (d.messages || []).map((m, i) => ({ ...m, key: s.sessionId + "-" + this.msgOffset + "-" + i }));
+        this.msgOffset = (d.messages || []).length;
+        this.$nextTick(() => this.scrollMsgBottom());
+      } catch (e) {
+        this.chatMsgs = [];
+        this.data = { ready: false, error: String(e.message || e) };
+      } finally {
+        this.msgLoading = false;
+      }
+    },
+    async loadMore() {
+      this.msgLoadingMore = true;
+      try {
+        const d = await (await fetch(
+          `/api/messages?session=${encodeURIComponent(this.curSessId)}&limit=50&offset=${this.msgOffset}`)).json();
+        if (d.error) throw new Error(d.error);
+        const older = (d.messages || []).map((m, i) => ({ ...m, key: this.curSessId + "-" + this.msgOffset + "-" + i }));
+        this.chatMsgs = older.concat(this.chatMsgs);
+        this.msgOffset += older.length;
+      } catch (e) { /* 翻页失败静默，用户可再点 */ }
+      finally { this.msgLoadingMore = false; }
+    },
+    scrollMsgBottom() {
+      const b = this.$refs.msgScroll;
+      if (b) b.scrollTop = b.scrollHeight;
+    },
+    async doSearch() {
+      const q = this.searchKw.trim();
+      if (!q) return;
+      this.searchLoading = true;
+      this.searched = true;
+      try {
+        const r = await fetch("/api/search?q=" + encodeURIComponent(q) + "&limit=50");
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        this.hits = d.messages || [];
+        this.searchTotal = d.total || 0;
+      } catch (e) {
+        this.hits = [];
+        this.searchTotal = 0;
+      } finally {
+        this.searchLoading = false;
+      }
+    },
+    async openHit(h) {
+      // 跳到命中消息所在会话（没有 sessionId 时按名字找）
+      let s = this.sessions.find(x => x.sessionId === h.sessionId);
+      if (!s && h.session) {
+        s = this.sessions.find(x => x.displayName === h.session);
+      }
+      if (s) {
+        await this.openSession(s);
+      } else {
+        // 会话不在当前列表（可能被过滤/翻页挡住）→ 直接按 id 打开
+        await this.openSession({ sessionId: h.sessionId || h.session, displayName: h.session,
+                                 type: "private", messageCount: 0 });
+      }
+    },
+    hl(text) {
+      const esc = String(text || "").replace(/[&<>"']/g,
+        c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const kw = this.searchKw.trim();
+      if (!kw) return esc;
+      return esc.replace(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+        m => "<mark>" + m + "</mark>");
+    },
+    fmtMsgTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts * 1000);
+      const p = n => String(n).padStart(2, "0");
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+    typeName(t) {
+      return { private: "私聊", group: "群聊", mp: "公众号" }[t] || t || "";
+    },
+    avatarColor(seed) {
+      const colors = ["#07c160", "#3c7ef4", "#fa9d3b", "#a06bd9", "#e05a6e",
+                      "#12b5a5", "#8a6d3b", "#5e6ad2"];
+      let h = 0;
+      for (const ch of String(seed || "?")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      return colors[h % colors.length];
     },
   },
 }).mount("#app");

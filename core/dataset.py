@@ -440,7 +440,9 @@ class Dataset:
         p = self.plain(rel)
         if p is None:
             raise RuntimeError(f"数据库暂不可用: {rel}")
-        con = sqlite3.connect(str(p))
+        # check_same_thread=False：GUI/MCP 等多线程服务会跨线程复用连接，
+        # 由调用方（gui/server.py 的数据 API）加锁串行化，保证同一时刻单线程使用
+        con = sqlite3.connect(str(p), check_same_thread=False)
         con.row_factory = sqlite3.Row
         self._con[rel] = con
         return con

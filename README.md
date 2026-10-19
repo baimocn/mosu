@@ -40,7 +40,7 @@ python cli/mosu.py sessions
 - **个人 bot 素材**：本人发言语料包（jsonl + 按会话分段）+ 风格画像
 - **数字分身服务**（`mosu bot`）：云端 LLM（OpenAI 兼容，任意后端可换）+ RAG 从你的历史发言检索风格参考 + 规则硬校验（AI 腔禁词/长度/感叹号/照抄检测，不达标自动带反馈重生成）
 - **微信通道**（`mosu wechat`）：微信官方 Bot API（iLink）自研实现——扫码登录、长轮询收发、游标持久化、context_token 管理、常驻计划任务。收到消息 → 墨溯用你的风格生成回复 → 原路发回。不依赖任何第三方框架
-- **本地 GUI 控制台**（`mosu gui`）：浏览器打开 `127.0.0.1:8788`——对话框调试分身、微信通道状态灯、消息流水、状态详情。零构建链、零 Node 运行时
+- **本地 GUI 控制台**（`mosu gui`）：浏览器打开 `127.0.0.1:8788`——对话调试分身、微信通道状态灯、消息流水、数据浏览（会话列表 + 微信气泡消息流 + 图片解密直出 + 全库搜索）。零构建链、零 Node 运行时
 - **导出**：HTML（微信气泡式，图片视频内嵌）/ JSON / CSV / TXT，可全量
 - **朋友圈**：正文、图片、点赞、评论
 - **MCP Server**：12 个工具，AI 客户端可直接调用，图片能直接"看"
@@ -122,6 +122,7 @@ python cli/mosu.py persona --output persona/     # 个人 bot 素材：语料包
 python cli/mosu.py bot test "在吗"               # 数字分身试一句（先配好 key）
 python cli/mosu.py bot serve                     # 起服务：POST 127.0.0.1:8787/chat
 python cli/mosu.py gui                           # 本地控制台：浏览器打开 127.0.0.1:8788
+python cli/mosu.py gui install                  # 常驻：登录即启动 + 崩溃自愈
 python cli/mosu.py wechat login                  # 微信通道扫码绑定（一个 bot 只能一个消费者）
 python cli/mosu.py wechat install                # 常驻：登录即启动 + 崩溃自愈
 python cli/mosu.py wechat status                 # 通道状态
@@ -195,6 +196,7 @@ core/
   sns.py               朋友圈
   formatters.py        json/jsonl/table/csv/markdown 输出
   mcp_server.py        MCP Server（stdio，12 工具）
+  task.py              常驻：Windows 计划任务（首选）/ 启动文件夹+VBS 守护（降级）
 gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
@@ -215,9 +217,9 @@ docs/                  命令速查、媒体格式、SQLCipher 参数说明
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
 - [x] 微信通道（wechat：iLink 自研，扫码登录/长轮询/常驻）
-- [x] 本地 GUI 控制台（gui：对话调试 + 通道状态 + 消息流水）
+- [x] 本地 GUI 控制台（gui：对话调试 + 通道状态 + 消息流水 + 数据浏览）
 - [ ] Windows / macOS 一键打包
-- [ ] GUI 扩展：会话/消息浏览、搜索、统计图表（MVP 已交付控制台）
+- [ ] GUI 扩展：统计图表、朋友圈浏览、导出面板
 
 ## 已知限制
 

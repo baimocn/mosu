@@ -445,72 +445,17 @@ def run_serve(corpus: str, once: bool = False) -> int:
 TASK_NAME = "MosuWechat"
 
 
-def _ps(cmd: str, timeout: int = 120):
-    import subprocess
-    return subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-        capture_output=True, text=True, timeout=timeout)
-
-
 def run_install() -> int:
-    """注册为常驻任务。用 sys.executable 解释器 + 墨溯根目录作工作目录。"""
-    root = Path(__file__).resolve().parent.parent
-    py = sys.executable
-    ps = (
-        "$ErrorActionPreference='Stop';"
-        f"$a=New-ScheduledTaskAction -Execute '{py}' "
-        f"-Argument '-u cli/mosu.py wechat serve' -WorkingDirectory '{root}';"
-        "$t=New-ScheduledTaskTrigger -AtLogOn;"
-        "$s=New-ScheduledTaskSettingsSet -RestartCount 5 "
-        "-RestartInterval (New-TimeSpan -Minutes 2) -ExecutionTimeLimit 0 "
-        "-StartWhenAvailable;"
-        f"Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $a -Trigger $t "
-        "-Settings $s -Force | Out-Null;"
-        f"Start-ScheduledTask -TaskName '{TASK_NAME}';"
-        f"Write-Output 'OK {TASK_NAME}'"
-    )
-    try:
-        r = _ps(ps)
-        if r.returncode == 0:
-            print(f"✅ 常驻任务已注册并启动：{TASK_NAME}")
-            print("   · 登录即自动启动（不用手动开）")
-            print("   · 崩溃后 2 分钟间隔自动重启，最多 5 次")
-            print("   · 无执行时长限制（不会被系统掐断）")
-            print("\n   查看：mosu wechat task   卸载：mosu wechat uninstall")
-            return 0
-        print(f"[x] 注册失败：{(r.stderr or r.stdout).strip()[:400]}")
-        return 1
-    except Exception as e:
-        print(f"[x] 注册失败：{type(e).__name__}: {e}")
-        print("   非 Windows 请用 systemd / supervisor 守护：`mosu wechat serve`")
-        return 1
+    """注册为常驻任务（登录自启 + 崩溃自愈）。实现见 core/task.py。"""
+    from core import task
+    return task.install_task(TASK_NAME, "wechat serve")
 
 
 def run_uninstall() -> int:
-    try:
-        r = _ps(f"Stop-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue;"
-                f"Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false;"
-                f"Write-Output 'removed {TASK_NAME}'")
-        if r.returncode == 0:
-            print(f"✅ 已卸载常驻任务 {TASK_NAME}")
-            return 0
-        print(f"[x] 卸载失败：{(r.stderr or r.stdout).strip()[:300]}")
-        return 1
-    except Exception as e:
-        print(f"[x] 卸载失败：{type(e).__name__}: {e}")
-        return 1
+    from core import task
+    return task.uninstall_task(TASK_NAME)
 
 
 def run_task_status() -> int:
-    try:
-        r = _ps(f"Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue | "
-                "Select-Object TaskName,State | Format-Table -AutoSize | Out-String;"
-                f"Get-ScheduledTaskInfo -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue | "
-                "Select-Object LastRunTime,LastTaskResult,NextRunTime | "
-                "Format-List | Out-String")
-        out = (r.stdout or "").strip()
-        print(out if out else f"未找到常驻任务 {TASK_NAME}（运行 mosu wechat install 安装）")
-        return 0
-    except Exception as e:
-        print(f"[x] 查询失败：{type(e).__name__}: {e}")
-        return 1
+    from core import task
+    return task.task_status(TASK_NAME)

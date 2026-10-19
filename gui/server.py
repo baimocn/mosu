@@ -4,13 +4,18 @@
 只绑 127.0.0.1（个人工具，不对外），纯标准库，零第三方依赖。
 
 端点：
-  GET  /              前端单页（gui/index.html）
-  GET  /vendor/...    本地 vendor 资源（Vue3，离线可用）
-  GET  /api/status    微信通道 / 通道服务 / bot 配置 状态
-  POST /api/chat      {message} → BotService 决策，返回 reply/tries/cost/校验
-  GET  /api/log?n=50  消息流水（解析 ~/.mosu/wechat.log 的 [收到]/[回复]/[!]）
+  GET  /                 前端单页（gui/index.html）
+  GET  /vendor/...       本地 vendor 资源（Vue3，离线可用）
+  GET  /api/status       微信通道 / 通道服务 / bot / 数据源 状态
+  POST /api/chat         {message} → BotService 决策，返回 reply/tries/cost/校验
+  GET  /api/log?n=50     消息流水（解析 ~/.mosu/wechat.log 的 [收到]/[回复]/[!]）
+  GET  /api/sessions     会话列表（type/q 过滤，offset 翻页）
+  GET  /api/messages     某会话消息（session&limit&offset）
+  GET  /api/search?q     全库搜索
+  GET  /api/media?md5    解密图片二进制（浏览器 <img> 直接渲染）
 
 设计原则：
+  - Dataset/MediaStore 懒加载：GUI 启动不等解密，首次数据请求才付 4~10s
   - 活性判断用心跳文件而非计划任务状态（任务"Running"不代表轮询活着）
   - 所有异常都转化成 JSON 错误，前端统一呈现，不允许 500 裸奔
 """
@@ -19,10 +24,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 GUI_DIR = Path(__file__).resolve().parent
 ROOT = GUI_DIR.parent
@@ -30,6 +37,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 HEARTBEAT_MAX_AGE = 60   # 秒；超过视为服务不在线
+
+_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+         "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}
 
 
 def _heartbeat_age() -> int | None:
@@ -51,6 +61,37 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     n = len(getattr(bot.retriever, "corpus", []))
     print(f"[mosu-gui] 语料 {n} 条，监听 http://127.0.0.1:{port}")
 
+    # ---- 懒加载：解密很慢（4~10s），绝不能拖慢 GUI 启动 ----
+    _ds = None
+    _media = None
+    _ds_err = None
+    _ds_lock = threading.RLock()  # SQLite 连接跨线程复用：整个数据 API 期间持锁
+                                  # （RLock：api_* 持锁时内部 get_ds 可重入），
+                                  # 同时防并发首次触发重复解密
+
+    def get_ds():
+        nonlocal _ds, _ds_err
+        with _ds_lock:
+            if _ds is None:
+                if _ds_err:
+                    raise RuntimeError(_ds_err)
+                try:
+                    from core.dataset import Dataset
+                    _ds = Dataset(quiet=True)
+                except SystemExit as e:
+                    _ds_err = str(e)
+                    raise RuntimeError(_ds_err) from e
+            return _ds
+
+    def get_media():
+        nonlocal _media
+        with _ds_lock:
+            if _media is None:
+                from core.media import MediaStore
+                _media = MediaStore(get_ds().user_dir, ROOT / ".cache").build()
+            return _media
+
+    # ---------------------------------------------------------------- 状态
     def build_status() -> dict:
         cred = wx.load_cred()
         sync = wx._read_json(wx.sync_path())
@@ -73,6 +114,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 "base_url": os.environ.get(
                     "MOSU_BOT_BASE_URL", "https://api.openai.com/v1"),
             },
+            "data": {
+                "ready": _ds is not None,
+                "error": _ds_err,
+            },
         }
 
     def read_log(n: int = 50) -> list:
@@ -94,6 +139,91 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             events.append({"time": ts, "kind": kind, "text": msg})
         return events
 
+    # ---------------------------------------------------------------- 数据浏览
+    def api_sessions(q) -> dict:
+        with _ds_lock:            # 查询全程持锁：SQLite 连接不跨线程并发用
+            ss = get_ds().sessions()
+            t = q.get("type")
+            if t:
+                ss = [s for s in ss if s["type"] == t]
+            kw = (q.get("q") or "").strip().lower()
+            if kw:
+                ss = [s for s in ss if kw in (s["displayName"] or "").lower()]
+            total = len(ss)
+            offset = max(0, int(q.get("offset", 0)))
+            limit = max(1, min(int(q.get("limit", 100)), 500))
+            page = ss[offset:offset + limit]
+            return {
+                "total": total, "hasMore": total > offset + len(page),
+                "sessions": [{
+                    "sessionId": s["sessionId"],
+                    "displayName": s["displayName"],
+                    "type": s["type"],
+                    "messageCount": s["messageCount"],
+                    "lastTime": s["lastTime"],
+                    "lastMessage": (s["lastMessage"] or "")[:40],
+                } for s in page],
+            }
+
+    def api_messages(q) -> dict:
+        sess = (q.get("session") or "").strip()
+        if not sess:
+            raise ValueError("缺少 session 参数（会话 wxid）")
+        limit = max(1, min(int(q.get("limit", 50)), 200))
+        offset = max(0, int(q.get("offset", 0)))
+        with _ds_lock:
+            r = get_ds().messages(sess, limit=limit, offset=offset)
+        return {
+            "session": r["session"],
+            "count": len(r["messages"]),
+            "messages": [{
+                "time": m["createTime"],
+                "direction": m["direction"],
+                "sender": m.get("senderName") or "",
+                "kind": m["kind"],
+                "content": m.get("content") or "",
+                "imgMd5": m.get("imgMd5") or "",
+                "voiceMs": m.get("voiceMs"),
+                "voiceText": m.get("voiceText") or "",
+                "title": m.get("title") or m.get("fileName") or "",
+            } for m in r["messages"]],
+        }
+
+    def api_search(q) -> dict:
+        kw = (q.get("q") or "").strip()
+        if not kw:
+            return {"total": 0, "messages": []}
+        limit = max(1, min(int(q.get("limit", 50)), 200))
+        with _ds_lock:
+            r = get_ds().search(kw, limit=limit)
+        return {
+            "total": r["total"],
+            "messages": [{
+                "time": m["createTime"],
+                "session": m.get("sessionName") or "",
+                "sessionId": m.get("sessionId") or "",
+                "direction": m["direction"],
+                "content": (m.get("content") or "")[:120],
+            } for m in r["messages"]],
+        }
+
+    def api_media(q) -> tuple[bytes, str]:
+        md5 = (q.get("md5") or "").strip()
+        if len(md5) != 32:
+            raise ValueError("md5 必须是 32 位")
+        with _ds_lock:
+            pair = get_media().get_image(md5)
+        if not pair:
+            raise ValueError(f"本地找不到该图片（md5={md5}），可能已被清理或没下载")
+        data, ext = pair
+        if len(data) > 900_000:      # 大图先缩到 1024 宽，别把浏览器撑爆
+            try:
+                from core.exporter import ChatExporter
+                data = ChatExporter._maybe_resize(data, ext, max_width=1024)
+            except Exception:
+                pass
+        return data, _MIME.get(ext.lstrip(".").lower(), "image/jpeg")
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -110,8 +240,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             self._send(json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8", code)
 
+        def _params(self) -> dict:
+            return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+
         def do_GET(self):
-            path = self.path.split("?", 1)[0]
+            path = urlparse(self.path).path
             if path == "/":
                 f = GUI_DIR / "index.html"
                 if not f.exists():
@@ -140,18 +273,44 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             if path == "/api/log":
                 try:
                     n = 50
-                    if "?" in self.path:
-                        q = dict(kv.split("=", 1) for kv in
-                                 self.path.split("?", 1)[1].split("&") if "=" in kv)
-                        n = max(1, min(200, int(q.get("n", 50))))
+                    q = self._params()
+                    if "n" in q:
+                        n = max(1, min(int(q["n"]), 200))
                     self._json({"events": read_log(n)})
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/sessions":
+                try:
+                    self._json(api_sessions(self._params()))
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/messages":
+                try:
+                    self._json(api_messages(self._params()))
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/search":
+                try:
+                    self._json(api_search(self._params()))
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/media":
+                try:
+                    data, mime = api_media(self._params())
+                    self._send(data, mime)
+                except ValueError as e:
+                    self._json({"error": str(e)}, 404)
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
             self._json({"error": f"unknown path: {path}"}, 404)
 
         def do_POST(self):
-            path = self.path.split("?", 1)[0]
+            path = urlparse(self.path).path
             if path != "/api/chat":
                 self._json({"error": "POST /api/chat only"}, 404)
                 return
