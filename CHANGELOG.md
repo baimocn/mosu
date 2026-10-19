@@ -36,6 +36,17 @@
   - `questionRate` 只统计半角 `?`，中文全角 `？` 全漏
   - 画像采样取到每个会话**最早** N 条而非最近 N 条（14 万条大群只贡献开头部分）
   - 空库时 `render_markdown` 对 `peakHour=None` 格式化崩溃
+- **`truncated` 恒为 false：上限生效了却没人知道**（前端在真实数据上撞出）。
+  14.9 万条消息的群画像只取回 59994 条、丢弃约 9 万条，`meta.truncated` 却报
+  `false`，用户不会被告知。根因是判据写成了「多取 1 条看是否超过上限」，而
+  `raw_messages` 的**去重发生在跨分片合并之后**——每个分片各取 limit 条，合并时
+  重复行被丢弃，合并后总数必然 ≤ limit，所以 `len(rows) > limit` 恒为假。
+  新增 `Dataset.raw_messages_page()` 显式回报是否截断，判据改为**去重之前**：
+  任一分片能取到第 `limit+1` 条即视为截断（探针行不参与去重与返回）。
+  `raw_messages()` 保持原签名，现有调用方零改动
+- **本人画像（`self_profile`）同样会被采样截断却不上报**：23 万条的库必然触到
+  60000 上限，但 `meta` 里没有 `truncated` / `maxMsgs`，本人画像页永远不会提示。
+  现已与联系人画像用同一套契约补齐
 - **同一公众号账号在两个页面显示不同类型**：`_session_type` 只判了 `gh_` 前缀，
   漏掉 `wxid_gh`（公众号的 wxid 形式），于是「数据浏览」页显示「单聊」、
   「联系人」页显示「公众号」，`session_type=2` 时还会显示成「群聊」。
@@ -81,6 +92,13 @@
   （会话口径；非会话为 `null`）——这两个值此前已查出来却没进返回值，纯浪费
 - `contact_profile` 加上限 `CONTACT_MAX_MSGS=60000`，命中时 `overview.truncated=true`。
   原先 `raw_messages(limit=10**9)` + 同步持锁，是唯一能打挂整个服务的路径
+- **⚠️ 行为变更：`contact_profile` 的采样方向从「最早 N 条」改为「最近 N 条」**
+  （`order="asc"` → `"desc"`）。画像的用途是"了解这个人现在的样子"，取最早 cap 条
+  等于让两年前的聊天决定今天的画像——与本轮修掉的「画像采样方向反了」是同一类错误。
+  取数降序后内部**排回升序**再统计，`milestones.firstMessage` / `lastMessage` 语义不变。
+  **副作用**：14.9 万条大群的话题与风格统计会改变（从开头 6 万条变为最近 6 万条），
+  这是预期内的正确行为。截断时 `milestones.firstMessage` 会带 `sampledOnly: true`
+  ——样本内最早一条并非会话真实首条，不标注会被前端当"他们第一次聊天"展示
 - `keyword_stats` 服务端硬上限从 200000 收到 20000，`_texts()` 每 5000 条让出一次 GIL
 - 快捷方式图标：macOS 生成 `.icns` 并放桌面（`.command` 在 Finder 侧绑不了图标），
   Linux 按 freedesktop 规范写 `Icon=` 指向已安装的 PNG。四级降级，任何一级缺失都

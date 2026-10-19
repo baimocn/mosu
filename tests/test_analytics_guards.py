@@ -12,6 +12,10 @@
 
 用真 SQLite（内存库）而不是 mock：这些 bug 恰恰藏在 SQL 聚合与
 零值补齐里，mock 掉就等于没测。
+
+`TestRawMessagesTruncation` 更是直接拿**真的 Dataset 实例**跑真多分片表——
+因为 truncated 漏报的根因就在「跨分片去重发生在截断之后」这个跨层行为上，
+任何替身都会把它抹平，测出来的绿是假的。
 """
 import sqlite3
 import tempfile
@@ -118,10 +122,17 @@ class FakeDataset:
         return dict(self._names)
 
     # ---------------------------------------------------------- 消息
-    def raw_messages(self, sess, limit=50, offset=0, from_ts=None, to_ts=None,
-                     direction=None, cursor=None, order="desc"):
+    def raw_messages_page(self, sess, limit=50, offset=0, from_ts=None, to_ts=None,
+                          direction=None, cursor=None, order="desc"):
+        """复刻真实实现的「去重发生在截断之后」这个关键行为。
+
+        真实 bug 就藏在这里：每个分片各取 limit(+1 探针) 条，去重后总数 ≤ limit，
+        所以调用方拿 `len(rows) > limit` 判定必然恒为 false。测试替身必须保留
+        这个特性，否则测出来的绿是假的。
+        """
         sh = self._shard_list(sess)[0]
         con = self.conn(sh["shard"])
+        need = max(1, int(limit) + int(offset))
         w, p = [], []
         if from_ts:
             w.append("create_time >= ?"); p.append(from_ts)
@@ -130,8 +141,28 @@ class FakeDataset:
         where = (" WHERE " + " AND ".join(w)) if w else ""
         sql = (f"SELECT * FROM {sh['table']}{where} "
                f"ORDER BY create_time {'ASC' if order == 'asc' else 'DESC'} LIMIT ?")
-        p.append(int(limit))
-        return [(sh["shard"], r) for r in con.execute(sql, p)]
+        p.append(need + 1)                      # 探针行
+        raw = con.execute(sql, p).fetchall()
+        saturated = len(raw) > need
+        raw = raw[:need]
+        # 去重：同一 create_time + local_type + content 视为重复行
+        seen, merged = set(), []
+        for r in raw:
+            k = (r["create_time"], r["local_type"], r["message_content"])
+            if k in seen:
+                continue
+            seen.add(k)
+            merged.append(r)
+        merged.sort(key=lambda r: r["create_time"], reverse=(order == "desc"))
+        page = merged[int(offset):int(offset) + int(limit)]
+        return [(sh["shard"], r) for r in page], \
+            (saturated or len(merged) > int(offset) + int(limit))
+
+    def raw_messages(self, sess, limit=50, offset=0, from_ts=None, to_ts=None,
+                     direction=None, cursor=None, order="desc"):
+        return self.raw_messages_page(sess, limit=limit, offset=offset, from_ts=from_ts,
+                                      to_ts=to_ts, direction=direction, cursor=cursor,
+                                      order=order)[0]
 
     def iter_session_rows(self, sess, from_ts=None, to_ts=None, desc=False, limit=0):
         sh = self._shard_list(sess)[0]
@@ -361,11 +392,146 @@ class TestReportFirstLast(_DS):
         self.assertEqual(s["lastMessageTime"], _ts(2026, 3, 2, 23, 0))
 
 
+# ============================================================ self_profile 截断上报
+class TestSelfProfileTruncation(_DS):
+    """本人画像同样受 max_msgs 限制，必须与联系人画像用同一套契约上报。
+
+    23 万条的库一定会被 60000 截断——之前 meta 里没有这两个字段，
+    本人画像页就永远不会提示，用户会把采样当成全量。
+    """
+
+    def _pd(self, n_sessions, per):
+        from core.profile import ProfileDistiller
+        sessions = [{"sessionId": f"wxid_{i}", "displayName": f"S{i}", "type": "private"}
+                    for i in range(n_sessions)]
+        rows = []
+        for i in range(n_sessions):
+            for j in range(per):
+                rows.append((f"wxid_{i}", _ts(2026, 3, 1) + j * 3600, 1,
+                             "wxid_me" if j % 2 else f"wxid_{i}", f"m{i}_{j}"))
+        return ProfileDistiller(self.make(sessions, rows))
+
+    def test_meta_always_has_truncated_and_maxmsgs(self):
+        d = self._pd(3, 10).self_profile()
+        self.assertIn("truncated", d["meta"])
+        self.assertIn("maxMsgs", d["meta"])
+        self.assertEqual(d["meta"]["maxMsgs"], 60000)
+
+    def test_small_library_not_truncated(self):
+        d = self._pd(3, 10).self_profile()
+        self.assertIs(d["meta"]["truncated"], False)
+
+    def test_over_limit_reports_truncated(self):
+        """采样总量超上限时必须报 True。"""
+        d = self._pd(10, 100).self_profile(max_msgs=50)
+        self.assertIs(d["meta"]["truncated"], True)
+
+    def test_exact_limit_not_truncated(self):
+        d = self._pd(2, 10).self_profile(max_msgs=20)
+        self.assertIs(d["meta"]["truncated"], False)
+
+    def test_contract_matches_contact_profile(self):
+        """两种画像的 meta 字段名必须一致，前端才能共用一套渲染。"""
+        pd = self._pd(2, 5)
+        a = pd.self_profile()
+        b = pd.contact_profile("wxid_0")
+        self.assertEqual(set(a["meta"]) & {"truncated", "maxMsgs"},
+                         set(b["meta"]) & {"truncated", "maxMsgs"})
+
+
+# ============================================================ raw_messages 截断契约
+class TestRawMessagesTruncation(unittest.TestCase):
+    """真 Dataset + 真多分片表：截断信号必须扛得住「跨分片去重」。
+
+    根因：每个分片各取 limit 条，去重发生在**合并之后**，所以合并后的总数
+    永远 ≤ limit。调用方拿 `len(rows) > limit` 判定，必然恒为 False——
+    14.9 万条的大群只回 59994 条却报 truncated=false，就是这么来的。
+
+    这里不用替身：去重与截断的先后顺序正是 bug 所在，任何 mock 都会抹平它。
+    """
+
+    def _ds(self, per_shard=30, dup=20):
+        """两个分片，每片 per_shard 行，前 dup 行内容相同（= 跨分片重复行）。"""
+        from core.dataset import Dataset
+        tmp = Path(tempfile.mkdtemp(prefix="mosu-shard-"))
+        ds = object.__new__(Dataset)
+        ds._contacts, ds._sessions, ds._self_ids = {}, None, {}
+        ds._con = {}
+        for name in ("s0.db", "s1.db"):
+            con = sqlite3.connect(str(tmp / name), check_same_thread=False)
+            con.row_factory = sqlite3.Row
+            con.execute("CREATE TABLE MSG (local_id INTEGER PRIMARY KEY, server_id INT,"
+                        " local_type INT, sort_seq INT, real_sender_id INT,"
+                        " create_time INT, message_content TEXT, packed_info_data BLOB)")
+            self.addCleanup(con.close)
+            ds._con[name] = con
+        ds.self_id = lambda shard: 1
+        sess = {"sessionId": "x", "shards": [{"shard": "s0.db", "table": "MSG"},
+                                             {"shard": "s1.db", "table": "MSG"}]}
+        for name in ("s0.db", "s1.db"):
+            recs = [(i, i, 1, i, 1, 1000 + i,
+                     (f"dup{i}" if i < dup else f"u{name[-5]}_{i}"), None)
+                    for i in range(1, per_shard + 1)]
+            ds._con[name].executemany("INSERT INTO MSG VALUES (?,?,?,?,?,?,?,?)", recs)
+            ds._con[name].commit()
+        return ds, sess
+
+    def test_reports_truncated_when_dedup_hides_overflow(self):
+        """核心回归：去重后总数不足 limit，但样本确实被砍过，必须报 True。"""
+        ds, sess = self._ds()
+        page, truncated = ds.raw_messages_page(sess, limit=25)
+        self.assertEqual(len(page), 25)
+        self.assertIs(truncated, True)
+
+    def test_old_judgement_would_be_false(self):
+        """把旧判据算一遍，证明它在本场景下恒为 False（这就是 bug 的形状）。"""
+        ds, sess = self._ds()
+        rows = ds.raw_messages(sess, limit=26)
+        # 去重后 26 条（20 重复 + 6 独有），永远达不到 27
+        self.assertEqual(len(rows), 26)
+        self.assertIs(len(rows) > 26, False)   # 旧写法的判据，恒假
+
+    def test_not_truncated_when_everything_fits(self):
+        ds, sess = self._ds()
+        page, truncated = ds.raw_messages_page(sess, limit=1000)
+        self.assertEqual(len(page), 30)       # 20 重复 + 10 + 10
+        self.assertIs(truncated, False)
+
+    def test_not_truncated_when_exactly_full(self):
+        """正好等于去重后总数＝全部取完，不该报截断（探针行取不到就是证据）。"""
+        ds, sess = self._ds()
+        page, truncated = ds.raw_messages_page(sess, limit=30)
+        self.assertEqual(len(page), 30)
+        self.assertIs(truncated, False)
+
+    def test_raw_messages_keeps_original_signature(self):
+        """老调用方（analytics / mcp / cli）必须不受影响，仍只拿到 list。"""
+        ds, sess = self._ds()
+        rows = ds.raw_messages(sess, limit=5)
+        self.assertIsInstance(rows, list)
+        self.assertEqual(len(rows), 5)
+
+    def test_ordering_respected(self):
+        ds, sess = self._ds(per_shard=5, dup=0)
+        asc = [r[1]["create_time"] for r in ds.raw_messages(sess, limit=10, order="asc")]
+        desc = [r[1]["create_time"] for r in ds.raw_messages(sess, limit=10, order="desc")]
+        self.assertEqual(asc, sorted(asc))
+        self.assertEqual(desc, sorted(desc, reverse=True))
+
+
 # ============================================================ #3 画像上限
 class TestContactProfileCap(_DS):
-    def _pd(self, n):
+    """上限必须**真的会报**。
+
+    这个 bug 能活到今天，正是因为原来的测试只测了"没超上限"的路径：
+    21 条数据配 max_msgs=20，走的是「合并后 21 > 20」这条恒真路径，
+    而真实场景（14.9 万条跨分片、合并后被去重）走的是另一条。
+    """
+
+    def _pd(self, n, start_day=1):
         from core.profile import ProfileDistiller
-        rows = [("wxid_a", _ts(2026, 3, 1, 0, i % 60), 1,
+        base = _ts(2026, 3, start_day, 0, 0)
+        rows = [("wxid_a", base + i * 60, 1,
                  "wxid_me" if i % 2 else "wxid_a", f"消息{i}") for i in range(n)]
         return ProfileDistiller(self.make(
             [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}], rows))
@@ -375,7 +541,7 @@ class TestContactProfileCap(_DS):
         self.assertEqual(ProfileDistiller.CONTACT_MAX_MSGS, 60000)
 
     def test_not_truncated_under_cap(self):
-        d = self._pd(10).contact_profile("wxid_a")
+        d = self._pd(10).contact_profile("wxid_a", max_msgs=20)
         self.assertIs(d["overview"]["truncated"], False)
         self.assertEqual(d["meta"]["scannedMessages"], 10)
 
@@ -385,21 +551,103 @@ class TestContactProfileCap(_DS):
         self.assertEqual(d["meta"]["scannedMessages"], 20)
         self.assertEqual(d["meta"]["maxMsgs"], 20)
 
-    def test_exactly_at_cap_is_not_truncated(self):
-        """正好等于上限不算截断——多取的那一条才是判据。"""
-        d = self._pd(20).contact_profile("wxid_a", max_msgs=20)
-        self.assertIs(d["overview"]["truncated"], False)
-
     def test_one_over_cap_is_truncated(self):
         d = self._pd(21).contact_profile("wxid_a", max_msgs=20)
         self.assertIs(d["overview"]["truncated"], True)
-        self.assertEqual(d["meta"]["scannedMessages"], 20)
+
+    def test_far_over_cap_is_truncated(self):
+        """远超上限：模拟 14.9 万条那类大群。"""
+        d = self._pd(500).contact_profile("wxid_a", max_msgs=100)
+        self.assertIs(d["overview"]["truncated"], True)
+        self.assertEqual(d["meta"]["scannedMessages"], 100)
+
+    def test_exactly_at_cap_is_not_truncated(self):
+        """正好等于上限＝全部取完，不算截断。探针行取不到就是证据。"""
+        d = self._pd(20).contact_profile("wxid_a", max_msgs=20)
+        self.assertIs(d["overview"]["truncated"], False)
 
     def test_truncated_flag_in_both_places(self):
         """前端读 overview.more 之外的路径也要能拿到——两处都写。"""
         d = self._pd(50).contact_profile("wxid_a", max_msgs=20)
         self.assertIs(d["meta"]["truncated"], True)
         self.assertIs(d["overview"]["truncated"], True)
+
+    def test_default_cap_actually_applied(self):
+        """不传 max_msgs 时也要走 CONTACT_MAX_MSGS，不是无限。"""
+        d = self._pd(30).contact_profile("wxid_a")
+        self.assertEqual(d["meta"]["maxMsgs"], 60000)
+        self.assertIs(d["overview"]["truncated"], False)
+
+    def test_truncated_survives_dedup(self):
+        """**核心回归**：数据里有大量重复行时，去重后的总数远小于上限，
+        但样本仍然是「被砍过的」——旧写法在这里必然误报 False。
+
+        这正是 14.9 万条大群的真实形态：跨分片重复行被去重，
+        merged 只剩 59994 条 < 60000，`len(rows) > cap` 恒为假。
+        """
+        rows = [("wxid_a", _ts(2026, 3, 1) + i * 60, 1, "wxid_a", "重复内容")
+                for i in range(20)]
+        # 让 40 条原始行去重后只剩 5 条（时间戳不同但内容/类型/时间三者构成的键相同）
+        rows = [("wxid_a", _ts(2026, 3, 1), 1, "wxid_a", f"dup{i % 5}") for i in range(40)]
+        from core.profile import ProfileDistiller
+        pd = ProfileDistiller(self.make(
+            [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}], rows))
+        d = pd.contact_profile("wxid_a", max_msgs=10)
+        self.assertEqual(d["meta"]["scannedMessages"], 5)      # 去重后只剩 5 条
+        self.assertIs(d["meta"]["truncated"], True,
+                      "去重后不足上限也必须报截断——旧写法在这里恒为 False")
+
+
+# ============================================================ 采样方向
+class TestContactProfileSamplingDirection(_DS):
+    """order 必须是 desc：取最近 N 条，不是最早 N 条。
+
+    取最早等于让两年前的聊天决定今天的画像——与 `_collect` 曾踩过的
+    「采样取到最早 N 条」是同一类错误，只是换了函数。
+    """
+
+    def _pd(self, n):
+        from core.profile import ProfileDistiller
+        base = _ts(2026, 3, 1)
+        rows = [("wxid_a", base + i * 86400, 1, "wxid_me", f"M{i}") for i in range(n)]
+        return ProfileDistiller(self.make(
+            [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}], rows))
+
+    def test_takes_newest_not_oldest(self):
+        """样本应覆盖最近 10 天，而不是会话最早的 10 天。"""
+        d = self._pd(100).contact_profile("wxid_a", max_msgs=10)
+        self.assertEqual(d["meta"]["scannedMessages"], 10)
+        # 100 条从 03-01 起每天一条，最近 10 条是第 91~100 条 → 05-31 ~ 06-08
+        self.assertEqual(d["overview"]["lastText"][:10], "2026-06-08")
+        self.assertGreaterEqual(d["overview"]["firstText"][:10], "2026-05-30")
+
+    def test_oldest_message_matches_when_not_truncated(self):
+        """未截断时 firstText 应是真正的首条日期。"""
+        d = self._pd(5).contact_profile("wxid_a", max_msgs=100)
+        self.assertEqual(d["overview"]["firstText"][:10], "2026-03-01")
+        self.assertEqual(d["overview"]["lastText"][:10], "2026-03-05")
+
+    def test_truncated_sample_starts_at_recent_boundary(self):
+        """截断时样本起点应落在最近 cap 条之内，而不是会话开头。"""
+        d = self._pd(100).contact_profile("wxid_a", max_msgs=10)
+        self.assertEqual(d["overview"]["lastText"][:10], "2026-06-08")   # 最后一条
+        self.assertNotEqual(d["overview"]["firstText"][:10], "2026-03-01")  # 不是最早
+
+    def test_milestones_follow_sample_order(self):
+        """降序取数后必须排回升序，否则 milestones 的 first/last 会反。"""
+        d = self._pd(30).contact_profile("wxid_a", max_msgs=30)
+        fm = d["milestones"]["firstMessage"]["time"]
+        lm = d["milestones"]["lastMessage"]["time"]
+        self.assertLess(fm, lm, "firstMessage 必须早于 lastMessage")
+        self.assertEqual(d["overview"]["firstText"], fm)
+        self.assertEqual(d["overview"]["lastText"], lm)
+
+    def test_sampled_first_is_flagged_when_truncated(self):
+        """截断时样本内首条≠真实首条，必须标注，否则前端会当"他们第一次聊天"。"""
+        d = self._pd(100).contact_profile("wxid_a", max_msgs=10)
+        self.assertIs(d["milestones"]["firstMessage"]["sampledOnly"], True)
+        d2 = self._pd(10).contact_profile("wxid_a", max_msgs=100)
+        self.assertNotIn("sampledOnly", d2["milestones"]["firstMessage"])
 
     def test_default_cap_actually_applied(self):
         """不传 max_msgs 时也要走 CONTACT_MAX_MSGS，不是无限。"""

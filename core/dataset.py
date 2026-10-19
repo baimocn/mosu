@@ -719,8 +719,26 @@ class Dataset:
                      from_ts=None, to_ts=None, direction: str | None = None,
                      cursor=None, order: str = "desc") -> list[tuple[str, sqlite3.Row]]:
         """跨分片读取消息，返回 [(shard, row)]，已去重并按时间排序。"""
+        return self.raw_messages_page(sess, limit=limit, offset=offset, from_ts=from_ts,
+                                      to_ts=to_ts, direction=direction, cursor=cursor,
+                                      order=order)[0]
+
+    def raw_messages_page(self, sess: dict, limit: int = 50, offset: int = 0,
+                          from_ts=None, to_ts=None, direction: str | None = None,
+                          cursor=None, order: str = "desc") -> tuple[list, bool]:
+        """同 raw_messages，但额外回报「是否因触到 limit 而截断」。
+
+        为什么不靠「多取 1 条」判断：去重发生在**跨分片合并之后**，每个分片各取
+        `limit` 条，合并时重复行被丢弃，所以合并后的总数**永远 ≤ limit**。
+        调用方拿 `len(rows) > limit` 去判，必然恒为 false——上限生效了却没人知道。
+        （实测 14.9 万条的群只回 59994 条而 truncated 报 false，就是这么来的。）
+
+        正确判据是**去重之前**：任一分片取回的原始行数达到 limit，说明该分片还有
+        更多行没被读走，此时 merged 即便不足 limit 也仍然是截断的。
+        """
         need = max(1, int(limit) + int(offset))
         buckets: list[tuple[str, list[sqlite3.Row]]] = []
+        saturated = False
         for sh in self._shard_list(sess):
             con = self.conn(sh["shard"])
             where, params = [], []
@@ -745,8 +763,13 @@ class Dataset:
                 sql += " WHERE " + " AND ".join(where)
             sql += " ORDER BY sort_seq " + ("ASC" if order == "asc" else "DESC")
             sql += " LIMIT ?"
-            params.append(need)
-            buckets.append((sh["shard"], con.execute(sql, params).fetchall()))
+            # 多取 1 条作探针：能取到第 need+1 条，说明该分片还有更多行没被读走。
+            # 这条探针行不参与去重与返回，只用于回答"是否被截断"。
+            params.append(need + 1)
+            rows = con.execute(sql, params).fetchall()
+            if len(rows) > need:
+                saturated = True
+            buckets.append((sh["shard"], rows[:need]))
 
         seen: set = set()
         merged: list[tuple[str, sqlite3.Row]] = []
@@ -760,7 +783,9 @@ class Dataset:
         merged.sort(key=lambda x: (x[1]["create_time"], x[1]["sort_seq"]),
                     reverse=(order == "desc"))
         page = merged[int(offset):int(offset) + int(limit)]
-        return page
+        # 截断 = 有分片被砍掉，或合并去重后仍填满了整页（后者覆盖单分片刚好触顶）
+        truncated = saturated or len(merged) > int(offset) + int(limit)
+        return page, truncated
 
     def to_message(self, row: sqlite3.Row, sess: dict, names: dict[int, str] | None = None,
                    shard: str | None = None) -> dict:

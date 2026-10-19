@@ -92,8 +92,13 @@ class ProfileDistiller:
                 targets.sort(key=lambda s: s.get("sortTime") or s.get("lastTime") or 0,
                              reverse=True)
         out: list[dict] = []
+        # 触顶标记：全库画像同样受 max_msgs 限制（默认 60000），23 万条库一定会被截。
+        # 之前这个信息只存在于"提前 return"这个控制流里，返回值里看不到，
+        # 于是本人画像页永远不会提示用户"你看到的只是样本"。
+        truncated = False
         for s in targets:
             if sess is None and len(out) >= max_msgs:
+                truncated = True
                 break
             n_sess = 0
             cap = per_session if sess is None else 0
@@ -104,13 +109,17 @@ class ProfileDistiller:
             for shard, r in self.ds.iter_session_rows(
                     s, from_ts, to_ts, desc=bool(cap), limit=cap or 0):
                 if len(out) >= max_msgs:
-                    return out
+                    truncated = True
+                    return out, truncated
                 if cap and len(picked) >= cap:
                     break
                 picked.append((shard, r))
             if cap and len(picked) > cap:      # 跨分片合并后再截断
                 picked.sort(key=lambda sr: sr[1]["create_time"] or 0)
                 picked = picked[-cap:]
+            # 该会话实际还有更多消息，但我们只取了最近 cap 条 —— 同样是截断
+            if cap and len(picked) >= cap:
+                truncated = True
             for shard, r in picked:
                 n_sess += 1
                 m = self.ds.to_message(r, s, shard=shard)
@@ -126,7 +135,7 @@ class ProfileDistiller:
                     "voiceMs": m.get("voiceMs"),
                     "title": m.get("title"),
                 })
-        return out
+        return out, truncated
 
     # ============================================================ 全库画像
     # ============================================================ 全库画像
@@ -193,8 +202,8 @@ class ProfileDistiller:
                      top: int = 15, per_session: int = 300) -> dict:
         t0 = time.time()
         agg = self._sql_aggregate(from_ts, to_ts)
-        msgs = self._collect(None, from_ts, to_ts, max_msgs,
-                             per_session=per_session)   # 仅用于话题/关键词
+        msgs, truncated = self._collect(None, from_ts, to_ts, max_msgs,
+                                        per_session=per_session)   # 仅用于话题/关键词
         mine = [m for m in msgs if m["direction"] == "out"]
 
         hour_total, hour_mine = agg["hour_t"], agg["hour_m"]
@@ -239,7 +248,10 @@ class ProfileDistiller:
         return {
             "scope": "self",
             "meta": {"scannedMessages": total, "textSampled": len(msgs),
-                     "myMessages": mine_n, "cost": round(time.time() - t0, 1)},
+                     "myMessages": mine_n, "cost": round(time.time() - t0, 1),
+                     # 与联系人画像同一套契约：话题/词频/风格来自采样，
+                     # 触顶时必须告知，否则用户会把样本当全量
+                     "truncated": truncated, "maxMsgs": max_msgs},
             "overview": {
                 "totalMessages": total, "myMessages": mine_n,
                 "myShare": round(mine_n / max(1, total), 3),
@@ -326,11 +338,11 @@ class ProfileDistiller:
         sess = self.ds.find_session(query)
         if not sess:
             raise SystemExit(f"[x] 没找到会话「{query}」，先跑 `mosu sessions` 看看")
-        # 多取 1 条用来判断是否真的撞了上限（多取的那条不参与统计）
-        rows = self.ds.raw_messages(sess, limit=cap + 1, from_ts=from_ts, to_ts=to_ts,
-                                    order="asc")
-        truncated = len(rows) > cap
-        rows = rows[:cap]
+        # order="desc"：取**最近** cap 条。画像的用途是"了解这个人现在的样子"，
+        # 取最早 cap 条等于让两年前的聊天决定今天的画像——与 _collect 曾经踩过的
+        # 「采样取到最早 N 条」是同一类错误。
+        rows, truncated = self.ds.raw_messages_page(
+            sess, limit=cap, from_ts=from_ts, to_ts=to_ts, order="desc")
         msgs = []
         for shard, r in rows:
             m = self.ds.to_message(r, sess, shard=shard)
@@ -342,7 +354,13 @@ class ProfileDistiller:
                          "title": m.get("title")})
         if not msgs:
             raise SystemExit(f"[x] 会话「{sess['displayName']}」在所选时间范围内没有消息")
-
+        # 取数用 desc（拿最近 cap 条），但下游统计一律按**时间升序**消费：
+        # milestones.firstMessage / lastMessage 取 msgs[0] 与 msgs[-1]，
+        # 发起模式要顺着时间轴走间隔，月份聚合也依赖顺序。
+        # 这里排回升序，让"取最近"与"按序统计"两件事各归各。
+        msgs.sort(key=lambda m: m["ts"] or 0)
+        # 截断后样本的"最早一条"已不是真实首条，里程碑要如实标注取的是哪一段
+        sample_first, sample_last = _ts(msgs[0]["ts"]), _ts(msgs[-1]["ts"])
         mine = [m for m in msgs if m["direction"] == "out"]
         theirs = [m for m in msgs if m["direction"] != "out"]
         days = {_day(m["ts"]) for m in msgs if m["ts"]}
@@ -395,15 +413,19 @@ class ProfileDistiller:
 
         # ---- 里程碑
         milestones = {
-            "firstMessage": {"time": _ts(msgs[0]["ts"]), "who": "我" if msgs[0]["direction"] == "out" else "对方",
+            "firstMessage": {"time": sample_first, "who": "我" if msgs[0]["direction"] == "out" else "对方",
                              "content": msgs[0]["text"][:60]},
-            "lastMessage": {"time": _ts(msgs[-1]["ts"]), "who": "我" if msgs[-1]["direction"] == "out" else "对方",
+            "lastMessage": {"time": sample_last, "who": "我" if msgs[-1]["direction"] == "out" else "对方",
                             "content": msgs[-1]["text"][:60]},
             "firstVoice": self._first(msgs, "voice"),
             "firstImage": self._first(msgs, "image"),
             "firstVideo": self._first(msgs, "video"),
             "busiestDay": self._busiest_day(msgs),
         }
+        if truncated:
+            # 截断时 firstMessage 只是**样本内**最早的一条，不是会话真实首条。
+            # 不标注的话前端会把它当"他们第一次聊天"展示，那是假的。
+            milestones["firstMessage"]["sampledOnly"] = True
 
         # ---- 亲密度信号
         signals = self._signals(msgs, mine, theirs)

@@ -144,7 +144,12 @@ API 都是死的，连取消都做不到，且没有任何超时能救。
 
 | 防护 | 做法 |
 |------|------|
-| 硬上限 | `ProfileDistiller.CONTACT_MAX_MSGS = 60000`。多取 1 条判断是否撞顶，命中则 `overview.truncated = true`（`meta.truncated` 同步一份），前端提示「样本已达上限，仅基于最近 N 条」 |
+| 硬上限 | `ProfileDistiller.CONTACT_MAX_MSGS = 60000`。命中则 `overview.truncated = true`（`meta.truncated` 同步一份），前端提示「样本已达上限，仅基于最近 N 条」 |
+| 判据 | 由 `Dataset.raw_messages_page()` 在**去重之前**判定：任一分片能取到第 `limit+1` 条即视为截断。**不能**用「多取 1 条看 `len(rows) > limit`」——去重发生在跨分片合并之后，合并后总数必然 ≤ limit，该判据恒为假 |
+| 采样方向 | `order="desc"` 取**最近** cap 条，内部再排回升序供统计。取最早 cap 条等于让两年前的聊天决定今天的画像 |
+
+`self_profile` 的 `meta` 同样带 `truncated` / `maxMsgs`——23 万条的库必然触到
+60000 上限，不上报的话本人画像页永远不会提示，用户会把采样当全量。
 | 异步 | `?async=1` 走 TaskHub，锁在 worker 内部拿而不是提交时拿——否则异步等于白做 |
 
 `meta.maxMsgs` 一并返回，前端不必把 60000 写死两遍。
