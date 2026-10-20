@@ -174,12 +174,13 @@ class TestAllTimeConsumersGuarded(unittest.TestCase):
 
     def test_messages_endpoint_guarded(self):
         src = self._src()
-        self.assertIn("self._guard(api_messages", src)
+        # 表驱动后：端点必须登记在 JSON_ROUTES 里（登记即自动走 _guard）
+        self.assertIn('"/api/messages": (api_messages', src)
 
     def test_stats_global_guarded(self):
         """验收复现的就是这个端点。"""
         src = self._src()
-        self.assertIn("self._guard(api_stats_global", src)
+        self.assertIn('"/api/stats/global": (api_stats_global', src)
 
     def test_export_guarded(self):
         """导出是 POST，但同样走 _guard（否则非法时间在导出上仍是 404）。"""

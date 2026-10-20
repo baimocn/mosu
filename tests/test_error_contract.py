@@ -90,14 +90,27 @@ class TestJsonRoutesUseGuard(unittest.TestCase):
         i = src.index("def do_GET(self)")
         return src[i:]
 
+    def _json_routes(self) -> str:
+        """取 JSON_ROUTES 路由表源码。
+
+        断言目标从「某行写了 self._guard(...)」改为「该端点在路由表里登记了」——
+        意图不变（JSON 端点必须走统一错误处理），但不再依赖具体写法。
+        原来的字面匹配在把 if 链改成路由表后全线误报，那是测试太脆，不是代码坏了。
+        """
+        import gui.server as S
+        src = inspect.getsource(S.run_gui)
+        i = src.index("JSON_ROUTES = {")
+        j = src.index("\n    }", i)
+        return src[i:j]
+
     def test_messages_uses_guard(self):
-        self.assertIn("self._guard(api_messages, self._params())", self._routes_block())
+        self.assertIn('"/api/messages"', self._json_routes())
 
     def test_search_uses_guard(self):
-        self.assertIn("self._guard(api_search, self._params())", self._routes_block())
+        self.assertIn('"/api/search"', self._json_routes())
 
     def test_sessions_uses_guard(self):
-        self.assertIn("self._guard(api_sessions, self._params())", self._routes_block())
+        self.assertIn('"/api/sessions"', self._json_routes())
 
     def test_no_json_route_bypasses_guard(self):
         """JSON 类端点不得再出现 `self._json(api_xxx(...))` 的裸调用。"""

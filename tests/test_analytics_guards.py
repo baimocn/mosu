@@ -1084,9 +1084,13 @@ class TestStatsEndpointWiring(unittest.TestCase):
         self.assertIn("time_stats(by=by, from_ts=from_ts, to_ts=to_ts)", body)
 
     def test_global_route_passes_params(self):
-        """/api/stats/global 原来不传参——不改这里 from/to 永远收不到。"""
+        """/api/stats/global 原来不传参——不改这里 from/to 永远收不到。
+
+        路由改成表驱动后，断言从「这行写了 self._guard(...)」改为
+        「表里登记为 True（要传参）」——意图不变，不依赖具体写法。
+        """
         src = self._src()
-        self.assertIn("self._guard(api_stats_global, self._params())", src)
+        self.assertRegex(src, r'"/api/stats/global":\s*\(api_stats_global,\s*True\)')
 
     def test_parse_time_is_reused(self):
         """复用 core.dataset.parse_time，不要另写一套日期解析。"""

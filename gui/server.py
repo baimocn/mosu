@@ -1243,6 +1243,32 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             },
         }
 
+    # JSON 端点路由表。api_* 都是本函数内的闭包，无法提到模块级，
+    # 所以在 run_gui 里定义一次，所有请求共用同一份。
+    # 之前每个端点写成「if path == X: self._guard(fn, params); return」的三段重复，
+    # 26 个分支堆成 183 行；加接口要插一段，漏 return 就会掉进下一个分支。
+    # 返回二进制 / SSE / 静态文件的端点不走这张表（它们要自己管 header）。
+    JSON_ROUTES = {
+        "/api/sessions": (api_sessions, True),
+        "/api/messages": (api_messages, True),
+        "/api/search": (api_search, True),
+        "/api/contacts": (api_contacts, True),
+        "/api/contact": (api_contact, True),
+        "/api/profile": (api_profile, True),
+        "/api/report": (api_report, True),
+        "/api/accounts": (api_accounts, False),
+        "/api/config": (api_config, False),
+        "/api/key/selftest": (api_key_selftest, False),
+        "/api/llm": (api_llm_get, False),
+        "/api/personas": (api_personas, False),
+        "/api/moments": (api_moments, True),
+        "/api/moments/probe": (api_moments_probe, True),
+        "/api/stats/global": (api_stats_global, True),
+        "/api/stats/contacts": (api_stats_contacts, True),
+        "/api/stats/time": (api_stats_time, True),
+        "/api/task": (api_task, True),
+    }
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -1278,8 +1304,14 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             except Exception as e:  # noqa: BLE001
                 self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
+
         def do_GET(self):
             path = urlparse(self.path).path
+            hit = JSON_ROUTES.get(path)
+            if hit is not None:
+                fn, wants_params = hit
+                self._guard(fn, self._params()) if wants_params else self._guard(fn)
+                return
             if path == "/":
                 f = GUI_DIR / "index.html"
                 if not f.exists():
@@ -1332,15 +1364,6 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
-            if path == "/api/sessions":
-                self._guard(api_sessions, self._params())
-                return
-            if path == "/api/messages":
-                self._guard(api_messages, self._params())
-                return
-            if path == "/api/search":
-                self._guard(api_search, self._params())
-                return
             if path == "/api/media":
                 # 注意：media / remote 这类**返回二进制**的端点不用 _guard——
                 # 它按 (data, mime, headers) 三元组发送，_guard 只会 JSON 化。
@@ -1353,27 +1376,6 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     self._json({"error": str(e)}, 404)
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
-                return
-            if path == "/api/contacts":
-                self._guard(api_contacts, self._params())
-                return
-            if path == "/api/contact":
-                self._guard(api_contact, self._params())
-                return
-            if path == "/api/profile":
-                self._guard(api_profile, self._params())
-                return
-            if path == "/api/report":
-                self._guard(api_report, self._params())
-                return
-            if path == "/api/accounts":
-                self._guard(api_accounts)
-                return
-            if path == "/api/config":
-                self._guard(api_config)
-                return
-            if path == "/api/key/selftest":
-                self._guard(api_key_selftest)
                 return
             if path == "/api/key/find":
                 # SSE 长连接：自己管 header，不能用 _json（那会带 Content-Length）
@@ -1405,18 +1407,6 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                         pass
                     _finish()
                 return
-            if path == "/api/llm":
-                self._guard(api_llm_get)
-                return
-            if path == "/api/personas":
-                self._guard(api_personas)
-                return
-            if path == "/api/moments":
-                self._guard(api_moments, self._params())
-                return
-            if path == "/api/moments/probe":
-                self._guard(api_moments_probe, self._params())
-                return
             if path == "/api/remote":
                 try:
                     data, mime, headers = api_remote_media(self._params())
@@ -1425,18 +1415,6 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     self._json({"error": str(e)}, 404)
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
-                return
-            if path == "/api/stats/global":
-                self._guard(api_stats_global, self._params())
-                return
-            if path == "/api/stats/contacts":
-                self._guard(api_stats_contacts, self._params())
-                return
-            if path == "/api/stats/time":
-                self._guard(api_stats_time, self._params())
-                return
-            if path == "/api/task":
-                self._guard(api_task, self._params())
                 return
             if path == "/api/export/download":
                 try:
