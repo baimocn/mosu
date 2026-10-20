@@ -1175,7 +1175,13 @@ def main():
             ds = None
         else:
             raise
-    args.func(args, ds)
+    try:
+        args.func(args, ds)
+    except ValueError as e:
+        # 参数非法（如 --from 写错）。以前 core 层用 SystemExit 报这类错，
+        # Python 会打印消息并以 1 退出；改抛 ValueError 后若不在这里接住，
+        # 用户看到的就是一整段 traceback。sys.exit(str) 保持原有输出完全一致。
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

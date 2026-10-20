@@ -669,11 +669,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             if not (1 <= top_n <= 30):
                 raise ValueError("topN 需在 1~30（全库 190 个会话逐个解密媒体很慢）")
             from core.dataset import parse_time
-            try:
-                from_ts = parse_time(payload.get("from"))
-                to_ts = parse_time(payload.get("to"))
-            except SystemExit as e:
-                raise ValueError(str(e)) from e
+            # parse_time 失败抛 ValueError（TimeParseError），全局守卫会转 400。
+            # 原先这里还包了一层 `except SystemExit → ValueError`，是根因未修时的局部
+            # 补丁；根因已在 core/dataset.py 修掉，保留只会让人误以为它还会抛 SystemExit。
+            from_ts = parse_time(payload.get("from"))
+            to_ts = parse_time(payload.get("to"))
             tid = tasks.submit("export-html", _export_all_task(top_n, from_ts, to_ts))
             return {"taskId": tid, "status": "running",
                     "session": f"前 {top_n} 大会话"}
@@ -684,11 +684,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         if fmt not in ("json", "csv", "txt", "html"):
             raise ValueError("format 只支持 json/csv/txt/html")
         from core.dataset import parse_time
-        try:
-            from_ts = parse_time(payload.get("from"))
-            to_ts = parse_time(payload.get("to"))
-        except SystemExit as e:
-            raise ValueError(str(e)) from e
+        from_ts = parse_time(payload.get("from"))
+        to_ts = parse_time(payload.get("to"))
         # 先校验会话存在（同步路径直接 404；异步路径提前失败）
         with _ds_lock:
             sess = get_ds().find_session(sess_id)
@@ -1228,24 +1225,19 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
             if path == "/api/sessions":
-                try:
-                    self._json(api_sessions(self._params()))
-                except Exception as e:  # noqa: BLE001
-                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                self._guard(api_sessions, self._params())
                 return
             if path == "/api/messages":
-                try:
-                    self._json(api_messages(self._params()))
-                except Exception as e:  # noqa: BLE001
-                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                self._guard(api_messages, self._params())
                 return
             if path == "/api/search":
-                try:
-                    self._json(api_search(self._params()))
-                except Exception as e:  # noqa: BLE001
-                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                self._guard(api_search, self._params())
                 return
             if path == "/api/media":
+                # 注意：media / remote 这类**返回二进制**的端点不用 _guard——
+                # 它按 (data, mime, headers) 三元组发送，_guard 只会 JSON 化。
+                # 这也是上面 sessions/messages/search 三个 JSON 端点已改用 _guard
+                # 之后，此处仍保留自建 handler 的原因：不是遗漏，是职责不同。
                 try:
                     data, mime, headers = api_media(self._params())
                     self._send(data, mime, headers=headers)

@@ -423,9 +423,14 @@ class ProfileDistiller:
             "busiestDay": self._busiest_day(msgs),
         }
         if truncated:
-            # 截断时 firstMessage 只是**样本内**最早的一条，不是会话真实首条。
-            # 不标注的话前端会把它当"他们第一次聊天"展示，那是假的。
+            # 截断时样本内「最早的一条」不是会话真实首条。firstMessage 与三个
+            # first* 里程碑**同属这个问题**，必须一起标——只标一个反而更危险：
+            # 页面上「首条消息」被谨慎标注「样本内」，紧挨着的「第一条语音」却仍是
+            # 确定语气，用户完全有理由读成「他们第一次发语音是那天」。
             milestones["firstMessage"]["sampledOnly"] = True
+            for key in ("firstVoice", "firstImage", "firstVideo"):
+                if milestones.get(key):
+                    milestones[key]["sampledOnly"] = True
 
         # ---- 亲密度信号
         signals = self._signals(msgs, mine, theirs)
@@ -636,13 +641,18 @@ class ProfileDistiller:
         L.append("## 一、互动概览")
         L.append("")
         fm, lm = d["milestones"]["firstMessage"], d["milestones"]["lastMessage"]
-        L.append(f"- **第一句话**（{fm['time']}，{fm['who']}）：{fm['content']}")
+        # 截断时样本内最早 ≠ 会话真实最早，文案必须带限定，否则 Markdown 报告里
+        # 会写出未加限定的「第一句话」，与 JSON 返回的口径不一致（同一个假数据问题，
+        # JSON 那侧已标 sampledOnly）。最近一句不受影响——它取的是样本末尾＝最新。
+        _smp = "（样本内，非真实首条）" if fm.get("sampledOnly") else ""
+        L.append(f"- **第一句话**{_smp}（{fm['time']}，{fm['who']}）：{fm['content']}")
         L.append(f"- **最近一句**（{lm['time']}，{lm['who']}）：{lm['content']}")
         for key, label in (("firstVoice", "第一条语音"), ("firstImage", "第一张图"),
                            ("firstVideo", "第一个视频")):
             v = d["milestones"].get(key)
             if v:
-                L.append(f"- **{label}**：{v['time']}（{v['who']}）")
+                tag = "（样本内，非真实首条）" if v.get("sampledOnly") else ""
+                L.append(f"- **{label}**{tag}：{v['time']}（{v['who']}）")
         bd = d["milestones"].get("busiestDay")
         if bd:
             L.append(f"- **话最多的一天**：{bd['day']} 共 {bd['count']} 条"

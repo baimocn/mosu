@@ -251,8 +251,26 @@ def find_user_dir(explicit: str | os.PathLike | None = None,
     raise SystemExit("[x] 没找到微信数据目录，请用 --db-path 指定")
 
 
+class TimeParseError(ValueError):
+    """非法时间参数。
+
+    继承 **ValueError** 而不是 SystemExit：SystemExit 是 CLI 的语义（「打印这句话然后
+    退出」），混进库层会让上层没法区分「参数写错了」和「资源不存在」。
+
+    这个区分有实际代价，不是洁癖：
+    - GUI 的全局守卫 `except SystemExit → 404`，非法 from/to 会被报成「资源不存在」
+    - MCP 的 `except SystemExit → -32000`（通用错误），而 `except ValueError →
+      -32602 Invalid params` 才是 JSON-RPC 里"参数非法"该用的错误码
+
+    改这一处，GUI 的 400 与 MCP 的 -32602 都自动生效，不必在每个调用点贴补丁。
+    """
+
+
 def parse_time(value) -> int | None:
-    """把 '2026-01-01' / '2026-01-01 12:30' / unix 秒 转成时间戳。"""
+    """把 '2026-01-01' / '2026-01-01 12:30' / unix 秒 转成时间戳。
+
+    失败抛 TimeParseError（ValueError 子类），不抛 SystemExit——理由见类文档。
+    """
     if value is None or value == "":
         return None
     if isinstance(value, (int, float)):
@@ -266,7 +284,7 @@ def parse_time(value) -> int | None:
             return int(datetime.datetime.strptime(s, fmt).timestamp())
         except ValueError:
             continue
-    raise SystemExit(f"[x] 无法解析时间: {value}")
+    raise TimeParseError(f"[x] 无法解析时间: {value}")
 
 
 # --------------------------------------------------------------------------

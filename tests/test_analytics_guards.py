@@ -23,6 +23,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from core.dataset import KIND_BY_TYPE as _KIND_BY_TYPE
+
 SCHEMA = """
 CREATE TABLE {table} (
     local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER,
@@ -181,7 +183,7 @@ class FakeDataset:
 
     def to_message(self, row, sess, shard="s"):
         return {"createTime": row["create_time"],
-                "kind": "text" if (row["local_type"] & 0xFFFFFFFF) in (1, 49) else "image",
+                "kind": _KIND_BY_TYPE.get(row["local_type"] & 0xFFFFFFFF, "image"),
                 "content": row["message_content"],
                 "direction": "out" if row["real_sender_id"] == self.self_id(shard) else "in",
                 "senderName": self._rev().get(row["real_sender_id"], ""),
@@ -582,6 +584,114 @@ class TestContactProfileCap(_DS):
         pd, _ = self._with_cap(51)
         d = pd.contact_profile("wxid_a")
         self.assertIs(d["milestones"]["firstMessage"]["sampledOnly"], True)
+
+    def _mixed(self, n, voice_every=7, image_every=5, video_every=11):
+        """造含文本/语音/图片/视频的会话——三个 first* 里程碑要有值才会被标注。"""
+        from core.profile import ProfileDistiller
+        base = _ts(2026, 3, 1)
+        rows = []
+        for i in range(n):
+            lt = 1
+            if i % voice_every == 3:
+                lt = 34          # T_VOICE
+            elif i % image_every == 1:
+                lt = 3           # T_IMAGE
+            elif i % video_every == 4:
+                lt = 43          # T_VIDEO
+            rows.append(("wxid_a", base + i * 60, lt,
+                         "wxid_me" if i % 2 else "wxid_a", f"m{i}"))
+        return ProfileDistiller(self.make(
+            [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}], rows))
+
+    def test_all_first_milestones_flagged_when_truncated(self):
+        """**四个 first* 必须一起标**。
+
+        验收实测发现：原先只给 firstMessage 标了 sampledOnly，而 firstVoice /
+        firstImage / firstVideo 没有。前端已把该字段渲染成「样本内最早」徽标，
+        于是同一页面上「首条消息」被谨慎标注、紧挨着的「第一条语音」仍是确定语气
+        ——用户完全有理由读成「他们第一次发语音是那天」。只修一半比不修更误导。
+        """
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", 40)
+        p.start()
+        self.addCleanup(p.stop)
+        d = self._mixed(60).contact_profile("wxid_a")
+        ms = d["milestones"]
+        self.assertIs(d["meta"]["truncated"], True)
+        for key in ("firstMessage", "firstVoice", "firstImage", "firstVideo"):
+            self.assertIsNotNone(ms.get(key), f"{key} 应有值（构造数据要覆盖该类型）")
+            self.assertIs(ms[key].get("sampledOnly"), True,
+                          f"{key} 截断时必须标 sampledOnly")
+
+    def test_last_message_never_flagged(self):
+        """lastMessage 取的是样本**末尾**，而末尾就是会话最新，不受截断影响。
+        标了反而是错的（会让人以为最新那条也不确定）。"""
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", 40)
+        p.start()
+        self.addCleanup(p.stop)
+        d = self._mixed(60).contact_profile("wxid_a")
+        self.assertNotIn("sampledOnly", d["milestones"]["lastMessage"])
+
+    def test_no_flags_when_not_truncated(self):
+        """未截断时全部取完，四个里程碑都是真实的，不该有任何标记。"""
+        d = self._mixed(30).contact_profile("wxid_a")
+        self.assertIs(d["meta"]["truncated"], False)
+        for key in ("firstMessage", "firstVoice", "firstImage", "firstVideo"):
+            self.assertNotIn("sampledOnly", d["milestones"][key])
+
+    def test_absent_milestones_do_not_crash(self):
+        """没有语音/视频时那两项是 None，不能往 None 上塞字段。"""
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", 20)
+        p.start()
+        self.addCleanup(p.stop)
+        rows = [("wxid_a", _ts(2026, 3, 1) + i * 60, 1, "wxid_a", f"t{i}") for i in range(40)]
+        d = ProfileDistiller(self.make(
+            [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}],
+            rows)).contact_profile("wxid_a")
+        self.assertIsNone(d["milestones"]["firstVoice"])
+        self.assertIsNone(d["milestones"]["firstVideo"])
+        self.assertIs(d["milestones"]["firstMessage"]["sampledOnly"], True)
+
+    # ---------------------------------------------------------- Markdown 同源缺陷
+    def test_markdown_marks_sampled_milestones(self):
+        """**Markdown 报告有同一个漏洞**（验收师指出）。
+
+        我只修了 JSON 返回，`render_markdown` 里 `- **第一句话**：...` 仍是
+        未加限定的说法 —— 同一份数据、两种口径，CLI 导出的报告照样会写出假数据。
+        """
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", 40)
+        p.start()
+        self.addCleanup(p.stop)
+        pd = self._mixed(60)
+        md = pd.render_markdown(pd.contact_profile("wxid_a"))
+        lines = [x for x in md.splitlines() if x.startswith("- **第一")]
+        self.assertTrue(lines)
+        for ln in lines:
+            self.assertIn("样本内", ln, f"截断时 Markdown 应标注：{ln}")
+
+    def test_markdown_last_message_never_marked(self):
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", 40)
+        p.start()
+        self.addCleanup(p.stop)
+        pd = self._mixed(60)
+        md = pd.render_markdown(pd.contact_profile("wxid_a"))
+        lm = next(x for x in md.splitlines() if x.startswith("- **最近一句**"))
+        self.assertNotIn("样本内", lm)
+
+    def test_markdown_untruncated_has_no_qualifier(self):
+        """未截断时不该出现「样本内」字样——否则成了无意义的噪音。"""
+        pd = self._mixed(30)
+        md = pd.render_markdown(pd.contact_profile("wxid_a"))
+        self.assertNotIn("样本内", md)
 
     def test_over_default_cap_keeps_newest_window(self):
         """超限后样本窗口应落在最近 cap 条，而不是会话开头。
