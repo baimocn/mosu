@@ -11,7 +11,7 @@
     { group: "开始", items: [
       { id: "console", name: "控制台", icon: "console", comp: "Console" },
       { id: "browse", name: "数据浏览", icon: "browse", comp: "Browse" },
-      { id: "search", name: "全库搜索", icon: "search", comp: "Browse", params: { search: 1 } },
+      { id: "search", name: "全库搜索", icon: "search", comp: "Browse", props: { searchOnMount: 1 } },
     ] },
     { group: "洞察", items: [
       { id: "stats", name: "数据统计", icon: "stats", comp: "Stats" },
@@ -220,5 +220,37 @@
   };
 
   M.applyTheme();
-  createApp(App).mount("#app");
+  const _app = createApp(App);
+
+  // 渲染期兜底：组件渲染抛异常时，Vue 会把整棵子树卸掉，
+  // 用户看到的是**整页空白**且没有任何提示（之前 views-browse 那次
+  // 模板里 M 未定义就是这样白屏的）。这里把错误接住并显示出来，
+  // 至少让用户知道"哪个页面坏了、报的什么错、怎么重试"，而不是一片白。
+  _app.config.errorHandler = function (err, instance, info) {
+    var msg = (err && (err.message || String(err))) || "未知错误";
+    var where = (info || "").toString();
+    try {
+      if (global.Mosu && global.Mosu.toast) global.Mosu.toast.err("界面出错：" + msg);
+    } catch (_) { /* toast 本身挂了也不能再抛 */ }
+    var host = document.getElementById("app");
+    if (!host || host.querySelector(".fatal-fallback")) return;
+    var box = document.createElement("div");
+    box.className = "fatal-fallback";
+    box.innerHTML =
+      '<div class="fatal-card">'
+      + '<div class="fatal-mark">!</div>'
+      + '<div class="fatal-title">这个页面出错了</div>'
+      + '<div class="fatal-msg"></div>'
+      + '<div class="fatal-actions">'
+      + '<button class="btn btn-sm" id="fatal-reload">重新加载</button>'
+      + '</div></div>';
+    box.querySelector(".fatal-msg").textContent = msg + (where ? "（" + where + "）" : "");
+    host.appendChild(box);
+    var btn = box.querySelector("#fatal-reload");
+    if (btn) btn.onclick = function () { location.reload(); };
+    // 控制台保留完整堆栈，方便定位
+    if (window.console && console.error) console.error("[mosu] render error:", err, where);
+  };
+
+  _app.mount("#app");
 })(window);

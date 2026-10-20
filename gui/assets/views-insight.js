@@ -120,7 +120,7 @@
           </div>
           <div v-if="!data.length" class="muted tiny">（这一项没有数据）</div>
         </template>
-        <dl v-else-if="isObj" class="kv">
+        <dl v-else-if="dataIsObject" class="kv">
           <template v-for="(v,k) in visible" :key="k">
             <dt :title="isSampledFirst(v) ? sampledTip(k) : ''">{{ fieldLabel(k, v) }}</dt>
             <dd>
@@ -143,8 +143,13 @@
         <div v-else>{{ data }}</div>
       </div>`,
     computed: {
+      // 同上：methods 只绑定函数，对象要放 computed 模板才读得到
+      M() { return M; },
       isList() { return Array.isArray(this.data); },
-      isObj() { return this.data && typeof this.data === "object" && !Array.isArray(this.data); },
+      /** 「当前 data 是不是一个对象」——注意别再叫 isObj：
+       *  methods 里还有一个判任意值的 isObj(v)，同名会被 method 覆盖，
+       *  这里就会变成拿到函数对象（恒真），整页渲染随即崩掉。 */
+      dataIsObject() { return this.data && typeof this.data === "object" && !Array.isArray(this.data); },
       /** 空值字段直接不渲染，不占版面 */
       visible() {
         const out = {};
@@ -162,7 +167,6 @@
       },
     },
     methods: {
-      M,
       label,
       isPrimitive(v) {
         return v === null || v === undefined

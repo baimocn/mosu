@@ -31,6 +31,12 @@
 
   const Browse = {
     components: { Lightbox: global.MosuViews.Lightbox },
+    // searchOnMount：从左侧导航「全库搜索」进来时置 1，挂载后自动弹出搜索框。
+    // 之前导航项写的是 params:{search:1}，而 app.js 的 currentProps 只读 props，
+    // params 是永远传不进来的死字段 —— 于是 #/search 只是把同一个组件再渲染一遍，
+    // 点了什么都不会发生。改成 props 才能真正把意图传进来。
+    // 注意名字不能叫 openSearch：那个是 methods 里的方法名，同名会被覆盖。
+    props: { searchOnMount: { type: [Number, Boolean], default: 0 } },
     template: `
     <div class="browse">
       <!-- 左：会话列表 -->
@@ -231,6 +237,11 @@
       };
     },
     computed: {
+      // 模板里要用 M.mediaUrl()，必须把 M 挂到组件实例上。
+      // 注意：不能写进 methods —— 这个 Vue 构建里 methods 只绑定函数，
+      // 挂对象进去模板取到的仍是 undefined（真机隔离实验验证过）。
+      // data / computed / globalProperties 才能让模板读到对象。
+      M() { return M; },
       shown() {
         const k = this.kw.trim().toLowerCase();
         return this.sessions.filter((s) => {
@@ -380,6 +391,8 @@
     },
     async mounted() {
       await this.load();
+      // 从导航「全库搜索」进入：直接弹搜索框，不等用户再找按钮
+      if (this.searchOnMount) this.openSearch();
       const h = location.hash.match(/session=([^&]+)/);
       if (h) {
         const id = decodeURIComponent(h[1]);
