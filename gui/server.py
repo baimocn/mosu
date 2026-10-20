@@ -843,9 +843,16 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
     def api_report(q) -> dict:
         year = q.get("year")
+        session = (q.get("session") or "").strip()
         with _ds_lock:
             from core.analytics import Analytics
             an = Analytics(get_ds())
+            # 语义优先级（core 层 report() 自己也是 all_time > session > year）：
+            # 给了 session 就必须走 session 分支。早前这里不看 session，
+            # 无 year 时一律 all_time=True —— 而 all_time 的优先级**高于** session，
+            # 于是 ?session= 被静默吞掉、返回全库口径。字段早就实现了，只是送不进去。
+            if session:
+                return an.report(session=session)
             if year:
                 return an.report(year=int(year))
             return an.report(all_time=True)

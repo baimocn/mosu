@@ -441,6 +441,136 @@ class TestSelfProfileTruncation(_DS):
                          set(b["meta"]) & {"truncated", "maxMsgs"})
 
 
+# ============================================================ /api/report?session= 接线
+class TestReportSessionWiring(_DS):
+    """`?session=` 曾被完全忽略：字段实现了、算法正确，HTTP 层送不进去。
+
+    `report()` 的优先级是 all_time > session > year，而 server 层无 year 时
+    一律 `all_time=True` —— **all_time 优先级高于 session**，于是 ?session=
+    被静默吞掉、返回全库口径。core 层一点没错，错在接线。
+    """
+
+    def _sessions(self):
+        return [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}]
+
+    def _rows(self, n=8):
+        base = _ts(2026, 3, 1)
+        return [("wxid_a", base + i * 3600, 1,
+                 "wxid_me" if i % 2 else "wxid_a", f"第{i}句") for i in range(n)]
+
+    def _an(self):
+        from core.analytics import Analytics
+        return Analytics(self.make(self._sessions(), self._rows()))
+
+    # ---- 1) 会话口径有内容且方向正确
+    def test_session_scope_has_content_and_order(self):
+        s = self._an().report(session="wxid_a")["summary"]
+        self.assertIsNotNone(s["firstMessage"])
+        self.assertIsNotNone(s["lastMessage"])
+        self.assertLess(s["firstMessage"]["time"], s["lastMessage"]["time"])
+        self.assertTrue(s["firstMessage"]["content"])
+        self.assertTrue(s["lastMessage"]["content"])
+
+    def test_session_scope_id_present(self):
+        """scope=session 且 sessionId 回显——这是前端知道自己在看谁的关键字段。"""
+        r = self._an().report(session="wxid_a")
+        self.assertEqual(r["scope"], "session")
+        self.assertEqual(r["sessionId"], "wxid_a")
+
+    # ---- 2) 非会话口径为 null 且不报错
+    def test_all_time_scope_is_null(self):
+        s = self._an().report(all_time=True)["summary"]
+        self.assertIsNone(s["firstMessage"])
+        self.assertIsNone(s["lastMessage"])
+
+    # ---- 3) year 口径为 null
+    def test_year_scope_is_null(self):
+        s = self._an().report(year=2026)["summary"]
+        self.assertIsNone(s["firstMessage"])
+        self.assertIsNone(s["lastMessage"])
+
+    # ---- 4) 跨层一致性：report 与 contact_profile 对同一会话口径必须一致
+    def test_cross_layer_first_message_matches_contact_profile(self):
+        """同一会话、同一段数据，两个入口给的「最早一条」必须指向同一刻。
+
+        两条路径取数方式完全不同：report 走 session_stats 的 min(create_time)
+        （原始行、不去重、不截断），contact_profile 走 raw_messages_page
+        （去重、按 ts 排序、受 CONTACT_MAX_MSGS 限制）。口径若对不上，
+        前端两个页面会显示不同的"第一次聊天"。
+
+        比对前先归一：report 那边是 unix int，profile 那边是格式化字符串
+        （`profile._ts()`），语义相同、表示不同。见下一条用例。
+        """
+        from datetime import datetime
+        from core.profile import ProfileDistiller
+        ds = self.make(self._sessions(), self._rows())
+
+        def norm(v):
+            return v if isinstance(v, int) else int(
+                datetime.strptime(v, "%Y-%m-%d %H:%M").timestamp())
+
+        rep = self._an().report(session="wxid_a")["summary"]
+        prof = ProfileDistiller(ds).contact_profile("wxid_a")
+        self.assertEqual(norm(rep["firstMessage"]["time"]),
+                         norm(prof["milestones"]["firstMessage"]["time"]))
+        self.assertEqual(norm(rep["lastMessage"]["time"]),
+                         norm(prof["milestones"]["lastMessage"]["time"]))
+
+    def test_time_format_differs_between_report_and_profile(self):
+        """**记录一处既有的表示差异**（非本缺陷引入，本轮刻意未统一）。
+
+        `/api/report` 的 `summary.firstMessage.time` 是 unix int；
+        `/api/profile` 的 `milestones.firstMessage.time` 与
+        `overview.firstText` 是 `'2026-03-01 10:00'` 格式化串（`profile._ts()`）。
+
+        没统一的理由：report 那两个字段是上一轮新增、验收师已实测通过；
+        profile 的 `_ts()` 被 markdown 渲染与多处展示复用。此刻改任何一侧都是
+        **在验收尾期改一个正在被使用的契约**。所以只钉住现状，等有明确需求
+        （比如前端要在两个页面间直接比对这两个值）时再统一。
+        """
+        from core.profile import ProfileDistiller
+        ds = self.make(self._sessions(), self._rows())
+        prof = ProfileDistiller(ds).contact_profile("wxid_a")
+        rep = self._an().report(session="wxid_a")["summary"]
+        self.assertIsInstance(rep["firstMessage"]["time"], int)
+        self.assertIsInstance(prof["milestones"]["firstMessage"]["time"], str)
+        self.assertIsInstance(prof["overview"]["firstText"], str)
+
+    # ---- 接线本身的回归护栏
+    def test_api_report_passes_session_down(self):
+        """直接盯接线：session 必须被传下去，且不能与 all_time 同时为真。
+
+        core 层的优先级是 all_time > session > year，所以哪怕 session 传对了，
+        只要还带着 all_time=True，session 依然会被吃掉——两个条件都要钉。
+        """
+        import inspect
+        import gui.server as S
+        src = inspect.getsource(S.run_gui)
+        i = src.index("def api_report(q)")
+        block = src[i:src.index("def _persona_task(", i)]
+        self.assertIn('q.get("session")', block)
+        self.assertIn("an.report(session=session)", block)
+        # session 分支必须在 all_time 分支之前
+        self.assertLess(block.index("an.report(session=session)"),
+                        block.index("an.report(all_time=True)"))
+
+    def test_api_report_keeps_year_path(self):
+        """没给 session 时保持原状：带 year 走 year，不带走 all_time。"""
+        import inspect
+        import gui.server as S
+        src = inspect.getsource(S.run_gui)
+        i = src.index("def api_report(q)")
+        block = src[i:src.index("def _persona_task(", i)]
+        self.assertIn("an.report(year=int(year))", block)
+        self.assertIn("an.report(all_time=True)", block)
+
+    def test_unknown_session_still_raises_systemexit(self):
+        """不存在的会话要继续抛 SystemExit（→404），别被改成 ValueError。"""
+        from core.analytics import Analytics
+        with self.assertRaises(SystemExit):
+            self._an().report(session="wxid_not_exist_zzz")
+
+
 # ============================================================ raw_messages 截断契约
 class TestRawMessagesTruncation(unittest.TestCase):
     """真 Dataset + 真多分片表：截断信号必须扛得住「跨分片去重」。
