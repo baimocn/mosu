@@ -46,6 +46,35 @@ def _launcher() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- Windows
+# 「权限不足」与「真失败」要分开说。公共桌面（C:\Users\Public\Desktop）写不进去
+# 是**预期降级**——普通用户本来就没管理员权限，而个人桌面通常已经建好了。
+# 之前一律打 `[x] 失败`，用户每次运行都看到一串像报错的红字，
+# 久了就不信后面真正的警告了。
+_PERMISSION_HINTS = (
+    "access is denied", "拒绝访问", "permission", "unauthorized",
+    "privilege", "not allowed", "requires elevation", "管理员",
+)
+
+
+def _is_permission_problem(detail: str) -> bool:
+    low = (detail or "").lower()
+    return any(h in low for h in _PERMISSION_HINTS)
+
+
+def _report(where: Path, detail: str) -> None:
+    """按失败性质选措辞：权限不足是降级（`[i]`），其余才是真失败（`[x]`）。"""
+    if _is_permission_problem(detail):
+        # 只在「非首个目录」时降级：第一个就是个人桌面却写不进去，
+        # 那是真问题，不该被当成正常降级咽下去。
+        first = _deskdirs_windows()[:1]
+        if first and str(where).lower() == str(first[0]).lower():
+            print(f"[x] 建快捷方式失败（{where}）：{detail}")
+        else:
+            print(f"[i] 公共桌面无写权限（{where}），跳过——个人桌面已建好，不影响使用")
+        return
+    print(f"[x] 建快捷方式失败（{where}）：{detail}")
+
+
 def _deskdirs_windows() -> list[Path]:
     """用户可能把桌面重定向到别处（本机就搬到了 D:\\Desktop），
     所以「系统认定的桌面」和「真实在用的桌面」都放一份。"""
@@ -94,13 +123,13 @@ def _shortcut_windows() -> list[str]:
         try:
             r = _ps(ps)
         except Exception as e:
-            print(f"[x] 建快捷方式失败（{d}）：{type(e).__name__}: {e}")
+            _report(d, f"{type(e).__name__}: {e}")
             continue
         if r.returncode == 0 and lnk.exists():
             made.append(str(lnk))
         else:
             detail = ((r.stderr or "") + (r.stdout or "")).strip()[:200]
-            print(f"[x] 建快捷方式失败（{d}）：{detail}")
+            _report(d, detail)
     return made
 
 

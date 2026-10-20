@@ -54,6 +54,25 @@ class ShortcutTestBase(unittest.TestCase):
     """把 home / 平台 / 图标可用性全部换成可控替身，绝不碰真实桌面。"""
 
     def setUp(self):
+        # `core.shortcut` 全程用 print 汇报进度（这是它的用户可见输出）。
+        # 测试里那些 print 会和 unittest 的结果混在 stdout 上，导致
+        # `2>/dev/null | grep "^Ran "` 抓不到结果、CI 日志被刷屏。
+        # 这里统一吞掉，需要断言文案时用 self.captured()。
+        import io
+        from contextlib import redirect_stdout
+        self._buf = io.StringIO()
+        # 用 lambda 而不是直接交 self._buf.write：StringIO.write 只接受一个参数，
+        # 而 print 可以是 print(a, b)。哪天有人写了多参 print，这个替身会 TypeError
+        # ——测试挂在与被测行为无关的地方，很难查。
+        p = patch("core.shortcut.print",
+                  lambda *a, **k: self._buf.write(" ".join(str(x) for x in a)))
+        p.start()
+        self.addCleanup(p.stop)
+        # 少数路径走的是内建 print 之外的写法（sys.stdout 直写），一并兜住
+        redir = redirect_stdout(self._buf)
+        redir.__enter__()
+        self.addCleanup(redir.__exit__, None, None, None)
+
         self.tmp = tempfile.mkdtemp(prefix="mosu-shortcut-")
         self.home = _fake_home(self.tmp)
         p = patch.object(Path, "home", classmethod(lambda cls: self.home))
@@ -63,6 +82,10 @@ class ShortcutTestBase(unittest.TestCase):
         p = patch("core.shortcut.ensure_icns", lambda: False)
         p.start()
         self.addCleanup(p.stop)
+
+    def captured(self) -> str:
+        """本例中被吞掉的模块输出，供断言文案用。"""
+        return self._buf.getvalue()
 
     def set_platform(self, value: str):
         """伪装成 posix 平台 + 指定 sys.platform（Windows 分支随之失效）。"""
@@ -350,6 +373,92 @@ class TestIconConstants(ShortcutTestBase):
         icons = S._resolve_icons()
         self.assertEqual(set(icons), {"png", "icns"})
         self.assertTrue(icons["png"] is not None)
+
+
+class TestPermissionDegradation(ShortcutTestBase):
+    r"""公共桌面写不进去是**预期降级**，不该打「[x] 失败」。
+
+    用户看到一串像报错的 `[x] 建快捷方式失败（C:\Users\Public\Desktop）`，
+    久了就不信后面真正的警告了。而退出码一直是 0、个人桌面也建好了——
+    这正是「预期降级」的定义。
+
+    但**不能一律降级**：个人桌面（第一个目录）写不进去是真问题，
+    咽下去就等于把故障藏了。
+    """
+
+    def test_detects_permission_wording(self):
+        from core.shortcut import _is_permission_problem as f
+        for s in ("拒绝访问。", "Access is denied", "UnauthorizedAccessException",
+                  "需要管理员权限"):
+            self.assertTrue(f(s), f"{s!r} 应识别为权限问题")
+
+    def test_real_failure_not_mistaken_for_permission(self):
+        """COM 挂了、路径不存在等是**真失败**，不能被降级吞掉。"""
+        from core.shortcut import _is_permission_problem as f
+        for s in ("系统找不到指定的路径", "COM 初始化失败", ""):
+            self.assertFalse(f(s), f"{s!r} 被误判成权限问题，真失败会被藏起来")
+
+    def _patch_dirs(self, dirs):
+        p = patch("core.shortcut._deskdirs_windows", lambda: list(dirs))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_public_desktop_permission_is_info_not_error(self):
+        from core import shortcut as S
+        pub = Path("C:/Users/Public/Desktop")
+        mine = self.home / "Desktop"
+        self._patch_dirs([mine, pub])
+
+        def fake_ps(cmd, timeout=90):
+            if "Public" in cmd:                       # 模拟无写权限
+                class R:
+                    returncode = 1
+                    stderr = "拒绝访问。"
+                    stdout = ""
+                return R()
+            class R:
+                returncode = 0
+                stderr = ""
+                stdout = "ok"
+            return R()
+
+        p = patch("core.shortcut._ps", fake_ps)
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(Path, "exists", lambda self: True)
+        p.start()
+        self.addCleanup(p.stop)
+
+        made = S._shortcut_windows()
+        out = self.captured()
+        self.assertIn("[i]", out, "公共桌面无权限应降级为 [i] 提示")
+        self.assertNotIn("[x]", out,
+                         f"公共桌面降级仍打了 [x]，用户每次运行都看到像失败的红字：{out!r}")
+        self.assertTrue(made, "个人桌面建成功就该算成功，退出码不能受影响")
+
+    def test_personal_desktop_failure_stays_error(self):
+        """第一个目录（个人桌面）失败必须仍报 [x]——那是真故障。"""
+        from core import shortcut as S
+        mine = self.home / "Desktop"
+        self._patch_dirs([mine])
+
+        def fake_ps(cmd, timeout=90):
+            class R:
+                returncode = 1
+                stderr = "拒绝访问。"
+                stdout = ""
+            return R()
+
+        p = patch("core.shortcut._ps", fake_ps)
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(Path, "exists", lambda self: True)
+        p.start()
+        self.addCleanup(p.stop)
+
+        S._shortcut_windows()
+        self.assertIn("[x]", self.captured(),
+                      "个人桌面写不进是真问题，降级会把故障藏起来")
 
 
 if __name__ == "__main__":
