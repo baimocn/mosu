@@ -14,6 +14,7 @@ cap 条，会话真实的首条消息并不在样本里。后端为此在
 """
 import json
 import re
+import os
 import shutil
 import subprocess
 import unittest
@@ -24,8 +25,14 @@ VIEWS_INSIGHT = ROOT / "gui" / "assets" / "views-insight.js"
 APP_CSS = ROOT / "gui" / "assets" / "app.css"
 
 NODE = shutil.which("node")
+# Windows 上 node 常不在 PATH。只在测试环境里退回到常见安装位置，
+# 不硬编码个人目录——仓库是公开的。
 if not NODE:
-    for _cand in (r"C:\Users\35955\.workbuddy\binaries\node", r"C:\Program Files\nodejs"):
+    _cands = [os.environ.get("NODE_HOME") or ""]
+    _cands += [os.path.expandvars(r"%LOCALAPPDATA%\Programs\nodejs"),
+               os.path.expandvars(r"%ProgramFiles%\nodejs"),
+               os.path.expandvars(r"%ProgramFiles(x86)%\nodejs")]
+    for _cand in filter(None, _cands):
         _hits = sorted(Path(_cand).glob("**/node.exe"))
         if _hits:
             NODE = str(_hits[-1])

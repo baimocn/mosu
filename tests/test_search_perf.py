@@ -15,11 +15,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-DEFAULT_DB = r"D:\wechat-data\xwechat_files\wxid_qscqqvaviqat22_e027\db_storage"
-DB = os.environ.get("MOSU_DB_PATH", DEFAULT_DB)
+# 只从环境变量取数据库路径。**不要写死个人 wxid / 磁盘路径**——
+# 这是公开仓库，写进去等于公开账号标识和本机目录结构。
+# 需要跑这些断言时：
+#   set MOSU_DB_PATH=<你的 db_storage 目录>
+#   python -m unittest discover -s tests -p "test_search_perf.py"
+DB = os.environ.get("MOSU_DB_PATH", "")
 
 
 def _has_db() -> bool:
+    if not DB:
+        return False
     try:
         return Path(DB).exists() and Path(DB, "message", "message_0.db").exists()
     except Exception:
