@@ -147,12 +147,41 @@ API 都是死的，连取消都做不到，且没有任何超时能救。
 | 硬上限 | `ProfileDistiller.CONTACT_MAX_MSGS = 60000`。命中则 `overview.truncated = true`（`meta.truncated` 同步一份），前端提示「样本已达上限，仅基于最近 N 条」 |
 | 判据 | 由 `Dataset.raw_messages_page()` 在**去重之前**判定：任一分片能取到第 `limit+1` 条即视为截断。**不能**用「多取 1 条看 `len(rows) > limit`」——去重发生在跨分片合并之后，合并后总数必然 ≤ limit，该判据恒为假 |
 | 采样方向 | `order="desc"` 取**最近** cap 条，内部再排回升序供统计。取最早 cap 条等于让两年前的聊天决定今天的画像 |
+| 异步 | `/api/profile?async=1` 走 TaskHub，锁在 worker 内部拿而不是提交时拿——否则异步等于白做 |
+
+`meta.maxMsgs` 一并返回，前端不必把 60000 写死两遍。
 
 `self_profile` 的 `meta` 同样带 `truncated` / `maxMsgs`——23 万条的库必然触到
 60000 上限，不上报的话本人画像页永远不会提示，用户会把采样当全量。
-| 异步 | `?async=1` 走 TaskHub，锁在 worker 内部拿而不是提交时拿——否则异步等于白做 |
 
-`meta.maxMsgs` 一并返回，前端不必把 60000 写死两遍。
+> 注：`?async=1` 只对 `/api/profile` 生效，`/api/report` 目前是同步的。
+
+### ⚠️ 「首条消息」有两个口径，都对，别当 bug 排查
+
+同一份数据，两个页面可能显示**两个不同的首条日期**：
+
+| 来源 | 截断时给什么 | 为什么对 |
+|------|-------------|---------|
+| `/api/report` → `summary.firstMessage` | 会话**真实**首条 | report 不采样、全量聚合，没有"样本"概念 |
+| `/api/profile` → `milestones.firstMessage` | **样本内**最早一条，并带 `sampledOnly: true` | 画像只取最近 cap 条，真实首条可能根本不在样本里 |
+
+真实例子：`54362236371@chatroom` 的 report 给 `2026-05-25`，profile 给
+`2026-07-07`（采样窗口内最早）。**两者都不是 bug。** profile 那条已经带
+`sampledOnly`，前端会渲染成「样本内最早 · 非真实首条」。
+
+下一个人看到这个差异时：先看 `sampledOnly` 在不在，别急着当口径 bug 报。
+
+### `milestones.*.time` 的类型与 report 不同（已知，未统一）
+
+`milestones.firstMessage.time` / `firstVoice` / `firstImage` / `firstVideo` /
+`lastMessage` 的 `time` 是 **格式化字符串** `'2026-03-01 10:00'`（`profile._ts()`
+的 `strftime` 产物），而 `/api/report` 的 `summary.firstMessage.time` 是 **unix int**。
+
+**为什么没统一**：改成 int 必须**同时**改前端，否则画像页会显示成
+`17.80 亿`——`JsonView` 走 `humanVal()`，它对数字的兜底分支是 `M.fmtNum()`，
+而 `fmtNum(1779684168)` 会按万/亿缩写；`sampled-first` 卡片更是直接
+`{{ v.time }}` 原始渲染、不经过任何格式化。这不是后端单方面能决定的，
+需要前后端一起改，故保留现状并在此记录。
 
 ### `POST /api/persona`
 
