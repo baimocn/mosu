@@ -225,6 +225,68 @@
     },
   };
 
+  /* ---------------------------------------------------------------- 心理学维度 */
+  /* 为什么不用 JsonView：这一块的核心不是「有哪些字段」，而是
+     「每条判断的证据是什么、置信度多少、反例是什么」。
+     倒成 JSON 用户只能看到一行行数字，反而更容易把推测当成结论。 */
+  const PsychView = {
+    name: "PsychView",
+    props: { data: { type: Object, default: null } },
+    template: `
+    <div>
+      <div v-if="!dims.length" class="muted tiny">
+        {{ (data && data.method && data.method.note) || '样本不足，未生成心理学维度。' }}
+      </div>
+      <template v-else>
+        <div v-for="d in dims" :key="d.key" class="psych-dim">
+          <div class="psych-head">
+            <span class="psych-label">{{ d.label }}</span>
+            <span class="psych-conf" :class="'conf-' + d.confidence">{{ confText(d.confidence) }}</span>
+            <span class="spacer" style="flex:1"></span>
+            <span class="tiny muted">样本 {{ fmtNum(d.confidenceBasis) }}</span>
+          </div>
+          <div v-for="(e,i) in d.evidence" :key="i" class="psych-ev">
+            <div class="psych-ev-row">
+              <span class="psych-ev-beh">{{ e.behavior }}</span>
+              <span class="psych-ev-val">{{ fmtVal(e) }}</span>
+              <span class="tiny muted">样本 {{ fmtNum(e.basis) }}</span>
+            </div>
+            <div v-if="e.caveat" class="psych-caveat">
+              <span class="psych-caveat-tag">反例可能</span>{{ e.caveat }}
+            </div>
+          </div>
+        </div>
+        <div v-if="data.disclaimer" class="psych-note">{{ data.disclaimer }}</div>
+      </template>
+    </div>`,
+    computed: {
+      dims() { return (this.data && this.data.dimensions) || []; },
+    },
+    methods: {
+      fmtNum: (v) => M.fmtNum(v),
+      confText(c) {
+        return { high: "证据较强", medium: "证据中等", low: "证据较弱",
+                 insufficient: "证据不足" }[c] || c;
+      },
+      fmtVal(e) {
+        const v = e.value;
+        const beh = e.behavior || "";
+        /* 不能只判「值 ≤1 就当百分比」：「回复耗时比 1.47」是倍数，
+           按比例显示会变成 147%，直接读错。 */
+        if (beh.includes("之比") || (beh.includes("耗时") && beh.includes("/"))
+            || beh.includes("倍")) {
+          return String(v);
+        }
+        if (typeof v === "number" && v >= 0 && v <= 1) {
+          /* 用原始值判阈值：先 Math.round 会让 0.06% 变成 0.1%，夸大十倍 */
+          if (v * 100 < 0.1) return "<0.1%";
+          return String(Math.round(v * 1000) / 10) + "%";
+        }
+        return String(v);
+      },
+    },
+  };
+
   /* ---------------------------------------------------------------- 数据统计 */
   const Stats = {
     components: { JsonView },
@@ -646,6 +708,9 @@
       ["timeline", "关键节点", "取消息量最大的三个月，各配当月第一条消息，用来回忆当时在做什么。"],
       ["milestones", "重要时刻"],
       ["rhythm", "时段分布"],
+      ["psych", "心理学维度",
+        "从聊天行为反推的倾向，不是心理诊断。每条判断都标了证据、样本量和反例可能；"
+        + "证据不足时明确写「证据不足」，不给结论。"],
     ],
   };
   /** 这些键不进卡片：meta 进页首脚注，scope/session 已在页首体现。
@@ -654,7 +719,7 @@
   const PROFILE_HIDDEN = new Set(["meta", "scope", "session"]);
 
   const Insight = {
-    components: { JsonView, ReportView },
+    components: { JsonView, ReportView, PsychView },
     props: { kind: { type: String, default: "profile" } },   // profile | report
     template: `
     <div class="page">
@@ -710,6 +775,7 @@
               <span style="color:var(--brand)">›</span><span>{{ s }}</span>
             </div>
           </div>
+          <psych-view v-else-if="sec.key==='psych'" :data="data.psych" />
           <json-view v-else :data="data[sec.key]" />
         </div>
         <div v-if="restKeys.length" class="card">
@@ -861,5 +927,5 @@
   /* isHiddenField 导出去给测试断言：这些内部字段「不该出现在界面上」
      是一条会悄悄失效的规则，值得用测试钉住。 */
   global.MosuViews.__hidden = isHiddenField;
-  Object.assign(global.MosuViews, { JsonView, Stats, Insight, ReportView });
+  Object.assign(global.MosuViews, { JsonView, PsychView, Stats, Insight, ReportView });
 })(window);

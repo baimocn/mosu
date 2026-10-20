@@ -459,7 +459,7 @@ class ProfileDistiller:
         # ---- 关键事件时间线（消息量 top 月 + 当月首条）
         timeline = self._timeline(msgs, monthly)
 
-        return {
+        result = {
             "scope": "contact",
             "session": {"sessionId": sess["sessionId"], "displayName": sess["displayName"],
                         "type": sess["type"]},
@@ -496,6 +496,20 @@ class ProfileDistiller:
             "milestones": milestones,
             "timeline": timeline,
         }
+        # 心理学维度：用**刚组装好的** result 当输入，保证与页面上的统计数字同源。
+        # 单独重算一遍统计会得到两套口径，改一处忘一处就不一致。
+        result["psych"] = self._psych(result, msgs)
+        return result
+
+    def _psych(self, prof: dict, msgs: list[dict]) -> dict:
+        """心理学维度（依赖原始文本，故在拿到 msgs 的这一层调用）。"""
+        try:
+            from core.psych import PsychAnalyzer
+        except Exception:          # noqa: BLE001
+            return {"dimensions": [], "method": {"note": "psych 模块不可用"}}
+        mine = [m["text"] for m in msgs if m["direction"] == "out" and m["text"]]
+        theirs = [m["text"] for m in msgs if m["direction"] != "out" and m["text"]]
+        return PsychAnalyzer().analyze(prof, texts_mine=mine, texts_theirs=theirs)
 
     def _topic_hits(self, texts) -> list[dict]:
         out = []
@@ -756,6 +770,14 @@ class ProfileDistiller:
                      + (f"｜峰值日 {x['peakDay']['day']}（{x['peakDay']['count']} 条）"
                         if x.get("peakDay") else ""))
         L.append("")
+        # 心理学维度（CLI 输出也带上，否则命令行用户看不到这部分能力）
+        psych = d.get("psych") or {}
+        if psych.get("dimensions"):
+            from core.psych import render_psych
+            L.append("## 心理学维度")
+            L.append("")
+            L.append(render_psych(psych))
+            L.append("")
         L.append("---")
         L.append("*由墨溯 mosu profile 生成｜纯本地统计，无外部调用*")
         return "\n".join(L)

@@ -1033,3 +1033,37 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .fatal-actions { display: flex; gap: 8px; justify-content: center; }
+
+/* ---- 心理学维度：证据 → 判断 → 置信度 ---- */
+.psych-dim { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.psych-dim:last-of-type { border-bottom: none; }
+.psych-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.psych-label { font-weight: 600; font-size: 13px; color: var(--text); }
+.psych-conf {
+  font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.conf-high { background: rgba(16,185,129,.12); color: #047857; border-color: rgba(16,185,129,.3); }
+.conf-medium { background: rgba(245,158,11,.12); color: #b45309; border-color: rgba(245,158,11,.3); }
+.conf-low { background: rgba(107,114,128,.12); color: #4b5563; border-color: rgba(107,114,128,.3); }
+.conf-insufficient { background: transparent; color: var(--text-2); border-color: var(--border); }
+
+.psych-ev { padding: 6px 0 6px 10px; border-left: 2px solid var(--border); margin-bottom: 4px; }
+.psych-ev-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.psych-ev-beh { font-size: 12.5px; color: var(--text-2); }
+.psych-ev-val { font-weight: 600; font-size: 13px; color: var(--text);
+                font-variant-numeric: tabular-nums; }
+.psych-caveat {
+  margin-top: 4px; font-size: 11.5px; line-height: 1.5;
+  color: var(--text-2); opacity: .8;
+}
+.psych-caveat-tag {
+  display: inline-block; margin-right: 6px; padding: 0 6px;
+  border-radius: 4px; background: rgba(245,158,11,.15); color: #b45309;
+  font-size: 10.5px; font-weight: 600;
+}
+.psych-note {
+  margin-top: 14px; padding: 10px 12px; border-radius: var(--r-sm);
+  background: rgba(107,114,128,.06); font-size: 11.5px; line-height: 1.6;
+  color: var(--text-2);
+}
