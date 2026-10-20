@@ -68,19 +68,31 @@ def _demo_text(text: str) -> str:
     return "我昨天试了一下，整体效果还不错，细节我们再对一下"
 
 
+def _mask_one_path(s: str) -> str:
+    """演示模式：抹掉单条字符串里的本机路径。
+
+    抽成独立函数，让日志脱敏（_mask_paths）和语料来源脱敏（api_aicorpus）
+    共用同一套规则——两份规则各写一遍，迟早会不一致，
+    而这类不一致的结果是截图里露出一条路径。
+    """
+    import re
+    home = os.path.expanduser("~")
+    pats = [
+        (re.compile(r"[A-Za-z]:[\\/](?:[^\\/\s:]+[\\/])*Users[\\/][^\\/\s:]+", re.I), "<HOME>"),
+        (re.compile(re.escape(home), re.I), "<HOME>"),
+        (re.compile(r"[A-Za-z]:[\\/](?:[^\\/\s:]+[\\/])*wechat_files[^\\/\s:]*", re.I), "<WECHAT_DATA>"),
+    ]
+    for p, r in pats:
+        s = p.sub(r, s)
+    return s
+
+
 def _mask_paths(events: list) -> list:
     """演示模式：抹掉日志里的本机路径与账号（用于生成公开截图）。
 
     日志行形如 `启动，长轮询中 base=... 日志=C:\\Users\\xxx\\.mosu\\app.log`，
     直接把家目录路径摆到 README 截图上，等于公开本机目录结构。
     """
-    import re
-    home = os.path.expanduser("~")
-    pats = [
-        (re.compile(r"[A-Za-z]:[\\/](?:[^\\/\s:]+[\\/])*Users[\\/][^\\/\s:]+", re.I), r"<HOME>"),
-        (re.compile(re.escape(home), re.I), r"<HOME>"),
-        (re.compile(r"[A-Za-z]:[\\/](?:[^\\/\s:]+[\\/])*wechat_files[^\\/\s:]*", re.I), r"<WECHAT_DATA>"),
-    ]
     out = []
     for e in events:
         # 事件是 dict（time/kind/text），不是纯字符串——只处理 str 会导致
@@ -89,14 +101,10 @@ def _mask_paths(events: list) -> list:
             d = dict(e)
             for k in ("text", "message", "msg"):
                 if isinstance(d.get(k), str):
-                    for p, r in pats:
-                        d[k] = p.sub(r, d[k])
+                    d[k] = _mask_one_path(d[k])
             out.append(d)
         else:
-            s = str(e)
-            for p, r in pats:
-                s = p.sub(r, s)
-            out.append(s)
+            out.append(_mask_one_path(str(e)))
     return out
 
 
@@ -933,6 +941,34 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
             return pd.self_profile(from_ts=from_ts, to_ts=to_ts)
 
+    def api_aicorpus(q) -> dict:
+        """AI 对话语料统计（读 ~/.workbuddy 等目录，与微信库无关）。
+
+        独立端点而不是塞进 /api/profile：语料来源完全不同（本地 jsonl 而非
+        SQLCipher 库），混在一起会让"画像耗时 5 秒"这件事更难解释。
+        """
+        from core import aicorpus
+        max_chars = int(q.get("maxChars") or 0) or None
+        srcs = aicorpus.discover()
+        if not srcs:
+            return {"available": False, "sources": [],
+                    "hint": "没找到 AI 对话记录目录（~/.workbuddy/projects 等）"}
+        turns, stats = aicorpus.collect(srcs, max_chars=max_chars)
+        feat = aicorpus.style_features(turns)
+        demo = bool(getattr(get_ds(), "demo", False)) if get_ds() else False
+
+        def _root(p: str) -> str:
+            """演示模式下抹掉本机主目录，截图不泄露用户名。"""
+            return _mask_one_path(p) if demo else p
+
+        return {
+            "available": True,
+            "sources": [{"name": s.name, "root": _root(str(s.root)), "note": s.note}
+                        for s in srcs],
+            "stats": stats,
+            "features": feat,
+        }
+
     def api_report(q) -> dict:
         year = q.get("year")
         session = (q.get("session") or "").strip()
@@ -1255,6 +1291,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/contacts": (api_contacts, True),
         "/api/contact": (api_contact, True),
         "/api/profile": (api_profile, True),
+        "/api/aicorpus": (api_aicorpus, True),
         "/api/report": (api_report, True),
         "/api/accounts": (api_accounts, False),
         "/api/config": (api_config, False),

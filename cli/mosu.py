@@ -703,6 +703,42 @@ def cmd_wechat(args, ds: Dataset):
         return wx.run_serve(str(corpus), once=args.once)
 
 
+# ---------------------------------------------------------------- aicorpus（AI 对话语料）
+def cmd_aicorpus(args, ds):
+    """把本机各 AI 工具的对话记录接成语料。
+
+    不需要微信数据（ds 可能为 None），这是它与其它命令的区别——
+    语料来源是 `.workbuddy` / `.claude` 等目录，跟微信库无关。
+    """
+    from core import aicorpus
+
+    srcs = aicorpus.discover()
+    if not srcs:
+        sys.exit("[x] 没找到任何 AI 对话记录目录\n"
+                 "    这几个都不存在：~/.workbuddy/projects、~/.claude/projects、"
+                 "~/.iflow/projects、~/.reasonix/sessions")
+    if not getattr(args, "quiet", False):
+        print(f"  [i] 发现 {len(srcs)} 个来源：", file=sys.stderr)
+        for s in srcs:
+            print(f"      {s.name:10s} {s.root}  （{s.note}）", file=sys.stderr)
+
+    max_chars = getattr(args, "max_chars", None)
+    turns, stats = aicorpus.collect(srcs, max_chars=max_chars)
+    feat = aicorpus.style_features(turns)
+
+    if args.format in ("json", "jsonl"):
+        emit({"stats": stats, "features": feat}, args.format)
+        return
+
+    print(aicorpus.render_markdown(turns, stats, feat))
+
+    if args.output:
+        out = Path(args.output)
+        r = aicorpus.write_corpus(turns, out)
+        print(f"\n[✓] 语料已写出 → {r['jsonl']}")
+        print(f"    共 {r['turns']:,} 条，按项目分 {r['projects']} 个文件（{out / 'by_project'}）")
+
+
 # ---------------------------------------------------------------- persona（个人 bot 语料）
 def cmd_persona(args, ds: Dataset):
     from core.persona import build_persona
@@ -1115,6 +1151,14 @@ def build_parser():
     p.add_argument("--output", help="输出目录，默认 <项目>/persona")
     p.set_defaults(func=cmd_persona)
 
+    p = sub.add_parser("aicorpus",
+                       help="AI 对话语料：把 .workbuddy/.claude 等目录的对话记录接进语料库",
+                       parents=[common])
+    p.add_argument("--output", help="输出目录（给出才会写盘，否则只打印报告）")
+    p.add_argument("--max-chars", dest="max_chars", type=int, default=None,
+                   help="只取最近 N 个字符（画像用，避免全量太重）")
+    p.set_defaults(func=cmd_aicorpus)
+
     p = sub.add_parser("profile", help="画像蒸馏（不给会话名=全库个人画像）",
                        parents=[common])
     p.add_argument("session", nargs="?", help="联系人/群名；不给则蒸馏全库个人画像")
@@ -1171,7 +1215,7 @@ def main():
                      quiet=args.quiet, with_wal=args.with_wal, account=wxid)
     except SystemExit:
         # account/config 是配置管理命令，本身不碰数据，没配好也要能跑
-        if args.cmd in ("account", "config"):
+        if args.cmd in ("account", "config", "aicorpus"):
             ds = None
         else:
             raise

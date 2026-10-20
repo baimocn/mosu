@@ -1067,3 +1067,39 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
   background: rgba(107,114,128,.06); font-size: 11.5px; line-height: 1.6;
   color: var(--text-2);
 }
+
+/* ---- AI 对话语料：来源 / 规模 / 需求分布 ---- */
+.kv-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px; margin-top: 12px;
+}
+.kv-item { padding: 10px 12px; border-radius: var(--r-sm);
+           background: rgba(107,114,128,.06); }
+.kv-k { font-size: 11.5px; color: var(--text-2); margin-bottom: 4px; }
+.kv-v { font-size: 17px; font-weight: 600; color: var(--text);
+        font-variant-numeric: tabular-nums; }
+
+.intent-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+.intent-name { font-size: 12.5px; color: var(--text-2); min-width: 76px; }
+.intent-bar {
+  flex: 1; height: 8px; border-radius: 999px; overflow: hidden;
+  background: rgba(107,114,128,.12);
+}
+.intent-bar i {
+  display: block; height: 100%; border-radius: 999px;
+  background: var(--brand, #2563eb); transition: width .2s ease;
+}
+.intent-num {
+  font-size: 12.5px; min-width: 42px; text-align: right;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+
+.proj-row {
+  display: flex; align-items: baseline; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.proj-row:last-child { border-bottom: none; }
+.proj-name { flex: 1; color: var(--text-2); word-break: break-all; }
+.proj-num {
+  font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums;
+}

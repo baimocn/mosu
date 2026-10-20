@@ -730,6 +730,10 @@
                 v-if="kind==='profile'">我的画像</button>
         <button class="chip" :class="{active: mode==='contact'}" @click="setMode('contact')"
                 v-if="kind==='profile'">联系人画像</button>
+        <!-- AI 对话语料：另一个数据源（本机 .workbuddy 等目录），跟微信库无关。
+             放在同一页是因为它回答的是同一个问题——「我是谁」，只是说话对象不同。 -->
+        <button class="chip" :class="{active: mode==='ai'}" @click="setMode('ai')"
+                v-if="kind==='profile'">AI 对话</button>
         <select class="select" style="width:280px" v-if="mode==='contact'"
                 v-model="picked" @change="load">
           <option value="">选择一个会话…</option>
@@ -766,6 +770,68 @@
       <template v-else-if="data && kind==='report'">
         <report-view :data="data" />
       </template>
+      <!-- AI 对话语料：结构不同于微信画像，用专用排版。
+           用独立的 v-if（带上 !loading）而不是接在 v-else-if 链上：
+           上面有两个并列的 v-if="loading"，第二个会开启新的条件链，
+           挂在它后面的 v-else-if 实际绑定的是「loading 为假」，
+           于是 err / report / 画像分支的分支关系全乱。
+           这里显式写全条件，不依赖链式推断。 -->
+      <div v-if="!loading && !err && data && mode==='ai'">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title">数据来源</div>
+          <div class="card-sub">这些是你在各 AI 工具里敲的字，全部从本机目录读取，不上传。</div>
+          <div v-for="s in (data.sources || [])" :key="s.name" class="tiny"
+               style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+            <b style="min-width:88px">{{ s.name }}</b>
+            <span class="muted" style="flex:1;word-break:break-all">{{ s.root }}</span>
+          </div>
+          <div v-if="data.hint" class="notice" style="margin-top:10px">{{ data.hint }}</div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px" v-if="data.stats">
+          <div class="card-title">语料规模</div>
+          <div class="kv-grid">
+            <div class="kv-item"><div class="kv-k">有效输入</div>
+              <div class="kv-v">{{ fmtNum(data.stats.byRole.user) }} 条</div></div>
+            <div class="kv-item"><div class="kv-k">压缩摘要</div>
+              <div class="kv-v">{{ fmtNum(data.stats.byRole.summary) }} 条</div></div>
+            <div class="kv-item"><div class="kv-k">总字符</div>
+              <div class="kv-v">{{ fmtNum(data.stats.chars) }}</div></div>
+            <div class="kv-item"><div class="kv-k">涉及项目</div>
+              <div class="kv-v">{{ data.stats.projects }} 个</div></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px" v-if="data.features && data.features.turns">
+          <div class="card-title">我怎么向 AI 提需求</div>
+          <div class="card-sub">
+            只用措辞判定，不做性格推断。看不清的地方留空，不猜。
+          </div>
+          <div class="kv-grid">
+            <div class="kv-item"><div class="kv-k">单条中位长度</div>
+              <div class="kv-v">{{ data.features.medianLen }} 字</div></div>
+            <div class="kv-item"><div class="kv-k">P90 长度</div>
+              <div class="kv-v">{{ data.features.p90Len }} 字</div></div>
+            <div class="kv-item"><div class="kv-k">模糊表达占比</div>
+              <div class="kv-v">{{ (data.features.vagueRate*100).toFixed(1) }}%</div></div>
+          </div>
+          <div style="margin-top:14px">
+            <div v-for="(v,k) in data.features.intent" :key="k" class="intent-row">
+              <span class="intent-name">{{ k }}</span>
+              <div class="intent-bar"><i :style="{width: barW(v, data.features.turns)}"></i></div>
+              <span class="intent-num">{{ v }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" v-if="data.stats && data.stats.topProjects">
+          <div class="card-title">主要项目</div>
+          <div v-for="p in data.stats.topProjects" :key="p[0]" class="proj-row">
+            <span class="proj-name">{{ p[0] }}</span>
+            <span class="proj-num">{{ p[1] }}</span>
+          </div>
+        </div>
+      </div>
       <template v-else-if="data">
         <div class="tiny muted" v-if="metaLine" style="margin-bottom:12px">{{ metaLine }}</div>
         <div class="notice" v-if="isGroupContact" style="margin-bottom:12px">
@@ -886,13 +952,21 @@
       setMode(m) {
         this.mode = m;
         if (m === "self") { this.picked = ""; this.load(); }
+        else if (m === "ai") { this.load(); }
         else { this.data = null; }
+      },
+      /** 需求类型条宽：按占总输入数的比例，最小 2% 保证可见 */
+      barW(v, total) {
+        if (!total) return "2%";
+        return Math.max(2, Math.round((v / total) * 100)) + "%";
       },
       async load() {
         if (this.kind === "profile" && this.mode === "contact" && !this.picked) return;
         this.loading = true; this.err = "";
         try {
-          if (this.kind === "profile") {
+          if (this.kind === "profile" && this.mode === "ai") {
+            this.data = await M.api.get("/api/aicorpus");
+          } else if (this.kind === "profile") {
             await this.loadProfile();
           } else {
             this.data = await M.api.get("/api/report", this.year ? { year: this.year } : {});
