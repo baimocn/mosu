@@ -23,6 +23,9 @@
       <div v-if="probeInfo" class="notice" style="margin-bottom:14px">
         <b>{{ probeInfo.title }}</b>
         <div class="tiny" style="margin-top:4px;opacity:.85">{{ probeInfo.desc }}</div>
+        <ul v-if="probeInfo.tips" class="tiny" style="margin:6px 0 0 18px;opacity:.75">
+          <li v-for="(t,i) in probeInfo.tips" :key="i">{{ t }}</li>
+        </ul>
       </div>
 
       <div v-if="unsupported" class="empty">
@@ -210,10 +213,18 @@
         let dead = 0;
         for (const [k, v] of Object.entries(this.probeOk)) if (!v) dead++;
         if (!dead) return null;
+        // 归因要准。实测腾讯图床对这些地址返回的是 400 + X-ErrNo:-106
+        // （「URL 格式无效」），而不是明确的「已删除」；本机 media/msg 目录
+        // 又没有对应文件。所以能确定的是「现在取不到」，不能断定是过期。
         return {
-          title: `本页有 ${dead} 张图已无法取到`,
-          desc: "原因：这些图片的微信临时凭证（token）已过期，且本机没有缓存副本。"
-              + "补救办法：在电脑版微信里重新刷一遍这条朋友圈，微信会把图片缓存到本机，之后这里就能正常显示了。",
+          title: `本页有 ${dead} 张图目前取不到`,
+          desc: "朋友圈图片存在微信服务器上，本机没有缓存副本，直连图床被拒绝。"
+              + "可靠的办法：在电脑版微信里把这条朋友圈**重新打开一次**，"
+              + "微信会把原图缓存到本地，之后这里就能正常显示（本工具优先读本地）。",
+          tips: [
+            "图中图片来自「远程」时依赖微信服务器，历史内容可能已不可取",
+            "本地已下载的图片不依赖网络，任何时候都能看",
+          ],
         };
       },
     },
