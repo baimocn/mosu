@@ -372,14 +372,35 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         }
 
     def api_search(q) -> dict:
+        """关键词搜索（全库；带 session 则限定单会话）。
+
+        支持 offset 翻页：命中总数在 total 里，messages 是 [offset, offset+limit)。
+        以前只返回前 limit 条并丢掉 total，用户搜「项目」拿到 80 条，
+        根本不知道其实有 2000+ 条、也无法翻页——那是「看起来能用、结论其实错」。
+        """
+        import time as _t
         kw = (q.get("q") or "").strip()
         if not kw:
-            return {"total": 0, "messages": []}
+            return {"total": 0, "messages": [], "offset": 0, "hasMore": False}
         limit = max(1, min(int(q.get("limit", 50)), 200))
+        offset = max(0, int(q.get("offset", 0) or 0))
+        session = (q.get("session") or "").strip() or None
+        order = "asc" if str(q.get("order") or "") == "asc" else "desc"
+        # fast=1：命够几页就返回，不遍历全库只为算精确总数（默认开）。
+        # 用户要的是"先看到结果"，不是"等 2 秒知道一共 2344 条"。
+        # 传 fast=0 才做精确统计。翻页时 fast 模式会多收几页，够翻 2-3 页。
+        fast = str(q.get("fast") or "1") not in ("0", "false", "no")
+        t0 = _t.time()
         with _ds_lock:
-            r = get_ds().search(kw, limit=limit)
+            r = get_ds().search(kw, session=session, limit=limit, offset=offset,
+                               order=order, fast=fast)
         return {
             "total": r["total"],
+            "countExact": r.get("countExact", True),
+            "offset": offset,
+            "limit": limit,
+            "hasMore": bool(r.get("hasMore")),
+            "elapsedMs": int((_t.time() - t0) * 1000),
             "messages": [{
                 "createTime": m["createTime"],
                 "sessionName": m.get("sessionName") or "",

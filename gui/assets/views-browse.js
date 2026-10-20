@@ -205,7 +205,23 @@
               </button>
             </div>
             <div class="divider"></div>
-            <div v-if="sResults.length" style="max-height:52vh;overflow-y:auto">
+            <!-- 搜索要遍历全库 23 万条，肯定不是瞬时。没有文字提示时，
+                 用户会以为「点了没反应」——验收时就真被误判过一次。 -->
+            <div v-if="searching" class="tiny muted" style="padding:6px 0">
+              正在搜索全部会话，约需数秒…
+            </div>
+            <div v-else-if="searched && sTotal !== null" class="tiny muted"
+                 style="padding:6px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span v-if="sExact">共 <b>{{ fmtNum(sTotal) }}</b> 条命中，当前显示
+                {{ sResults.length ? (sOffset + 1) + '–' + (sOffset + sResults.length) : 0 }} 条</span>
+              <span v-else>命中的消息很多（至少 {{ fmtNum(sTotal) }} 条），当前显示
+                {{ sResults.length ? (sOffset + 1) + '–' + (sOffset + sResults.length) : 0 }} 条</span>
+              <span v-if="sElapsed" style="opacity:.7">· 耗时 {{ (sElapsed/1000).toFixed(1) }}s</span>
+              <button v-if="!sExact" class="btn btn-sm" @click="exactCount" :disabled="searching">
+                统计精确总数
+              </button>
+            </div>
+            <div v-if="sResults.length" style="max-height:48vh;overflow-y:auto">
               <div v-for="(r,i) in sResults" :key="i" class="session-item"
                    style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px"
                    @click="jump(r)">
@@ -217,6 +233,15 @@
               </div>
             </div>
             <div v-else-if="searched" class="empty"><div class="empty-title">没有找到</div></div>
+            <!-- 翻页：以前只能看到前 80 条、也不知道还有多少 -->
+            <div v-if="hasMore || sOffset > 0" style="display:flex;gap:8px;justify-content:center;padding:10px 0">
+              <button class="btn btn-sm" @click="searchPage(-1)" :disabled="sOffset === 0 || searching">
+                上一页
+              </button>
+              <button class="btn btn-sm" @click="searchPage(1)" :disabled="!hasMore || searching">
+                下一页
+              </button>
+            </div>
           </div>
           <div class="modal-foot">
             <button class="btn" @click="searchOpen=false">关闭</button>
@@ -235,6 +260,7 @@
         total: null,
         fType: "", fDir: "", fFrom: "", fTo: "",
         searchOpen: false, sq: "", sResults: [], searched: false, searching: false,
+        sTotal: null, sOffset: 0, hasMore: false, sElapsed: 0, sExact: true,
         lightbox: null,
         art: ART,
       };
@@ -378,13 +404,39 @@
       onScroll(e) {
         if (e.target.scrollTop < 40 && this.hasMore && !this.loadingMore) this.loadMore();
       },
-      openSearch() { this.searchOpen = true; this.sq = ""; this.sResults = []; this.searched = false; },
+      openSearch() { this.searchOpen = true; this.sq = ""; this.sResults = []; this.searched = false;
+                     this.sTotal = null; this.sOffset = 0; this.hasMore = false; this.sElapsed = 0; },
       async doSearch() {
+        if (!this.sq.trim()) return;
+        this.sOffset = 0;
+        await this.runSearch();
+      },
+      /** 翻页：dir=-1 上一页，dir=1 下一页。
+       *  翻页一律走精确模式——fast 模式只扫了最近的一批命中，
+       *  继续往后翻会翻到空页，看起来像「没有了」。 */
+      async searchPage(dir) {
+        const step = 80;
+        if (dir < 0 && this.sOffset === 0) return;
+        this.sOffset = Math.max(0, this.sOffset + dir * step);
+        await this.runSearch(true);
+      },
+      /** 用户主动要精确总数时才做全库统计（慢） */
+      async exactCount() {
+        await this.runSearch(true);
+      },
+      async runSearch(exact) {
         if (!this.sq.trim()) return;
         this.searching = true; this.searched = false;
         try {
-          const d = await M.api.get("/api/search", { q: this.sq.trim(), limit: 80 });
+          const d = await M.api.get("/api/search", {
+            q: this.sq.trim(), limit: 80, offset: this.sOffset,
+            fast: exact ? 0 : 1,
+          });
           this.sResults = d.messages || [];
+          this.sTotal = d.total ?? 0;
+          this.sExact = d.countExact !== false;
+          this.hasMore = !!d.hasMore;
+          this.sElapsed = d.elapsedMs || 0;
           this.searched = true;
           if (!this.sResults.length) M.toast("没有找到相关消息");
         } catch (e) { M.toast.err("搜索失败：" + e.message); }
