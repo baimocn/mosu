@@ -57,9 +57,24 @@ const vm2 = (obj) => {
   inst.isHiddenField = (k) => win.MosuViews.__hidden(k);
   return Object.keys(fn.call(inst));
 };
-const SAMPLED = { time: '2026-07-07 21:33', who: '对方', content: '（无正文）', sampledOnly: true };
+const SAMPLED = { time: '2026-07-07 21:33', who: '对方', content: '（真实文本）', sampledOnly: true };
 const REAL   = { time: '2026-05-01 09:00', who: '对方', content: '你好' };
+// 实测 14.9 万条的群：纯媒体里程碑的 content 是 null（本来就没正文），
+// 首条文本消息的 content 是空串。这两种空值语义不同，不能混为一谈。
+const KINDS = {
+  firstMessage: { time: 't', who: '对方', content: '', sampledOnly: true },
+  firstImage:   { time: 't', who: '对方', content: null, sampledOnly: true },
+  firstVoice:   { time: 't', who: '对方', content: null, sampledOnly: true },
+  firstVideo:   { time: 't', who: '对方', content: null, sampledOnly: true },
+};
 console.log(JSON.stringify({
+  body: Object.fromEntries(Object.keys(KINDS).map((k) =>
+    [k, J.methods.bodyOf(k, KINDS[k])])),
+  tip: Object.fromEntries(Object.keys(KINDS).map((k) =>
+    [k, J.methods.sampledTip(k)])),
+  blankBody: J.methods.bodyOf('firstMessage', { content: '   ' }),
+  textBody:  J.methods.bodyOf('firstMessage', { content: '有内容' }),
+  unknownBody: J.methods.bodyOf('somethingElse', { content: null }),
   sampledIsSampled: J.methods.isSampledFirst(SAMPLED),
   realIsSampled:    J.methods.isSampledFirst(REAL),
   nullIsSampled:    J.methods.isSampledFirst(null),
@@ -152,6 +167,72 @@ class TestSampledOnlyRendering(unittest.TestCase):
                       "样本内首条没有警示竖线，用户看不出它与真实首条不同")
         self.assertIn("cursor", body,
                       "没有 cursor:help，tooltip 在鼠标形态下不会被触发")
+
+
+class TestMilestoneBodyWording(unittest.TestCase):
+    """纯媒体里程碑的正文措辞。
+
+    缺陷实测（测试验收师报）：14.9 万条的群里四条里程碑并排显示「（无正文）」，
+    观感像功能坏了。但「无正文」本身是**错的措辞**——图片/视频/语音本来就
+    没有正文，content 为 null 是正常的，不是内容丢失。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        env = dict(os.environ, MOSU_VIEWS=str(VIEWS_INSIGHT))
+        r = subprocess.run([_node(), "-e", _SANDBOX],
+                           capture_output=True, text=True, timeout=60,
+                           cwd=str(ROOT), env=env)
+        if r.returncode != 0:
+            raise AssertionError(f"加载 views-insight.js 失败：\n{r.stderr[:800]}")
+        cls.o = json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_media_milestones_do_not_say_no_body(self):
+        """媒体类里程碑不得显示「无正文」——那是把「本来就没有」说成了「内容丢了」。"""
+        for k in ("firstImage", "firstVideo", "firstVoice"):
+            self.assertNotIn(
+                "无正文", self.o["body"][k],
+                f"{k} 显示「{self.o['body'][k]}」，会让用户以为内容丢了")
+
+    def test_media_milestones_name_their_type(self):
+        """媒体类应说明是什么消息，让这一行仍有信息量。"""
+        self.assertEqual(self.o["body"]["firstImage"], "（图片消息）")
+        self.assertEqual(self.o["body"]["firstVideo"], "（视频消息）")
+        self.assertEqual(self.o["body"]["firstVoice"], "（语音消息）")
+
+    def test_empty_text_says_no_text_factually(self):
+        """首条文本消息 content 为空串：说「该条无文字」而不是「无正文」——
+        它确实是条消息，只是不带文字。"""
+        self.assertEqual(self.o["body"]["firstMessage"], "（该条无文字）")
+
+    def test_blank_and_real_text_pass_through(self):
+        self.assertEqual(self.o["blankBody"], "（该条无文字）",
+                         "纯空白应按无文字处理")
+        self.assertEqual(self.o["textBody"], "有内容",
+                         "有正文时必须原样显示，不能被兜底文案覆盖")
+
+    def test_unknown_key_falls_back_safely(self):
+        """后端将来加新的 first* 类型时，不该渲染出 undefined。"""
+        self.assertEqual(self.o["unknownBody"], "（该条无文字）")
+
+    def test_wording_is_consistent_across_four_kinds(self):
+        """四项措辞不得雷同到看不出区别——那等于没分化。"""
+        bodies = [self.o["body"][k] for k in
+                  ("firstMessage", "firstImage", "firstVideo", "firstVoice")]
+        self.assertEqual(len(set(bodies)), 4,
+                         f"四项正文文案有重复：{bodies}")
+
+    def test_tooltip_is_specific_per_kind(self):
+        """tooltip 原先统一说「第一次聊天」，对图片/视频不准确。"""
+        self.assertIn("第一次聊天", self.o["tip"]["firstMessage"])
+        for k, what in (("firstImage", "第一张图片"),
+                        ("firstVideo", "第一个视频"),
+                        ("firstVoice", "第一条语音")):
+            self.assertIn(what, self.o["tip"][k],
+                          f"{k} 的 tooltip 未指明是「{what}」")
+            self.assertNotIn("第一次聊天", self.o["tip"][k],
+                             f"{k} 的 tooltip 不该说「第一次聊天」")
 
 
 class TestSampledWording(unittest.TestCase):

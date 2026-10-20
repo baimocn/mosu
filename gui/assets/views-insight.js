@@ -127,10 +127,10 @@
               <!-- 截断样本里的「首条消息」不是会话真实首条，必须换个说法。
                    走通用 KV 会渲染成「样本内最早: true」，既噪音又没传达意思。 -->
               <div v-if="isSampledFirst(v)" class="sampled-first"
-                   title="本次分析已达样本上限，这条是样本范围内最早的一条，不是你们真正的第一次聊天。">
+                   :title="sampledTip(k)">
                 <span class="badge badge-warn">样本内最早</span>
                 <span class="muted tiny">非真实首条</span>
-                <div style="margin-top:4px">{{ v.content || '（无正文）' }}</div>
+                <div style="margin-top:4px">{{ bodyOf(k, v) }}</div>
                 <div class="tiny muted" style="margin-top:2px">
                   {{ v.who || '—' }} · {{ v.time || '—' }}
                 </div>
@@ -176,6 +176,28 @@
        */
       isSampledFirst(v) {
         return !!v && typeof v === "object" && !Array.isArray(v) && v.sampledOnly === true;
+      },
+      /**
+       * 图片 / 视频 / 语音**本来就没有正文**，不是内容丢了。
+       * 统一显示「（无正文）」会让这屏看起来像出了故障——实测 14.9 万条的群，
+       * 四条里程碑全是「无正文」，用户第一反应是「这功能坏了」。
+       * 按字段语义给不同的说法，纯媒体项只报类型与时间即可。
+       */
+      bodyOf(k, v) {
+        const c = v.content;
+        if (c === null || c === undefined) {
+          return { firstImage: "（图片消息）", firstVideo: "（视频消息）",
+                   firstVoice: "（语音消息）" }[k] || "（该条无文字）";
+        }
+        if (String(c).trim() === "") return "（该条无文字）";
+        return c;
+      },
+      /** tooltip 也要分项：语音/图片的「第一次」与「第一次聊天」不是一回事 */
+      sampledTip(k) {
+        const what = { firstMessage: "第一次聊天", firstVoice: "第一条语音",
+                       firstImage: "第一张图片", firstVideo: "第一个视频" }[k] || "这一项";
+        return `本次分析已达样本上限，这里显示的是样本范围内的${what}，`
+             + "不是这个会话真实的第一次。";
       },
       fmtVal(v, k) { return humanVal(v, k); },
       pctOf(r) { return typeof r === "number" ? Math.round(r * 1000) / 10 + "%" : "—"; },
