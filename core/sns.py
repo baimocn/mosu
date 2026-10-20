@@ -159,15 +159,21 @@ class Moments:
             e = out.setdefault(key, {"likes": 0, "likeUsers": [], "comments": 0, "commentList": []})
             content = (r["content"] or "").strip()
             who = r["from_username"] or ""
-            name = (r["from_nickname"] or "").strip() or self.ds.display_name(who) if who else ""
+            # 昵称优先用 contacts 的解析结果（演示模式下已被脱敏）；
+            # from_nickname 是朋友圈里存的原始昵称，演示模式下不能直接用。
+            name = "" if self.ds.demo else ((r["from_nickname"] or "").strip())
+            if not name and who:
+                name = self.ds.display_name(who)
             if content:
                 e["comments"] += 1
-                e["commentList"].append({"username": who, "displayName": name,
+                # 演示模式：评论人的 wxid 与真实昵称都要打码
+                e["commentList"].append({"username": self.ds.mask_id(who),
+                                         "displayName": self.ds.display_name(who) if who else name,
                                          "content": content, "createTime": r["create_time"]})
             else:
                 e["likes"] += 1
                 if who:
-                    e["likeUsers"].append(who)
+                    e["likeUsers"].append(self.ds.mask_id(who))
         self._inter_cache = out
         return out
 
@@ -188,6 +194,11 @@ class Moments:
             author = e.get("username") or r["user_name"]
             if user and user not in (author, r["user_name"]):
                 continue
+            # 演示模式：过滤必须用真实 author 判断（否则按作者筛选会失效），
+            # 所以打码放在过滤之后。漏掉这一步，朋友圈页会露出
+            # 「wxid_xjbtm40u7qyq22」这类真实账号。
+            if self.ds.demo and e.get("likeUsers"):
+                e["likeUsers"] = [self.ds.mask_id(u) for u in e["likeUsers"]]
             if from_ts and ct < from_ts:
                 continue
             if to_ts and ct > to_ts:
@@ -195,9 +206,15 @@ class Moments:
             rows.append({
                 "id": e.get("id") or str(r["tid"]),
                 "tid": str(r["tid"]),
-                "author": {"wxid": author, "displayName": self.ds.display_name(author)},
+                # 演示模式：作者 wxid 一并打码（公开截图里不该出现账号标识）。
+                # 只改显示名不改 wxid 的话，前端「微信 ID」那一行仍会露出真实账号。
+                "author": {"wxid": self.ds.mask_id(author),
+                           "displayName": self.ds.display_name(author)},
                 "createTime": ct,
-                "contentText": e.get("contentText", ""),
+                # 演示模式：朋友圈正文也是真实内容（广告、生活记录、工作吐槽），
+                # 截图里出现「XX商场仓库搬迁通知」这类信息同样是泄漏。
+                "contentText": ("这是一条朋友圈的示意内容，用于演示版式"
+                                if self.ds.demo else e.get("contentText", "")),
                 "mediaCount": e.get("mediaCount", 0),
                 "mediaUrls": e.get("mediaUrls", []),
                 "mediaMd5": e.get("mediaMd5", []),

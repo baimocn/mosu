@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import hashlib
 import os
 import queue
 import shutil
@@ -44,6 +45,59 @@ HEARTBEAT_MAX_AGE = 60   # 秒；超过视为服务不在线
 
 _MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
          "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}
+
+
+def _demo_text(text: str) -> str:
+    """演示模式：把真实聊天正文替换成等长的示意句。
+
+    为什么必须换掉：截图要进公开仓库，正文里会出现「我在做什么项目」
+    「和谁什么关系」这类信息——名字脱敏了但内容没脱敏，等于没脱敏。
+    等长替换是为了让版面（气泡宽度、行数）与真实界面一致，
+    否则截图看着就不像真东西。
+    """
+    if not text or not bool(int(os.environ.get("MOSU_DEMO", "0"))):
+        return text
+    # 保留结构感：有换行的保留行数，其余按原长度补一句示意
+    n = min(len(text), 40)
+    if n <= 6:
+        return "好的"
+    if n <= 16:
+        return "这个我看看"
+    if n <= 30:
+        return "这条消息是在讨论一个技术方案"
+    return "我昨天试了一下，整体效果还不错，细节我们再对一下"
+
+
+def _mask_paths(events: list) -> list:
+    """演示模式：抹掉日志里的本机路径与账号（用于生成公开截图）。
+
+    日志行形如 `启动，长轮询中 base=... 日志=C:\\Users\\xxx\\.mosu\\app.log`，
+    直接把家目录路径摆到 README 截图上，等于公开本机目录结构。
+    """
+    import re
+    home = os.path.expanduser("~")
+    pats = [
+        (re.compile(r"[A-Za-z]:[\\/](?:[^\\/\s:]+[\\/])*Users[\\/][^\\/\s:]+", re.I), r"<HOME>"),
+        (re.compile(re.escape(home), re.I), r"<HOME>"),
+        (re.compile(r"[A-Za-z]:[\\/](?:[^\\/\s:]+[\\/])*wechat_files[^\\/\s:]*", re.I), r"<WECHAT_DATA>"),
+    ]
+    out = []
+    for e in events:
+        # 事件是 dict（time/kind/text），不是纯字符串——只处理 str 会导致
+        # 脱敏静默失效（第一版就是这样，接口看起来跑通了，路径照旧露出）。
+        if isinstance(e, dict):
+            d = dict(e)
+            for k in ("text", "message", "msg"):
+                if isinstance(d.get(k), str):
+                    for p, r in pats:
+                        d[k] = p.sub(r, d[k])
+            out.append(d)
+        else:
+            s = str(e)
+            for p, r in pats:
+                s = p.sub(r, s)
+            out.append(s)
+    return out
 
 
 def _resize(data: bytes, ext: str, max_width: int) -> bytes:
@@ -258,11 +312,14 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         except Exception as e:                       # noqa: BLE001
             data_ready = False
             data_err = f"{type(e).__name__}: {e}"
+        demo = bool(int(os.environ.get("MOSU_DEMO", "0")))
         return {
             "wechat": {
                 "logged_in": bool(cred.get("token")),
-                "account": cred.get("account_id", ""),
-                "user": cred.get("user_id", ""),
+                # 演示模式不显示真实账号：微信 ID 是可定位到人的标识，
+                # 出现在 README 截图里等于公开账号。
+                "account": "演示账号" if demo else cred.get("account_id", ""),
+                "user": "演示账号" if demo else cred.get("user_id", ""),
                 "base_url": cred.get("base_url", ""),
                 "cursor": bool(sync.get("buf")),
             },
@@ -287,6 +344,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         if not p.exists():
             return []
         lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+        demo = bool(int(os.environ.get("MOSU_DEMO", "0")))
         events = []
         for ln in lines:
             if len(ln) < 15:
@@ -298,6 +356,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     kind = tag
                     msg = msg[len(tag):].strip()
                     break
+            # 演示模式：[收到]/[回复] 是机器人实际收到和发出的聊天内容，
+            # 截图里会原样露出「在吗 / 我是白鲤啊」这类对话。替换掉。
+            if demo and kind in ("[收到]", "[回复]"):
+                msg = "[收到一条消息]" if kind == "[收到]" else "[已生成回复]"
             events.append({"time": ts, "kind": kind, "text": msg})
         return events
 
@@ -362,11 +424,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 "senderName": m.get("senderName") or "",
                 "senderId": m.get("senderId") or m.get("senderName") or "",
                 "kind": m["kind"],
-                "content": m.get("content") or "",
+                "content": _demo_text(m.get("content") or ""),
                 "imgMd5": m.get("imgMd5") or "",
                 "voiceMs": m.get("voiceMs"),
                 "voiceText": m.get("voiceText") or "",
-                "title": m.get("title") or m.get("fileName") or "",
+                "title": _demo_text(m.get("title") or m.get("fileName") or ""),
                 "fileName": m.get("fileName") or "",
             } for i, m in enumerate(r["messages"])],
         }
@@ -406,7 +468,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 "sessionName": m.get("sessionName") or "",
                 "sessionId": m.get("sessionId") or "",
                 "direction": m["direction"],
-                "content": (m.get("content") or "")[:200],
+                "content": _demo_text((m.get("content") or "")[:200]),
             } for m in r["messages"]],
         }
 
@@ -769,14 +831,21 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             offset = max(0, int(q.get("offset", 0)))
             limit = max(1, min(int(q.get("limit", 100)), 500))
             page = cons[offset:offset + limit]
+            masked = bool(getattr(ds, "demo", False))
             return {
                 "total": total, "hasMore": total > offset + len(page),
                 "contacts": [{
-                    "wxid": c["wxid"],
+                    # 演示模式：wxid 是账号标识，出现在截图里等于公开身份。
+                    # 用哈希序号代替——翻页时同一个人必须还是同一个号，
+                    # 否则跨页对不上，看着像另一个人。
+                    "wxid": (f"wxid_demo{int(hashlib.sha1(c['wxid'].encode()).hexdigest()[:6], 16) % 9000 + 1000}"
+                             if masked else c["wxid"]),
                     "displayName": ds.display_name(c["wxid"]),
+                    # 演示模式连 remark/nickname 一起抹掉：这两个字段是原始姓名，
+                    # 只改 displayName 的话截图里仍能看到真名。
+                    "remark": "" if masked else (c.get("remark") or ""),
+                    "nickname": "" if masked else (c.get("nickname") or ""),
                     "type": ds.contact_type(c["wxid"]),
-                    "remark": c.get("remark") or "",
-                    "nickname": c.get("nickname") or "",
                     "messageCount": counts.get(c["wxid"], 0),
                 } for c in page],
             }
@@ -900,17 +969,21 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     def api_accounts() -> dict:
         from core.dataset import load_accounts, KEYVAULT
         accounts, current = load_accounts()
+        demo = bool(int(os.environ.get("MOSU_DEMO", "0")))
+        # 演示模式：路径与账号名都是本机信息，截图里不能出现。
+        # 密钥预览也要打码——前 8 位 hex 虽然不完整，但没有公开的必要。
         return {
-            "current": current,
-            "configPath": str(KEYVAULT),
+            "current": "演示账号" if demo else current,
+            "configPath": "<MOSU_HOME>" if demo else str(KEYVAULT),
             "accounts": [{
-                "name": name,
-                "dbPath": acc.get("dbPath") or "",
+                "name": ("账号" + str(i + 1)) if demo else name,
+                "dbPath": "<WECHAT_DATA>" if demo else (acc.get("dbPath") or ""),
                 "hasKey": bool(acc.get("keyHex")),
-                "keyPreview": (acc.get("keyHex") or "")[:8] + "…" if acc.get("keyHex") else "—",
+                "keyPreview": ("***" if demo else (acc.get("keyHex") or "")[:8] + "…")
+                              if acc.get("keyHex") else "—",
                 "hasImgKey": bool(acc.get("imgKeyHex")),
                 "current": name == current,
-            } for name, acc in accounts.items()],
+            } for i, (name, acc) in enumerate(accounts.items())],
         }
 
     def api_account_action(payload: dict) -> dict:
@@ -1151,16 +1224,18 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         img_key = ""
         if current and current in accounts:
             img_key = accounts[current].get("imgKeyHex") or ""
+        demo = bool(int(os.environ.get("MOSU_DEMO", "0")))
         return {
-            "mosuHome": str(KEYVAULT.parent),
-            "configPath": str(KEYVAULT),
+            "mosuHome": "<MOSU_HOME>" if demo else str(KEYVAULT.parent),
+            "configPath": "<MOSU_HOME>/config.json" if demo else str(KEYVAULT),
             "legacyVaultExists": LEGACY_VAULT.exists(),
-            "current": current,
+            "current": "演示账号" if demo else current,
             "accountCount": len(accounts),
             "hasKey": bool(key_hex),
-            "keyPreview": (key_hex[:8] + "…") if key_hex else "—",
+            # 密钥前 8 位也是密钥信息，公开截图里没必要露
+            "keyPreview": ("***" if demo else (key_hex[:8] + "…")) if key_hex else "—",
             "hasImgKey": bool(img_key),
-            "dbPath": str(find_user_dir(None, current)) if current else "",
+            "dbPath": ("<WECHAT_DATA>" if demo else str(find_user_dir(None, current))) if current else "",
             "envOverrides": {
                 "MOSU_DB_PATH": bool(os.environ.get("MOSU_DB_PATH")),
                 "MOSU_KEY_HEX": bool(os.environ.get("MOSU_KEY_HEX")),
@@ -1250,7 +1325,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     q = self._params()
                     if "n" in q:
                         n = max(1, min(int(q["n"]), 200))
-                    self._json({"events": read_log(n)})
+                    ev = read_log(n)
+                    if bool(int(os.environ.get("MOSU_DEMO", "0"))):
+                        ev = _mask_paths(ev)
+                    self._json({"events": ev})
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return

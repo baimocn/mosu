@@ -62,6 +62,20 @@ KIND_BY_TYPE = {
     T_SYS: "system",
 }
 
+# 演示模式的会话列表预览文案（按会话 id 哈希轮换，避免整列都是同一句）
+_DEMO_PREVIEWS = [
+    "[图片]",
+    "好的，我看一下",
+    "这个方案我觉得可以",
+    "晚点回复你",
+    "先按这个做吧",
+    "[文件] 方案初稿.pdf",
+    "收到",
+    "明天再对一下细节",
+    "[语音]",
+    "我这边试过了，没问题",
+]
+
 
 # --------------------------------------------------------------------------
 # 配置 / 密钥
@@ -294,8 +308,13 @@ class Dataset:
     """微信本地数据统一入口（解密缓存 + 会话索引 + 查询）。"""
 
     def __init__(self, data_dir=None, key_hex: str | None = None, refresh=False,
-                 quiet=False, with_wal=False, account: str | None = None):
+                 quiet=False, with_wal=False, account: str | None = None,
+                 demo: bool | None = None):
         self.account_name, self.account = resolve_account(account)
+        # demo=True 时把联系人/群/公众号名替换成稳定化名。
+        # 仅用于生成公开截图（README 演示），不影响任何真实数据。
+        # 默认读环境变量 MOSU_DEMO，也可显式传入。
+        self.demo = bool(int(os.environ.get("MOSU_DEMO", "0"))) if demo is None else bool(demo)
         self.user_dir = find_user_dir(data_dir, self.account_name)
         self.db_root = self.user_dir / "db_storage"
         self.key_hex = key_hex or load_key_hex(self.account_name)
@@ -517,11 +536,55 @@ class Dataset:
         self._contacts = out
         return out
 
+    def mask_id(self, username: str) -> str:
+        """演示模式下把 wxid / 群号替换成稳定的假 ID；非演示模式原样返回。
+
+        为什么要单列一个函数：wxid 散布在会话列表、联系人、朋友圈作者、
+        画像等多个出口。各自写一遍脱敏必然漏（实测漏了 3 处），
+        统一到一个函数才不会漏，也便于测试。
+        """
+        if not self.demo or not username:
+            return username
+        h = int(hashlib.sha1(username.encode("utf-8")).hexdigest()[:6], 16)
+        # 假 ID 必须与真 ID **在字形上可区分**：真群号是纯 11 位数字，
+        # 假群号如果不带标记，截图审核时根本看不出是脱敏的还是漏了
+        # （第一版就是这样，自动化检查把 demo 群号误判成真实群号）。
+        if username.endswith("@chatroom"):
+            return f"demo{h:08d}@chatroom"
+        if username.startswith("gh_") or username.startswith("wxid_gh"):
+            return f"gh_demo{h % 9000 + 1000}"
+        return f"wxid_demo{h % 9000 + 1000}"
+
     def display_name(self, username: str) -> str:
         c = self.contacts().get(username)
         if not c:
-            return username
-        return c.get("remark") or c.get("nickname") or username
+            name = username
+        else:
+            name = c.get("remark") or c.get("nickname") or username
+        return self._mask_name(username, name)
+
+    def _mask_name(self, username: str, name: str) -> str:
+        """演示模式下的名字脱敏（MOSU_DEMO=1）。
+
+        为什么需要：README 截图要放进公开仓库，真实联系人姓名、群名、
+        公众号名一旦上图就收不回来了。
+
+        规则：
+          - 稳定映射：同一个人每次都得到同一个化名（用 wxid 的哈希定序号），
+            否则截图之间自相矛盾，也没法讲「这两个人聊了很多」这类叙事；
+          - 保留类型感：群/公众号/个人在截图里仍能区分；
+          - 保留长度感：名字长度大致相当，版面不会塌。
+        """
+        if not self.demo:
+            return name
+        h = int(hashlib.sha1(username.encode("utf-8")).hexdigest()[:8], 16)
+        if username.endswith("@chatroom"):
+            return f"群聊·{h % 90 + 10}"
+        if username.startswith("gh_") or username.startswith("wxid_gh"):
+            return f"公众号·{h % 90 + 10}"
+        surname = "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜"
+        given = "涵雨欣浩然鸣远嘉怡曦文博桐舟舟言宁川清和安知白"
+        return f"{surname[h % len(surname)]}{given[(h >> 8) % len(given)]}"
 
     def contact_type(self, username: str) -> str:
         if username.endswith("@chatroom"):
@@ -660,7 +723,13 @@ class Dataset:
                 "sessionId": u,
                 "displayName": self.display_name(u),
                 "type": self._session_type(u, e.get("type")),
-                "lastMessage": (e.get("summary") or "")[:120],
+                # 演示模式：会话列表右侧的预览也是真实聊天内容，
+                # 必须一起替换。只脱敏姓名不脱敏预览，等于没脱敏
+                # （截图里会明明白白写着"这里仓库搬迁，有很多东西处理"）。
+                # 用会话 id 做轮换，让版面看起来像真实列表而不是复读机。
+                "lastMessage": (_DEMO_PREVIEWS[int(hashlib.sha1(u.encode()).hexdigest()[:4], 16)
+                                               % len(_DEMO_PREVIEWS)]
+                                if self.demo else (e.get("summary") or "")[:120]),
                 "lastTime": e.get("last_timestamp") or 0,
                 "sortTime": e.get("sort_timestamp") or 0,
                 "unread": e.get("unread_count") or 0,

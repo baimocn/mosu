@@ -12,6 +12,47 @@ python cli/mosu.py sessions
 
 ---
 
+## 界面
+
+<p align="center">
+  <img src="docs/shots/02-browse.png" width="880" alt="数据浏览：左侧会话列表，右侧聊天记录，支持图片与筛选">
+</p>
+
+<p align="center">
+  <img src="docs/shots/03-search.png" width="440" alt="全库搜索">
+  <img src="docs/shots/05-profile.png" width="440" alt="个人画像">
+</p>
+
+<p align="center">
+  <img src="docs/shots/04-stats.png" width="440" alt="数据统计">
+  <img src="docs/shots/08-moments.png" width="440" alt="朋友圈">
+</p>
+
+> 截图取自 `MOSU_DEMO=1` 演示模式：姓名、群名、wxid、账号、聊天正文均已替换为示意内容，
+> 数字与结构是真实的。生成方式见 [`scripts/shots.py`](scripts/shots.py)。
+
+<table>
+<tr><td width="50%">
+
+**能做什么**
+- 数据浏览：190 会话、23 万条消息，图片语音都能看
+- 全库搜索：关键词秒出，支持翻页与精确计数
+- 数据统计 / 年报：活跃度、时段、词频
+- 个人画像：一句话概括你的说话风格
+- 联系人 / 朋友圈 / 导出 / 设置
+
+</td><td width="50%">
+
+**不做什么**
+- 不联网、不上传、不做云端同步
+- 不注入 DLL、不改微信任何文件
+- 不内置任何授权检查或账号体系
+
+</td></tr>
+</table>
+
+---
+
 ## 为什么做这个
 
 微信电脑版把聊天数据存在 SQLCipher 4 加密的 SQLite 里，密钥在它自己进程的内存里。
@@ -59,7 +100,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，428 例）：
+测试（全离线，437 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -206,7 +247,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（428 例）
+tests/                 离线测试（437 例）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
 ```
 
@@ -217,7 +258,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（428 例）
+- [x] 离线测试套件（437 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -241,6 +282,13 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 
 **mosu** decrypts, browses and exports your local WeChat (PC) chat data with a
 from-scratch SQLCipher 4 engine — no DLL injection, no network, no license check.
+
+<p align="center">
+  <img src="docs/shots/02-browse.png" width="860" alt="Data browser">
+</p>
+
+> Screenshots are taken in `MOSU_DEMO=1` mode: names, wxids, account and message
+> bodies are replaced with placeholders. Numbers and layout are real.
 
 ### What it is
 
@@ -304,7 +352,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (428 cases)
+tests/          offline test suite (437 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

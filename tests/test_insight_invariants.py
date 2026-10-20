@@ -105,10 +105,17 @@ class TestSocialKeying(unittest.TestCase):
         self.assertNotIn('social[sess["displayName"]]', src)
 
     def test_social_output_has_wxid(self):
+        """social 每项必须带 wxid —— 前端靠它做 key 和跳转。
+
+        允许两种写法：原始的 `"wxid": k`，或经脱敏的 `"wxid": self._mid(k)`。
+        断言的是「这个字段还在且来源于会话标识」，不是具体写法。
+        """
         import inspect
         import core.profile as P
         src = inspect.getsource(P.ProfileDistiller.self_profile)
-        self.assertIn('"wxid": k', src)
+        self.assertRegex(src, r'"wxid":\s*(k|self\._mid\(k\))')
+        # 反向：不允许出现不带来源的常量 wxid（那是假实现）
+        self.assertNotIn('"wxid": ""', src)
 
 
 class TestMarkdownRobustness(unittest.TestCase):

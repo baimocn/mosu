@@ -221,7 +221,10 @@ class ProfileDistiller:
         morning = sum(hour_mine.get(h, 0) for h in range(6, 10))   # 6-9 点（与夜间不重叠）
 
         social = sorted(
-            [{"wxid": k, "name": v["name"] or k, "mine": v["mine"], "total": v["total"],
+            # 注意：name 为空时不能回退成原始 wxid——那正是截图里
+            # 「微信 ID wxid_dbkamfm4sr8122」这种泄漏的来源。
+            [{"wxid": self._mid(k), "name": v["name"] or self._mid(k),
+              "mine": v["mine"], "total": v["total"],
               "share": round(v["mine"] / v["total"], 2) if v["total"] else 0}
              for k, v in agg["social"].items() if v["mine"] > 0],
             key=lambda x: -x["mine"])[:top]
@@ -299,6 +302,16 @@ class ProfileDistiller:
         out = [(w, c) for w, c in freq.most_common(200) if w not in stop]
         return [{"word": w, "count": c} for w, c in out[:top]]
 
+    def _mid(self, k: str) -> str:
+        """取一个可展示的会话标识。
+
+        脱敏交给 ds.mask_id（演示模式才是假 ID）；但用 getattr 兜底，
+        这样只实现部分接口的测试替身、以及老的 Dataset 实例也不会炸——
+        画像不该因为多了一个可选的脱敏能力就强依赖 ds 的完整实现。
+        """
+        fn = getattr(self.ds, "mask_id", None)
+        return fn(k) if callable(fn) else k
+
     def _self_insights(self, hour_mine, night, my_total, lens, topics,
                        emoji_rate, q_rate, peak_wd) -> list[str]:
         out = []
@@ -313,6 +326,14 @@ class ProfileDistiller:
         if emoji_rate > 0.08:
             out.append(f"表情包高频：{emoji_rate:.0%} 的消息是表情，聊天氛围偏轻松")
         hit = {t["topic"]: t["hits"] for t in topics[:3]}
+        # 演示模式：下面这三条结论会直接暴露职业方向 / 学业状态 / 是否接单，
+        # 属于「比姓名更需要保护」的信息。给一句中性替代，保留版面节奏。
+        if getattr(self.ds, "demo", False):
+            if hit.get("AI/编程") or hit.get("生意/接单") or hit.get("考研/学业"):
+                out.append("话题分布集中：少数几个主题占了大部分对话")
+            if peak_wd is not None:
+                out.append(f"{WEEKDAY_NAMES[peak_wd]}是最活跃的一天")
+            return out
         if hit.get("AI/编程"):
             out.append("技术/开发者身份显著：AI、编程、部署类话题高频")
         if hit.get("生意/接单"):
