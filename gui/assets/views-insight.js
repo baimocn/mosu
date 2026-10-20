@@ -85,7 +85,15 @@
     text: "文本", image: "图片", voice: "语音", video: "视频",
     file: "文件", emoji: "表情", system: "系统", link: "链接", other: "其他",
   };
+  /** 渲染层信号，不该出现在任何卡片里：
+      meta.truncated 已在页首脚注说明（见 Insight.metaLine），
+      overview.truncated 与它同义，重复展示只是噪音；
+      milestones.firstMessage.sampledOnly 由 JsonView.isSampledFirst
+      翻译成「样本内最早」徽标 + tooltip。
+      注意用显式集合而不是「标签置空」——label() 里的 `|| k` 会把空串回退成原键。 */
+  const FIELD_HIDDEN = new Set(["truncated", "sampledOnly"]);
   function label(k) { return FIELD_LABELS[k] || k; }
+  function isHiddenField(k) { return FIELD_HIDDEN.has(k); }
 
   /* ---------------------------------------------------------------- 通用渲染 */
   const JsonView = {
@@ -116,7 +124,18 @@
           <template v-for="(v,k) in visible" :key="k">
             <dt>{{ label(k) }}</dt>
             <dd>
-              <template v-if="isPrimitive(v)">{{ fmtVal(v, k) }}</template>
+              <!-- 截断样本里的「首条消息」不是会话真实首条，必须换个说法。
+                   走通用 KV 会渲染成「样本内最早: true」，既噪音又没传达意思。 -->
+              <div v-if="isSampledFirst(v)" class="sampled-first"
+                   title="本次分析已达样本上限，这条是样本范围内最早的一条，不是你们真正的第一次聊天。">
+                <span class="badge badge-warn">样本内最早</span>
+                <span class="muted tiny">非真实首条</span>
+                <div style="margin-top:4px">{{ v.content || '（无正文）' }}</div>
+                <div class="tiny muted" style="margin-top:2px">
+                  {{ v.who || '—' }} · {{ v.time || '—' }}
+                </div>
+              </div>
+              <template v-else-if="isPrimitive(v)">{{ fmtVal(v, k) }}</template>
               <json-view v-else :data="v" :depth="depth+1" />
             </dd>
           </template>
@@ -133,6 +152,10 @@
           if (v === null || v === undefined || v === "") continue;
           if (Array.isArray(v) && !v.length) continue;
           if (v && typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+          /* sampledOnly 是给渲染层的信号，不是给人看的内容：
+             它已被 isSampledFirst 翻译成「样本内最早」徽标 + tooltip。
+             truncated 同理：页首脚注已说明样本上限，卡片里不必重复。 */
+          if (isHiddenField(k)) continue;
           out[k] = v;
         }
         return out;
@@ -146,6 +169,14 @@
           || ["string", "number", "boolean"].includes(typeof v);
       },
       isObj(v) { return v && typeof v === "object" && !Array.isArray(v); },
+      /**
+       * 后端在截断时给 milestones.firstMessage 打 sampledOnly：
+       * 那条只是**样本内**最早的一条，不是会话真实首条。
+       * 不换说法的话，用户会把它读成「他们第一次聊天」——那是假的。
+       */
+      isSampledFirst(v) {
+        return !!v && typeof v === "object" && !Array.isArray(v) && v.sampledOnly === true;
+      },
       fmtVal(v, k) { return humanVal(v, k); },
       pctOf(r) { return typeof r === "number" ? Math.round(r * 1000) / 10 + "%" : "—"; },
     },
@@ -707,11 +738,10 @@
         if (m.scannedMessages) bits.push(`扫描 ${M.fmtNum(m.scannedMessages)} 条消息`);
         if (m.textSampled) bits.push(`抽样 ${M.fmtNum(m.textSampled)} 条文本`);
         /* 触顶说明并入页首脚注，不另起一条 notice：同一件事说两遍是噪音。
-           措辞用「本次抽样 N 条」而非「最近 N 条」：后端 contact_profile 取的是
-           按时间升序的前 N 条（profile.py 的 order="asc"），不是最近 N 条，
-           说「最近」会与实际口径不符。 */
+           措辞「最近 N 条」与后端口径对齐：contact_profile 已改 order="desc"
+           取最近 cap 条（core/profile.py 的 raw_messages_page 调用）。 */
         if (m.truncated) {
-          bits.push(`样本已达上限，本次仅抽样 ${M.fmtNum(m.maxMsgs || m.scannedMessages)} 条`);
+          bits.push(`样本已达上限，仅基于最近 ${M.fmtNum(m.maxMsgs || m.scannedMessages)} 条`);
         }
         if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
         return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
@@ -771,10 +801,22 @@
         const d = await M.api.get("/api/sessions", { limit: 300 });
         this.sessions = d.sessions || [];
       } catch (e) { /* 会话列表拉不到时，联系人画像无法选择，保持空态 */ }
+      /* 深链：#/profile?session=<wxid> 直接打开某人的画像。
+         没有它时画像链接无法分享——想给朋友看某个人的分析只能口述。 */
+      const h = (location.hash || "").match(/[?&]session=([^&]+)/);
+      if (h && this.kind === "profile") {
+        const id = decodeURIComponent(h[1]);
+        this.mode = "contact";
+        this.picked = this.sessions.some((s) => s.sessionId === id) ? id : "";
+        /* 会话列表没赶上时不猜：picked 为空会停在选择态，比打开错人安全 */
+      }
       this.load();
     },
   };
 
   global.MosuViews = global.MosuViews || {};
+  /* isHiddenField 导出去给测试断言：这些内部字段「不该出现在界面上」
+     是一条会悄悄失效的规则，值得用测试钉住。 */
+  global.MosuViews.__hidden = isHiddenField;
   Object.assign(global.MosuViews, { JsonView, Stats, Insight, ReportView });
 })(window);

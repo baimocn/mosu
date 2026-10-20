@@ -768,6 +768,15 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: var(--sp-2) var(--sp-4); font-size: var(--fs-13); }
 .kv dt { color: var(--text-3); }
 .kv dd { color: var(--text-1); word-break: break-all; }
+
+/* 截断样本里的「首条消息」：带警示徽标 + 可悬停说明。
+   它不是会话真实首条，说成「第一次聊天」就是展示假数据。 */
+.sampled-first {
+  border-left: 2px solid var(--warn);
+  padding-left: var(--sp-3);
+  cursor: help;
+}
+.sampled-first > .badge { margin-right: var(--sp-2); }
 .fade-enter-active, .fade-leave-active { transition: opacity var(--dur) var(--ease); }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
