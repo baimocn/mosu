@@ -540,6 +540,73 @@ class TestContactProfileCap(_DS):
         from core.profile import ProfileDistiller
         self.assertEqual(ProfileDistiller.CONTACT_MAX_MSGS, 60000)
 
+    def _with_cap(self, n_rows):
+        """把 CONTACT_MAX_MSGS 临时调小，造 n_rows 条数据，**不传 max_msgs**。
+
+        走的是与真实 60000 完全相同的代码路径（`cap = self.CONTACT_MAX_MSGS`），
+        只是把常量换小——直接造 60001 条要跑 20 多秒，不值得放进单测。
+        """
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        cap = ProfileDistiller.CONTACT_MAX_MSGS
+        small = 50
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", small)
+        p.start()
+        self.addCleanup(p.stop)
+        return self._pd(n_rows), small
+
+    def test_really_exceeds_default_cap(self):
+        """**不传 max_msgs、走默认上限这条路径**，数据量真的超过它。
+
+        这是硬性验收点：原 bug 之所以能活到今天，就是因为所有测试都只走
+        「没超上限」那条路（用 max_msgs=20 配 21 条数据，走的是合并后
+        21 > 20 这条恒真路径）。本例不传 max_msgs，走 `cap = CONTACT_MAX_MSGS`
+        这一行，断言 truncated 为 True——旧写法在这里必然报 False。
+        """
+        pd, cap = self._with_cap(51)
+        d = pd.contact_profile("wxid_a")
+        self.assertEqual(d["meta"]["maxMsgs"], cap)
+        self.assertEqual(d["meta"]["scannedMessages"], cap)   # 恰好取满
+        self.assertIs(d["meta"]["truncated"], True,
+                      f"51 条数据超过默认上限 {cap}，必须报截断")
+
+    def test_exactly_at_default_cap_not_truncated(self):
+        """正好等于默认上限＝全部取完，不该报截断（与上一条构成边界对）。"""
+        pd, cap = self._with_cap(50)
+        d = pd.contact_profile("wxid_a")
+        self.assertEqual(d["meta"]["scannedMessages"], cap)
+        self.assertIs(d["meta"]["truncated"], False)
+
+    def test_over_default_cap_flags_sampled_first(self):
+        """超限时样本应是**最近** cap 条，且首条标注 sampledOnly。"""
+        pd, _ = self._with_cap(51)
+        d = pd.contact_profile("wxid_a")
+        self.assertIs(d["milestones"]["firstMessage"]["sampledOnly"], True)
+
+    def test_over_default_cap_keeps_newest_window(self):
+        """超限后样本窗口应落在最近 cap 条，而不是会话开头。
+
+        `_pd` 每条间隔 60 秒，120 条 = 2 小时，跨度小到看不出窗口偏移，
+        所以这里用跨度明确的构造：每条间隔一天。
+        """
+        from unittest.mock import patch
+        from core.profile import ProfileDistiller
+        from datetime import timedelta
+        p = patch.object(ProfileDistiller, "CONTACT_MAX_MSGS", 50)
+        p.start()
+        self.addCleanup(p.stop)
+        base = datetime(2026, 3, 1)
+        rows = [("wxid_a", int((base + timedelta(days=i)).timestamp()), 1,
+                 "wxid_me" if i % 2 else "wxid_a", f"M{i}") for i in range(120)]
+        from core.profile import ProfileDistiller as PD
+        d = PD(self.make(
+            [{"sessionId": "wxid_a", "displayName": "张三", "type": "private"}],
+            rows)).contact_profile("wxid_a")
+        self.assertEqual(d["meta"]["scannedMessages"], 50)
+        # 最近 50 条 = 索引 70~119 → 05-10 ~ 06-28（起点 03-01 + 70/119 天）
+        self.assertEqual(d["overview"]["lastText"][:10], "2026-06-28")
+        self.assertGreaterEqual(d["overview"]["firstText"][:10], "2026-05-10")
+
     def test_not_truncated_under_cap(self):
         d = self._pd(10).contact_profile("wxid_a", max_msgs=20)
         self.assertIs(d["overview"]["truncated"], False)
