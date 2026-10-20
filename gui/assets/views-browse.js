@@ -157,6 +157,9 @@
                     </span>
                     <span v-else-if="m.kind==='emoji'" class="media-ph">😀 表情</span>
                     <span v-else-if="m.kind==='system'" class="muted">{{ m.content }}</span>
+                    <!-- 兜底：后端已把已知 XML 翻成人话，但万一有漏网的，
+                         也不把原始标签（含 roomid/token 等内部字段）摆到界面上 -->
+                    <span v-else-if="looksLikeXml(m.content)" class="muted">[不支持的消息类型]</span>
                     <span v-else>{{ m.content }}</span>
                   </div>
                   <div class="msg-meta">
@@ -274,6 +277,11 @@
     methods: {
       ...{ fmtTime: M.fmtTime, fmtNum: M.fmtNum, initial: M.initial, highlight: M.highlight },
       avatarBg(s) { return M.avatarColor(s.displayName); },
+      /** 判断这段文本是不是原始 XML —— 用于兜底，避免把内部字段摆到界面上 */
+      looksLikeXml(t) {
+        const s = (t || "").trimStart();
+        return s.startsWith("<") || s.startsWith("<?xml");
+      },
       hl(t) { return M.highlight(t, this.kw); },
       typeLabel(s) {
         return { private: "单聊", group: "群聊", mp: "公众号" }[s.type] || "会话";

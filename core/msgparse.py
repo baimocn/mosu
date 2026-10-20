@@ -258,6 +258,11 @@ def parse_message(local_type: int, content, packed=None) -> dict:
                         msg["app_type"] = app.findtext("type")
             except Exception:
                 msg["text"] = _xml_attr(xml, "appmsg", "title") or ""
+            # 红包/转账这类没有被 <appmsg><title> 包裹的消息，
+            # 上面两种取法都会拿到空串，于是界面显示一条空白气泡。
+            # 退回统一的「压成一句人话」，抽不出就至少别是空的。
+            if not msg["text"]:
+                msg["text"] = _readable_from_xml(xml)
 
     elif real == T_SYS:
         txt = xml or (content if isinstance(content, str) else "")
@@ -265,7 +270,10 @@ def parse_message(local_type: int, content, packed=None) -> dict:
         # 直接显示原始 XML 对人是噪音——翻译成人话
         if "<sysmsg" in txt:
             try:
-                root = ET.fromstring(txt[txt.find("<sysmsg"): txt.rfind("</sysmsg>") + 8])
+                # 切片长度必须和 "</sysmsg>" 一致（9 字符）。原来写 +8 会少一个
+                # '>'，ET.fromstring 每次都抛 ParseError，于是**所有撤回消息
+                # 都退化成「系统消息」**——一个静默失效，没有任何报错。
+                root = ET.fromstring(txt[txt.find("<sysmsg"): txt.rfind("</sysmsg>") + 9])
                 stype = root.get("type") or ""
                 if stype == "revokemsg":
                     repl = root.findtext(".//replacemsg") or ""
@@ -274,12 +282,61 @@ def parse_message(local_type: int, content, packed=None) -> dict:
                     msg["text"] = stype or "系统消息"
             except Exception:
                 msg["text"] = "系统消息"
+        elif "<" in txt:
+            # 不是 <sysmsg> 但仍是 XML：红包领取提示（<img src="SystemMessages_
+            # HongbaoIcon.png"> 你领取了…）、转账、群公告等都属于这一类。
+            # 以前这里把原始 XML 原样返回，界面里就是一片标签。
+            msg["text"] = _readable_from_xml(txt)
         else:
             msg["text"] = txt
 
     else:
-        msg["text"] = (xml or "")[:200] if xml else (
+        # 兜底分支以前直接吐 XML 前 200 字，界面里就是一片
+        # `<voipmsg type="VoIPBubbleMsg">…<roomkey>0</roomkey>…`，
+        # 既看不懂、又把 roomid/token 这类内部字段露出来。
+        # 这些类型其实都带一句人能读的文本，优先把它抽出来。
+        msg["text"] = _readable_from_xml(xml) if xml else (
             content.decode("utf-8", "ignore") if isinstance(content, (bytes, bytearray)) else str(content or "")
         )
 
     return msg
+
+
+def _readable_from_xml(xml: str) -> str:
+    """把「非文本类」消息的 XML 压成一句人话。
+
+    抽不出可读内容时返回「[xxx]」形式的占位，
+    绝不把原始 XML 丢到界面上（信息噪音 + 内部字段泄露）。
+    """
+    if not xml:
+        return "[不支持的消息]"
+    s = xml.strip()
+    # 语音/视频通话记录：正文在 <msg><![CDATA[通话时长 00:37]]></msg>
+    if s.startswith("<voipmsg"):
+        m = re.search(r"<msg>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</msg>", s, re.S)
+        if m:
+            t = m.group(1).strip()
+            if t:
+                return f"[通话] {t}"
+        return "[通话]"
+    # 位置消息：优先 poiname（地点名），poiname 为空时退回 label（详细地址）
+    if s.startswith("<?xml") or s.startswith("<msg"):
+        for pat in (r'poiname="([^"]*)"', r'label="([^"]*)"'):
+            m = re.search(pat, s)
+            if m and m.group(1).strip():
+                return f"[位置] {m.group(1).strip()}"
+        if "<location" in s:
+            return "[位置]"
+    # 红包 / 转账 / 名片等「图标 + 一句话」的消息
+    if "<img" in s:
+        t = re.sub(r"<[^>]+>", "", s)
+        t = re.sub(r"\s+", " ", t).strip()
+        if t:
+            return t
+    # 其它：抽标签之间的纯文本；若只剩标签说明没内容
+    txt = re.sub(r"<[^>]+>", " ", s)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    if txt and not txt.startswith("?xml"):
+        return txt[:200]
+    tag = re.match(r"<\??([\w]+)", s)
+    return f"[{tag.group(1)}]" if tag else "[不支持的消息]"
