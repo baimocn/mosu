@@ -33,7 +33,7 @@ from core.sqlcipher4 import (  # noqa: E402
     PAGE_SIZE, RESERVE, DATA_END, IV_OFF, HMAC_OFF, MAGIC,
     derive_enc_key, verify_password,
 )
-from core.msgparse import decompress, parse_message, T_TEXT, T_IMAGE, T_VOICE, T_VIDEO, T_EMOJI, T_APPMSG, T_SYS  # noqa: E402
+from core.msgparse import decompress, parse_message, raw_text, T_TEXT, T_IMAGE, T_VOICE, T_VIDEO, T_EMOJI, T_APPMSG, T_SYS  # noqa: E402
 
 CACHE = ROOT / ".cache"
 
@@ -1139,22 +1139,8 @@ class Dataset:
 
     @staticmethod
     def _raw_text(content) -> str:
-        """只解压出正文字符串，不解析 protobuf / XML / 媒体字段。
+        """只解压出正文字符串（实现见 msgparse.raw_text）。
 
-        搜索只需要「这段文字里有没有关键词」，用不上 img_md5、voice_ms 之类。
-        非文本类消息（通话记录、位置等）的 XML 也一并跳过——它们不是用户
-        会去搜的内容，省下这部分解析是搜索提速的主要来源。
+        保留这个转发是为了向后兼容；新代码请直接用 msgparse.raw_text。
         """
-        if not content:
-            return ""
-        blob = decompress(content) if isinstance(content, (bytes, bytearray)) else None
-        if blob is None:
-            return content.decode("utf-8", "ignore") if isinstance(content, (bytes, bytearray)) else str(content)
-        try:
-            s = blob.decode("utf-8", "ignore")
-        except Exception:
-            return ""
-        # XML 类消息（<msg>/<voipmsg>/<sysmsg>…）直接判定为空，不参与搜索
-        if s.lstrip().startswith("<"):
-            return ""
-        return s
+        return raw_text(content)

@@ -667,6 +667,8 @@
         const bits = [];
         if (m.scannedMessages) bits.push(`扫描 ${M.fmtNum(m.scannedMessages)} 条消息`);
         if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
+        // 命中缓存时明确标注：否则用户会疑惑「上次 5 秒，这次怎么秒开」
+        if (m.cached) bits.push("结果来自缓存");
         return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
       },
     },
@@ -750,6 +752,12 @@
         <div class="skeleton" style="height:200px"></div>
         <div class="skeleton" style="height:200px"></div>
       </div>
+      <!-- 首次生成要跑分词（全库约 3-6 秒），只给灰块用户会以为卡死了。
+           明确说出「在算什么」和「大概多久」，等待才可接受。 -->
+      <div v-if="loading" class="tiny muted" style="margin-top:10px;text-align:center">
+        <span class="spinner" style="margin-right:6px"></span>
+        {{ loadingHint }}
+      </div>
       <div v-else-if="err" class="empty">
         <div class="empty-icon">🧭</div>
         <div class="empty-title">生成失败</div>
@@ -807,6 +815,16 @@
       };
     },
     computed: {
+      /** 等待时告诉用户在算什么、大概多久（首次要跑分词，全库 3-6 秒） */
+      loadingHint() {
+        if (this.kind === "report") {
+          return "正在统计这一年并提取高频词，首次约 3-6 秒（结果会缓存，再看就秒开）";
+        }
+        if (this.mode === "contact") {
+          return "正在归纳这段关系的互动与心理维度，约 2-5 秒";
+        }
+        return "正在归纳你的表达风格、作息与常聊话题，首次约 5 秒";
+      },
       sectionConf() {
         return this.kind === "profile"
           ? (PROFILE_SECTIONS[this.mode === "self" ? "self" : "contact"] || [])
@@ -853,6 +871,8 @@
           bits.push(`样本已达上限，仅基于最近 ${M.fmtNum(m.maxMsgs || m.scannedMessages)} 条`);
         }
         if (m.cost != null) bits.push(`用时 ${m.cost} 秒`);
+        // 命中缓存时明确标注：否则用户会疑惑「上次 5 秒，这次怎么秒开」
+        if (m.cached) bits.push("结果来自缓存");
         return bits.length ? bits.join(" · ") + " · 全部本机计算" : "";
       },
     },

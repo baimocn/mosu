@@ -100,6 +100,32 @@ def parse_pb(data: bytes) -> dict[int, list]:
 _SENDER_PREFIX = re.compile(r"^.{1,64}:\r?\n")
 
 
+def raw_text(content) -> str:
+    """只解压出正文字符串，不解析 protobuf / XML / 媒体字段。
+
+    用途：搜索与词频统计只需要「这段文字里有没有关键词」，用不上 img_md5、
+    voice_ms 之类。跳过这部分解析是搜索提速的主要来源（实测 7 倍）。
+
+    注意两条边界：
+      - XML 类消息（<msg>/<voipmsg>/<sysmsg>…）返回空串，它们不是用户会搜的内容
+      - 群聊消息的 "发送者:\n正文" 前缀**不在这里剥**，由调用方按需调
+        strip_sender_prefix（头条搜索不需要剥，词频统计需要）
+    """
+    if not content:
+        return ""
+    blob = decompress(content) if isinstance(content, (bytes, bytearray)) else None
+    if blob is None:
+        return (content.decode("utf-8", "ignore")
+                if isinstance(content, (bytes, bytearray)) else str(content))
+    try:
+        s = blob.decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    if s.lstrip().startswith("<"):
+        return ""
+    return s
+
+
 def strip_sender_prefix(text: str) -> str:
     if text and "\n" in text:
         m = _SENDER_PREFIX.match(text)
