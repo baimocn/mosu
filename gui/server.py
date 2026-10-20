@@ -428,8 +428,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         with _ds_lock:
             store = get_media()
             got = store.get_thumb_image(md5) if thumb else store.get_full_image(md5)
+            # 三种「取不到」要分开说，否则用户不知道该不该去找回来
+            why = store.explain_missing(md5) if not got else ""
         if not got:
-            raise ValueError(f"本地找不到该图片（md5={md5}），可能已被清理或没下载")
+            raise ValueError(f"取不到该图片（md5={md5}）：{why}")
         data, ext, source = got
 
         # 缩略图再压一道：列表里不需要原图像素

@@ -276,6 +276,32 @@ class MediaStore:
             return None
         return dec, ext
 
+    def explain_missing(self, md5: str | None) -> str:
+        """取不到图时，给出人话原因——用户据此才能决定要不要去微信里刷一次。
+
+        实测三类（全库 15992 张）：
+          ① 索引里根本没有       → 微信没保存过这张图
+          ② 有文件但解码失败     → 未下载占位文件（几百字节，头部 07 08 56…）
+                                   全库 999 张属此类
+          ③ 有文件且能解码       → 不该走到这里（说明是别的错误）
+        """
+        if not md5:
+            return "缺少图片标识"
+        entry = self.images.get(md5.lower())
+        if not entry:
+            return "微信没有保存过这张图（本地无记录）"
+        for key, p in entry.items():
+            if not p or not os.path.exists(p):
+                continue
+            try:
+                size = os.path.getsize(p)
+            except OSError:
+                continue
+            if size < 2000:
+                return (f"微信只留了一个未下载的占位文件（{size} 字节），"
+                        "原图从未下载到本机——在微信里点开这张图后再试")
+        return "本地有文件但无法解码，可能已损坏"
+
     def _pick(self, md5: str | None, order: tuple[str, ...]) -> tuple[bytes, str, str] | None:
         """按 order 里的分区优先级取一张图，返回 (明文字节, 扩展名, 命中的分区名)。"""
         if not md5:
