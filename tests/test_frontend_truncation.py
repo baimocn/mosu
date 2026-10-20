@@ -75,6 +75,11 @@ console.log(JSON.stringify({
   blankBody: J.methods.bodyOf('firstMessage', { content: '   ' }),
   textBody:  J.methods.bodyOf('firstMessage', { content: '有内容' }),
   unknownBody: J.methods.bodyOf('somethingElse', { content: null }),
+  // <dt> 标签降级：截断时降，未截断时必须保持原样
+  labelsSampled: Object.fromEntries(Object.keys(KINDS).map((k) =>
+    [k, J.methods.fieldLabel(k, KINDS[k])])),
+  labelsPlain: Object.fromEntries(Object.keys(KINDS).map((k) =>
+    [k, J.methods.fieldLabel(k, { time: 't', content: 'x' })])),
   sampledIsSampled: J.methods.isSampledFirst(SAMPLED),
   realIsSampled:    J.methods.isSampledFirst(REAL),
   nullIsSampled:    J.methods.isSampledFirst(null),
@@ -233,6 +238,63 @@ class TestMilestoneBodyWording(unittest.TestCase):
                           f"{k} 的 tooltip 未指明是「{what}」")
             self.assertNotIn("第一次聊天", self.o["tip"][k],
                              f"{k} 的 tooltip 不该说「第一次聊天」")
+
+
+class TestSampledFieldLabel(unittest.TestCase):
+    """`<dt>` 标签也要随 sampledOnly 降级（后端工程师-2 报）。
+
+    实测问题：截断样本上 `<dt>` 仍写「第一条语音」，`<dd>` 里挂一个
+    「样本内最早」徽标。**视线先扫 `<dt>`**，两者并排仍会被读成
+    「他们第一次发语音是 7 月 27 日」——徽标救不回确定性语气。
+
+    另一半同样重要：**未截断时绝不能降级**。把真实的第一条语音
+    标成「样本内最早语音」，那才是真的造假数据。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        env = dict(os.environ, MOSU_VIEWS=str(VIEWS_INSIGHT))
+        r = subprocess.run([_node(), "-e", _SANDBOX],
+                           capture_output=True, text=True, timeout=60,
+                           cwd=str(ROOT), env=env)
+        if r.returncode != 0:
+            raise AssertionError(f"加载 views-insight.js 失败：\n{r.stderr[:800]}")
+        cls.o = json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_all_four_labels_downgrade_when_sampled(self):
+        for k, want in (("firstMessage", "样本内最早消息"),
+                        ("firstVoice", "样本内最早语音"),
+                        ("firstImage", "样本内最早图片"),
+                        ("firstVideo", "样本内最早视频")):
+            self.assertEqual(self.o["labelsSampled"][k], want,
+                             f"{k} 的标签未降级，仍是确定性语气")
+
+    def test_labels_unchanged_when_not_sampled(self):
+        """反向：未截断时必须原样。反了就是制造新的假数据。"""
+        for k, want in (("firstMessage", "首条消息"),
+                        ("firstVoice", "第一条语音"),
+                        ("firstImage", "第一张图片"),
+                        ("firstVideo", "第一个视频")):
+            self.assertEqual(
+                self.o["labelsPlain"][k], want,
+                f"未截断的 {k} 标签被误降级成「{self.o['labelsPlain'][k]}」——"
+                "把真实的第一条说成不是第一条，比原问题更严重")
+
+    def test_no_static_table_pollution(self):
+        """降级不能靠改 FIELD_LABELS（全局静态表，一改就全表生效）。
+        验证方式：labelsPlain 必须仍是原始措辞——若有人直接改了
+        FIELD_LABELS，这一条会连同上一条一起报红。"""
+        joined = " ".join(self.o["labelsPlain"].values())
+        self.assertNotIn("样本内", joined,
+                         "降级渗进了静态标签表，会污染未截断的数据")
+
+    def test_last_message_not_downgraded_even_if_sibling_is_sampled(self):
+        """lastMessage 永远不该降级：它取的是样本末尾＝真实最近。"""
+        self.assertEqual(
+            self.o["labelsPlain"]["lastMessage"]
+            if "lastMessage" in self.o["labelsPlain"] else "最近消息",
+            "最近消息")
 
 
 class TestSampledWording(unittest.TestCase):

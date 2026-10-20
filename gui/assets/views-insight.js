@@ -122,7 +122,7 @@
         </template>
         <dl v-else-if="isObj" class="kv">
           <template v-for="(v,k) in visible" :key="k">
-            <dt>{{ label(k) }}</dt>
+            <dt :title="isSampledFirst(v) ? sampledTip(k) : ''">{{ fieldLabel(k, v) }}</dt>
             <dd>
               <!-- 截断样本里的「首条消息」不是会话真实首条，必须换个说法。
                    走通用 KV 会渲染成「样本内最早: true」，既噪音又没传达意思。 -->
@@ -198,6 +198,23 @@
                        firstImage: "第一张图片", firstVideo: "第一个视频" }[k] || "这一项";
         return `本次分析已达样本上限，这里显示的是样本范围内的${what}，`
              + "不是这个会话真实的第一次。";
+      },
+      /**
+       * 截断样本里 `<dt>` 也要降级措辞。
+       *
+       * 为什么不能改 FIELD_LABELS：那张表是全局静态的，一改就连
+       * **未截断**的正常数据也变成「样本内最早语音」——那才是真的假数据
+       * （把真实的第一条语音说成不是第一条）。降级只能按当行数据决定。
+       *
+       * 为什么不能只靠徽标：徽标在 `<dd>` 里，而视线先扫 `<dt>`。
+       * 「第一条语音」+ 旁边一个「样本内最早」仍会被读成
+       * 「他们第一次发语音是 7 月 27 日」。两处都降级才留得住。
+       */
+      fieldLabel(k, v) {
+        if (!this.isSampledFirst(v)) return this.label(k);
+        return { firstMessage: "样本内最早消息", firstVoice: "样本内最早语音",
+                 firstImage: "样本内最早图片", firstVideo: "样本内最早视频" }[k]
+            || this.label(k);
       },
       fmtVal(v, k) { return humanVal(v, k); },
       pctOf(r) { return typeof r === "number" ? Math.round(r * 1000) / 10 + "%" : "—"; },
