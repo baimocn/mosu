@@ -401,8 +401,25 @@ def run_serve(corpus: str, once: bool = False) -> int:
 
     log(f"[mosu-wechat] 启动，长轮询中 base={client.base_url} 日志={logf}")
 
+    def beat(extra: dict | None = None) -> None:
+        """写心跳：每轮必写，带状态。
+
+        原来只在 get_updates **成功返回后**才写。问题在于长轮询是阻塞调用，
+        正常也要挂 20~60 秒才返回；一旦卡死或异常，心跳就完全不更新，
+        但进程还在——外部只能看到「alive=False」，分不清是
+        「进程死了」还是「卡在某次请求里」。两者处理方式完全不同：
+        前者要拉起，后者要杀掉重来。
+        所以心跳里带上 phase，说明这一轮走到了哪一步。
+        """
+        payload = {"ts": int(time.time()), "pid": os.getpid()}
+        if extra:
+            payload.update(extra)
+        _write_json(mosu_home() / "wechat.heartbeat", payload)
+
     fails = 0
     while True:
+        # 轮询前先写一次：证明确实进了循环，不是卡在启动阶段
+        beat({"phase": "polling", "fails": fails})
         try:
             msgs, buf = client.get_updates(buf)
             fails = 0
@@ -412,12 +429,13 @@ def run_serve(corpus: str, once: bool = False) -> int:
             if fails >= 8:
                 log("[x] 连续失败过多，退出（交给计划任务拉起）")
                 return 1
+            beat({"phase": "retry", "fails": fails, "err": str(e)[:120]})
             time.sleep(min(2 ** fails, 60))
             continue
         _write_json(sync_path(), {"buf": buf})
         # 心跳：常驻活性证明。GUI/外部靠它判断"轮询是否真活着"——
         # 计划任务显示 Running 不代表进程没假死
-        _write_json(mosu_home() / "wechat.heartbeat", {"ts": int(time.time())})
+        beat({"phase": "ok", "fails": 0, "got": len(msgs)})
         for m in msgs:
             frm = m.get("from_user_id") or ""
             token_ctx = m.get("context_token") or ctx.get(frm, "")

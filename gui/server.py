@@ -117,14 +117,42 @@ def _resize(data: bytes, ext: str, max_width: int) -> bytes:
         return data
 
 
-def _heartbeat_age() -> int | None:
-    """通道服务最近一次心跳距现在多少秒；没有心跳文件返回 None。"""
+def _heartbeat() -> dict:
+    """通道服务的心跳详情；没有心跳文件返回空 dict。
+
+    心跳里有 phase 字段（polling / ok / retry），用来区分三种「不响应」：
+
+    | alive | phase   | 含义 |
+    |-------|---------|------|
+    | False | 无文件   | 从未启动过 |
+    | False | 任意     | 进程真的没了，需要拉起 |
+    | True  | polling | 正常挂起等消息（长轮询本来就会挂几十秒） |
+    | True  | retry   | 接口报错在退避重试，还没到放弃条件 |
+    | True  | ok      | 刚拿到一批消息 |
+
+    只给 alive 布尔值时，用户看到「离线」无法判断该做什么——
+    这些状态的处理方式完全不同（等 / 拉 / 杀）。
+    """
     import core.wechat as wx
     hb = wx._read_json(wx.mosu_home() / "wechat.heartbeat")
     ts = hb.get("ts")
     if not ts:
-        return None
-    return max(0, int(time.time() - ts))
+        return {}
+    age = max(0, int(time.time() - ts))
+    return {
+        "age": age,
+        "phase": hb.get("phase") or "",
+        "fails": hb.get("fails"),
+        "got": hb.get("got"),
+        "pid": hb.get("pid"),
+        "err": hb.get("err") or "",
+    }
+
+
+def _heartbeat_age() -> int | None:
+    """通道服务最近一次心跳距现在多少秒；没有心跳文件返回 None。"""
+    hb = _heartbeat()
+    return hb.get("age") if hb else None
 
 
 # ---------------------------------------------------------------- 导出产物目录
@@ -334,6 +362,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             "service": {
                 "alive": age is not None and age < HEARTBEAT_MAX_AGE,
                 "last_seen": age,
+                # 补充 phase 等细节：只给 alive 布尔值时，
+                # 「离线」到底是进程没了还是要等，用户无从判断。
+                "detail": _heartbeat(),
+                "maxAge": HEARTBEAT_MAX_AGE,
             },
             "bot": {
                 "corpus": n,

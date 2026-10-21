@@ -50,7 +50,7 @@
         <div class="tile">
           <div class="tile-head">服务心跳</div>
           <div class="tile-value" style="font-size:24px">
-            <span :class="alive ? 'trend trend-down' : 'trend trend-up'">{{ alive ? '活着' : '无心跳' }}</span>
+            <span :class="beatClass">{{ beatLabel }}</span>
           </div>
           <div class="tile-foot">{{ beatText }}</div>
         </div>
@@ -164,8 +164,52 @@
       wxCursor() { const w = this.status && this.status.wechat; return w ? w.cursor : false; },
       beatText() {
         const s = this.status && this.status.service;
-        if (!s || s.last_seen === null || s.last_seen === undefined) return "等待首次心跳";
-        return `${Math.round(s.last_seen)} 秒前`;
+        if (!s || s.last_seen === null || s.last_seen === undefined) {
+          return "从未收到心跳——通道服务可能没启动";
+        }
+        const d = s.detail || {};
+        const bits = [`${Math.round(s.last_seen)} 秒前`];
+        // 先判存活，再判 phase。
+        // 反过来的话，一个已经断线 15 小时的进程最后 phase 是 polling，
+        // 就会显示成「正常等待消息」，把故障说成正常——这是实测踩到的。
+        if (!s.alive) {
+          bits.push("心跳已过期：进程可能已退出，需要重新拉起");
+        } else if (d.phase === "retry" && d.fails) {
+          bits.push(`接口连续失败 ${d.fails} 次，正在退避重试`);
+        } else if (d.phase === "polling") {
+          // 长轮询本来就是挂起等消息，几十秒不更新是正常的——
+          // 不说明这点的话，用户会以为它卡住了
+          bits.push("正常等待消息（长轮询会挂起几十秒）");
+        } else if (d.phase === "ok" && d.got) {
+          bits.push(`刚收到 ${d.got} 条`);
+        }
+        if (d.pid) bits.push(`PID ${d.pid}`);
+        return bits.join(" · ");
+      },
+      /**
+       * 心跳状态文案。原来只有「活着 / 无心跳」两种，
+       * 但「无心跳」可能意味着三件完全不同的事：
+       *   进程真死了（要拉起） / 卡在某次请求里（要杀掉重来） / 从未启动过
+       * 三者处理方式不同，所以必须分开说。
+       */
+      beatLabel() {
+        const s = this.status && this.status.service;
+        if (!s) return "无数据";
+        if (s.last_seen === null || s.last_seen === undefined) return "未启动";
+        if (!s.alive) return "已断开";
+        const d = s.detail || {};
+        if (d.phase === "retry") return "重试中";
+        return "正常";      // ok / polling / 老版本无 phase，都算正常
+      },
+      beatClass() {
+        const s = this.status && this.status.service;
+        const d = (s && s.detail) || {};
+        if (!s || s.last_seen === null || s.last_seen === undefined) {
+          return "trend trend-up";        // 未启动 = 警示色
+        }
+        if (!s.alive) return "trend trend-up";          // 断开 = 警示色
+        if (d.phase === "retry") return "trend trend-up"; // 重试中 = 警示色
+        return "trend trend-down";
       },
     },
     methods: {
