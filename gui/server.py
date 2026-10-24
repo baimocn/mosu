@@ -163,6 +163,94 @@ def _heartbeat_age() -> int | None:
 EXPORT_ROOT = ROOT / "export" / "gui"
 
 
+def _export_dests() -> list[dict]:
+    """可选的导出目的地。默认项目目录，加桌面/下载/文档三个预设。
+
+    用户原话：「导出时产物放哪不应该是可选的吗」。默认位置服务的是
+    「可找回」，选择权服务的是「我要拿它去干嘛」——备份到桌面、发给
+    别人前先落下载文件夹，都是把产物移出项目的常见理由。
+    OneDrive 会把桌面重定向到 OneDrive\\Desktop，~/Desktop 不存在时认领它。
+    """
+    home = Path.home()
+    cands = [
+        ("project", "项目目录", EXPORT_ROOT),
+        ("desktop", "桌面", home / "Desktop"),
+        ("downloads", "下载", home / "Downloads"),
+        ("documents", "文档", home / "Documents"),
+    ]
+    out = []
+    for key, label, p in cands:
+        if not p.exists() and key == "desktop":
+            od = home / "OneDrive" / "Desktop"
+            if od.exists():
+                p = od
+        out.append({"key": key, "label": label,
+                    "path": str(p), "exists": p.is_dir()})
+    return out
+
+
+def _resolve_dest(dest) -> Path:
+    """dest：预设 key 或绝对路径；空/项目 → EXPORT_ROOT。
+
+    自定义路径只认绝对路径且必须已存在——不替用户 mkdir：
+    拼错一个字母就往深了建目录，产物等于埋掉。
+    """
+    dest = (dest or "").strip()
+    if not dest or dest == "project":
+        return EXPORT_ROOT
+    for d in _export_dests():
+        if d["key"] == dest and d["key"] != "project":
+            p = Path(d["path"])
+            if not p.is_dir():
+                raise ValueError(f"{d['label']}目录不存在：{d['path']}")
+            return p
+    p = Path(dest)
+    if not p.is_absolute():
+        raise ValueError("保存位置必须是绝对路径，或从预设里选")
+    if not p.is_dir():
+        raise ValueError(f"目录不存在：{dest}（先创建，或换一个位置）")
+    return p
+
+
+def _export_index_path() -> Path:
+    """导出登记簿：一行一次导出，记 dest 绝对路径。
+
+    为什么需要它：产物可以落在任意位置（桌面/自定义目录），「导出记录」
+    不能只扫项目目录。登记簿是单一事实来源——记录展示、重下、清理都读它。
+    写在 EXPORT_ROOT 里（gitignored），本身也是项目内文件。
+    """
+    return EXPORT_ROOT / "INDEX.jsonl"
+
+
+def _export_index_append(rec: dict) -> None:
+    try:
+        EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
+        with _export_index_path().open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass        # 登记失败不影响导出本身（完成卡仍显示路径）
+
+
+def _export_index_read(limit: int = 50) -> list[dict]:
+    p = _export_index_path()
+    if not p.exists():
+        return []
+    rows: list[dict] = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    rows.reverse()
+    return rows[:limit]
+
+
 class _TaskHub:
     """异步任务注册表（关键词统计 / HTML 导出共用）。
 
@@ -717,10 +805,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         return t
 
     # ---------------------------------------------------------------- 导出
-    def _export_text_task(sess_id: str, fmt: str, from_ts, to_ts):
+    def _export_text_task(sess_id: str, fmt: str, from_ts, to_ts, dest: Path):
         """TaskHub worker：文本格式（秒级，但走任务统一轮询，前端一套逻辑）。
 
-        产物**落盘**到 EXPORT_ROOT/<tid>/：只把字节放任务注册表（内存）的话，
+        产物**落盘**到 dest/<tid>/：只把字节放任务注册表（内存）的话，
         页面一离开、服务一重启、任务数超过 keep=20，导出就取不回来了。
         """
         def run(tid):
@@ -730,16 +818,22 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 if not sess:
                     raise LookupError(f"没找到会话「{sess_id}」")
                 data, ext = _text_export_bytes(ds, sess, fmt, from_ts, to_ts)
-                out_dir = EXPORT_ROOT / tid
+                out_dir = dest / tid
                 out_dir.mkdir(parents=True, exist_ok=True)
                 fname = f"{_safe_dirname(sess['displayName'])}.{ext}"
                 (out_dir / fname).write_bytes(data)
+                _export_index_append({
+                    "task": tid, "session": sess["displayName"],
+                    "dest": str(dest), "bytes": len(data),
+                    "mtime": datetime.now().strftime("%m-%d %H:%M"),
+                    "files": [{"name": fname, "size": len(data)}],
+                })
                 return {"session": sess["displayName"], "count": len(data),
                         "ext": ext, "filename": fname, "bytes": len(data),
                         "path": str(out_dir), "data": data.hex()}
         return run
 
-    def _export_html_task(sess_id: str, from_ts, to_ts):
+    def _export_html_task(sess_id: str, from_ts, to_ts, dest: Path):
         """TaskHub worker：HTML 整会话导出 + zip（复刻 CLI cmd_export 的 html 分支）。
         语音不带 mp3（GUI 零 Node 原则），HTML 内以转文字呈现。"""
         def run(tid):
@@ -750,7 +844,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     raise LookupError(f"没找到会话「{sess_id}」")
                 from core.media import MediaStore
                 from core.exporter import ChatExporter
-                out_dir = EXPORT_ROOT / tid
+                out_dir = dest / tid
                 out_dir.mkdir(parents=True, exist_ok=True)
                 media = MediaStore(ds.user_dir, ROOT / ".cache").build()
                 rows, names, self_id = ds.collect_session_rows(sess, from_ts, to_ts)
@@ -759,6 +853,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 zip_bytes = _zip_dir(out_dir)
                 fname = f"{_safe_dirname(sess['displayName'])}.zip"
                 (out_dir / fname).write_bytes(zip_bytes)
+                _export_index_append({
+                    "task": tid, "session": sess["displayName"],
+                    "dest": str(dest), "bytes": len(zip_bytes),
+                    "mtime": datetime.now().strftime("%m-%d %H:%M"),
+                    "files": [{"name": fname, "size": len(zip_bytes)}],
+                })
                 return {"session": sess["displayName"], "count": len(rows),
                         "bytes": len(zip_bytes), "filename": fname,
                         "path": str(out_dir)}
@@ -772,7 +872,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         s = "".join(ch for ch in s if ch not in bad).strip().rstrip(".")
         return s[:60] or "chat"
 
-    def _export_all_task(top_n: int, from_ts, to_ts):
+    def _export_all_task(top_n: int, from_ts, to_ts, dest: Path):
         """TaskHub worker：多会话批量导出（每会话一个子目录，打成一个 zip）。
         top_n 限制会话数——全库 190 个会话逐个解密媒体要跑很久，
         GUI 给「前 N 大会话」；真要全量用 CLI `mosu export --all`。"""
@@ -784,7 +884,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 media = MediaStore(ds.user_dir, ROOT / ".cache").build()
                 sessions = sorted(ds.sessions(),
                                   key=lambda s: -(s["messageCount"] or 0))[:top_n]
-                out_dir = EXPORT_ROOT / tid
+                out_dir = dest / tid
                 out_dir.mkdir(parents=True, exist_ok=True)
                 done = []
                 for sess in sessions:
@@ -799,6 +899,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 zip_bytes = _zip_dir(out_dir)
                 fname = f"{_safe_dirname(f'前{top_n}大会话')}.zip"
                 (out_dir / fname).write_bytes(zip_bytes)
+                _export_index_append({
+                    "task": tid, "session": f"{len(done)} 个会话",
+                    "dest": str(dest), "bytes": len(zip_bytes),
+                    "mtime": datetime.now().strftime("%m-%d %H:%M"),
+                    "files": [{"name": fname, "size": len(zip_bytes)}],
+                })
                 return {"session": f"{len(done)} 个会话", "count": sum(d["count"] for d in done),
                         "bytes": len(zip_bytes), "sessions": done,
                         "filename": fname, "path": str(out_dir)}
@@ -806,6 +912,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
     def api_export(payload: dict):
         scope = (payload.get("scope") or "single").strip()
+        # 目的地：预设 key 或绝对路径，缺省项目目录。校验放在同步段——
+        # 路径不存在时立刻 400 让用户换一个，别等任务跑完才失败。
+        dest = _resolve_dest(payload.get("dest"))
         if scope == "all":
             top_n = int(payload.get("topN") or 10)
             if not (1 <= top_n <= 30):
@@ -816,9 +925,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             # 补丁；根因已在 core/dataset.py 修掉，保留只会让人误以为它还会抛 SystemExit。
             from_ts = parse_time(payload.get("from"))
             to_ts = parse_time(payload.get("to"))
-            tid = tasks.submit("export-html", _export_all_task(top_n, from_ts, to_ts))
+            tid = tasks.submit("export-html",
+                               _export_all_task(top_n, from_ts, to_ts, dest))
             return {"taskId": tid, "status": "running",
-                    "session": f"前 {top_n} 大会话"}
+                    "session": f"前 {top_n} 大会话", "dest": str(dest)}
         sess_id = (payload.get("session") or "").strip()
         fmt = (payload.get("format") or "").lower()
         if not sess_id:
@@ -835,27 +945,40 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 raise LookupError(f"没找到会话「{sess_id}」")
         if fmt == "html":
             tid = tasks.submit("export-html",
-                               _export_html_task(sess_id, from_ts, to_ts))
+                               _export_html_task(sess_id, from_ts, to_ts, dest))
             return {"taskId": tid, "status": "running",
-                    "session": sess["displayName"]}
-        tid = tasks.submit("export-text", _export_text_task(sess_id, fmt, from_ts, to_ts))
+                    "session": sess["displayName"], "dest": str(dest)}
+        tid = tasks.submit("export-text",
+                           _export_text_task(sess_id, fmt, from_ts, to_ts, dest))
         return {"taskId": tid, "status": "running",
-                "session": sess["displayName"], "sync": False}
+                "session": sess["displayName"], "sync": False, "dest": str(dest)}
+
+    def api_export_dests(q) -> dict:
+        """可选的导出目的地（桌面/下载/文档 + 项目目录），带存在性标记。
+
+        前端「保存到」选择器只列存在的目录；不存在的（如没建过 Documents）
+        不显示，免得用户选了一个必然失败的位置。
+        """
+        return {"dests": _export_dests()}
 
     def api_export_download(q) -> tuple[bytes, str, str]:
-        """从磁盘导出目录取文件：?task=<tid>&name=<文件名>。
+        """按登记簿取导出文件：?task=<tid>&name=<文件名>。
 
-        不再走任务注册表里的内存字节——那套在页面离开/服务重启/任务
-        淘汰（keep=20）后就取不回来了。文件落盘，随时能重下。
-        name 只允许纯文件名（防目录穿越），且必须落在该 task 目录内。
+        产物可能落在任意位置（项目目录/桌面/自定义目录），所以不能拿
+        EXPORT_ROOT 拼路径——以 INDEX.jsonl 登记的 dest 为准，再校验
+        name 是纯文件名且 resolve 后确实落在登记的 dest 目录内（防穿越）。
         """
         tid = (q.get("task") or "").strip()
         name = (q.get("name") or "").strip()
         if not tid or "/" in name or "\\" in name or name in ("", ".", ".."):
             raise ValueError("参数不合法")
-        art = (EXPORT_ROOT / tid).resolve()
+        rec = next((r for r in _export_index_read(limit=200)
+                    if r.get("task") == tid), None)
+        if rec is None:
+            raise LookupError(tid)
+        art = Path(rec.get("dest") or str(EXPORT_ROOT)) / tid
         f = (art / name).resolve()
-        if not str(f).startswith(str(art) + os.sep) and f != art:
+        if not str(f).startswith(str(art.resolve()) + os.sep):
             raise ValueError("参数不合法")
         if not f.is_file():
             # 兼容旧调用：只给 task 时，目录里唯一的 zip/单文件就是它
@@ -865,7 +988,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 if cands:
                     f = cands[0]
                 else:
-                    raise LookupError(tid)
+                    raise LookupError(f"{tid}/{name}")
             else:
                 raise LookupError(f"{tid}/{name}")
         ctype = ("application/zip" if f.suffix == ".zip"
@@ -875,35 +998,20 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         return f.read_bytes(), ctype, f.name
 
     def api_exports(q) -> dict:
-        """导出记录：扫磁盘产物目录，服务重启后依然在，可随时重下。
+        """导出记录：读 INDEX 登记簿，服务重启后依然在，可随时重下。
 
-        任务注册表（内存）只保留最近 20 条且重启即失；这里以磁盘为准，
-        前端「导出记录」卡片的数据源。session 名尽量从注册表补，补不到
-        就只显示文件名（老产物）。
+        任务注册表（内存）只保留最近 20 条且重启即失；登记簿以磁盘为准，
+        且记的是**实际 dest**（可能是桌面或自定义目录）——记录里直接给
+        完整路径，用户不用猜「东西放哪了」。
         """
         items = []
-        if EXPORT_ROOT.exists():
-            dirs = [d for d in EXPORT_ROOT.iterdir() if d.is_dir()]
-            dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
-            for d in dirs[:50]:
-                files, total = [], 0
-                for f in sorted(d.iterdir()):
-                    if f.is_file():
-                        sz = f.stat().st_size
-                        total += sz
-                        files.append({"name": f.name, "size": sz})
-                if not files:
-                    continue
-                t = tasks.fetch(d.name) or {}
-                items.append({
-                    "task": d.name,
-                    "session": (t.get("result") or {}).get("session") or "",
-                    "bytes": total,
-                    "mtime": datetime.fromtimestamp(
-                        d.stat().st_mtime).strftime("%m-%d %H:%M"),
-                    "files": files,
-                })
-        return {"exports": items, "root": str(EXPORT_ROOT)}
+        for r in _export_index_read():
+            dest = r.get("dest") or ""
+            tid = r.get("task") or ""
+            items.append({**r, "files": r.get("files") or [],
+                          "path": str(Path(dest) / tid) if dest and tid else ""})
+        return {"exports": items, "root": str(EXPORT_ROOT),
+                "dests": _export_dests()}
 
     # ---------------------------------------------------------------- 联系人
     def api_contacts(q) -> dict:
@@ -1410,6 +1518,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/contact": (api_contact, True),
         "/api/profile": (api_profile, True),
         "/api/exports": (api_exports, True),
+        "/api/export/dests": (api_export_dests, True),
         "/api/aicorpus": (api_aicorpus, True),
         "/api/report": (api_report, True),
         "/api/accounts": (api_accounts, False),
@@ -1658,6 +1767,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     # 用户重启一次 GUI，上次导出的 zip 连同磁盘副本一起消失，
     # 而任务注册表（内存）里的下载字节也随之清空，导出即永失。
     # 现在产物落盘 + 本页「导出记录」可随时重下，只需按年龄防堆积。
+    # 只动项目目录内的产物：桌面/自定义目录是用户自己选的落脚点，
+    # 不经过我们同意就伸手去删越权了——那些位置让用户自己管。
     try:
         cutoff = time.time() - 14 * 86400
         if EXPORT_ROOT.exists():
@@ -1667,6 +1778,24 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                         shutil.rmtree(d)
                 except Exception:
                     pass
+        # 登记簿同步剪掉对应行（14 天前且目录已不在的）
+        rows = _export_index_read(limit=1000)
+        keep = []
+        for r in rows:
+            p = Path(r.get("dest") or "") / (r.get("task") or "")
+            try:
+                fresh = p.exists() and p.stat().st_mtime >= cutoff
+            except Exception:
+                fresh = False
+            if fresh or (Path(r.get("dest") or "") != EXPORT_ROOT):
+                keep.append(r)
+        if len(keep) != len(rows):
+            try:
+                with _export_index_path().open("w", encoding="utf-8") as f:
+                    for r in keep:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
     except Exception:
         pass
 

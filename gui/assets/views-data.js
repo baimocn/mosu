@@ -257,6 +257,28 @@
             </div>
             <div class="field-hint">{{ fmtHint }}</div>
           </div>
+          <!-- 保存到：产物落哪个目录。默认项目目录（可找回、有记录），
+               也可选桌面/下载/文档或自定义绝对路径——「导完我要拿它去干嘛」
+               和「找得到」是两件事，选择权给用户。 -->
+          <div class="field">
+            <label class="field-label">保存到</label>
+            <div class="row" style="flex-wrap:wrap;gap:6px">
+              <button class="chip" v-for="d in dests" :key="d.key"
+                      :class="{active: dest===d.key}" @click="pickDest(d.key)"
+                      :title="d.path">
+                {{ d.label }}
+              </button>
+              <button class="chip" :class="{active: dest==='__custom__'}"
+                      @click="dest='__custom__'" title="输入一个已存在的绝对路径">
+                自定义…
+              </button>
+            </div>
+            <div v-if="dest==='__custom__'" class="row" style="margin-top:8px">
+              <input class="input" style="flex:1" v-model="customDest"
+                     placeholder="绝对路径，如 D:\备份（目录必须已存在）" />
+            </div>
+            <div class="field-hint">{{ destHint }}</div>
+          </div>
           <div class="row">
             <input class="input" style="width:140px" v-model="from" placeholder="起（可选）"
                    onfocus="this.type='date'" />
@@ -276,7 +298,7 @@
             <input class="input" type="number" min="1" max="30" v-model.number="topN" />
             <div class="field-hint">
               按消息量取前 N 个。全量导出会解密所有媒体，很慢很大（本机实测 3
-              个会话 16 万条 ≈ 1.2GB / 4 分钟）。
+              个会话 16 万条 ≈ 1.2GB / 4 分钟）。保存位置跟随上方「保存到」的选择。
             </div>
           </div>
           <button class="btn" @click="runAll" :disabled="!!task">
@@ -330,6 +352,9 @@
             <b>{{ h.session || '导出产物' }}</b>
             <span class="tiny muted">{{ h.mtime }} · {{ fmtSize(h.bytes) }}</span>
           </div>
+          <div class="tiny muted" style="margin-top:2px;word-break:break-all">
+            {{ h.path }}
+          </div>
           <div class="hist-files">
             <a v-for="f in h.files" :key="f.name" class="hist-file"
                :href="'/api/export/download?task=' + h.task + '&name=' + encodeURIComponent(f.name)"
@@ -358,6 +383,7 @@
                   { v: "json", label: "JSON" }, { v: "txt", label: "TXT" }],
         task: null, done: null, elapsed: 0, timer: null,
         history: [], exportRoot: "",
+        dests: [], dest: "project", customDest: "",
       };
     },
     computed: {
@@ -369,10 +395,26 @@
           txt: "纯文本：最小最快。",
         }[this.fmt];
       },
+      destHint() {
+        if (this.dest === "__custom__") {
+          return this.customDest
+            ? "将保存到：" + this.customDest + "\\<任务号>\\"
+            : "填一个已存在的绝对路径；目录不存在会导出失败。";
+        }
+        const d = this.dests.find((x) => x.key === this.dest);
+        return d ? "将保存到：" + d.path + "\\<任务号>\\" : "";
+      },
     },
     methods: {
       ...{ fmtNum: M.fmtNum, fmtDur: (ms) => M.fmtDur(ms * 1000),
           fmtSize: (b) => M.fmtSize(b) },
+      pickDest(key) {
+        this.dest = key;
+      },
+      /** 实际发给后端的 dest：自定义时是路径字符串，否则是预设 key */
+      effectiveDest() {
+        return this.dest === "__custom__" ? this.customDest.trim() : this.dest;
+      },
       /** 从磁盘拉导出记录（服务重启后依然在，这是「东西放哪里了」的答案） */
       async loadHistory() {
         try {
@@ -380,6 +422,13 @@
           this.history = d.exports || [];
           this.exportRoot = d.root || "";
         } catch (e) { /* 忽略：记录拉不到不影响主流程 */ }
+      },
+      async loadDests() {
+        try {
+          const d = await M.api.get("/api/export/dests");
+          // 只列真实存在的目录：不存在的预设选了也白选
+          this.dests = (d.dests || []).filter((x) => x.exists);
+        } catch (e) { /* 忽略：拉不到就只用默认项目目录 */ }
       },
       download(tid, name) {
         if (!tid || !name) return;
@@ -407,7 +456,9 @@
       async submit(payload) {
         this.done = null;
         try {
-          const d = await M.api.post("/api/export", payload);
+          const d = await M.api.post("/api/export", {
+            ...payload, dest: this.effectiveDest(),
+          });
           this.task = { id: d.taskId, status: "running", session: d.session };
           this.poll(d.taskId);
         } catch (e) { M.toast.err("导出失败：" + e.message); }
@@ -453,6 +504,7 @@
         const d = await M.api.get("/api/sessions", { limit: 500 });
         this.sessions = d.sessions || [];
       } catch (e) { /* 忽略 */ }
+      this.loadDests();
       this.loadHistory();
       const h = location.hash.match(/session=([^&]+)/);
       if (h) this.sess = decodeURIComponent(h[1]);
