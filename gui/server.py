@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -156,7 +157,10 @@ def _heartbeat_age() -> int | None:
 
 
 # ---------------------------------------------------------------- 导出产物目录
-EXPORT_ROOT = ROOT / ".cache" / "gui_export"
+# 导出产物根目录。**不放 .cache**：.cache 是「可随时清」的解密快照家，
+# 而导出是用户明确要拿走的成果——放进 .cache 等于告诉用户「这东西不重要」，
+# 历史上导出完成即「找不到东西」的投诉就源于此。export/ 已被 gitignore。
+EXPORT_ROOT = ROOT / "export" / "gui"
 
 
 class _TaskHub:
@@ -714,7 +718,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
     # ---------------------------------------------------------------- 导出
     def _export_text_task(sess_id: str, fmt: str, from_ts, to_ts):
-        """TaskHub worker：文本格式（秒级，但走任务统一轮询，前端一套逻辑）。"""
+        """TaskHub worker：文本格式（秒级，但走任务统一轮询，前端一套逻辑）。
+
+        产物**落盘**到 EXPORT_ROOT/<tid>/：只把字节放任务注册表（内存）的话，
+        页面一离开、服务一重启、任务数超过 keep=20，导出就取不回来了。
+        """
         def run(tid):
             with _ds_lock:
                 ds = get_ds()
@@ -722,8 +730,13 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 if not sess:
                     raise LookupError(f"没找到会话「{sess_id}」")
                 data, ext = _text_export_bytes(ds, sess, fmt, from_ts, to_ts)
+                out_dir = EXPORT_ROOT / tid
+                out_dir.mkdir(parents=True, exist_ok=True)
+                fname = f"{_safe_dirname(sess['displayName'])}.{ext}"
+                (out_dir / fname).write_bytes(data)
                 return {"session": sess["displayName"], "count": len(data),
-                        "ext": ext, "data": data.hex()}
+                        "ext": ext, "filename": fname, "bytes": len(data),
+                        "path": str(out_dir), "data": data.hex()}
         return run
 
     def _export_html_task(sess_id: str, from_ts, to_ts):
@@ -744,9 +757,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 exp = ChatExporter(media, out_dir, voice_map={})
                 exp.export(rows, names, self_id, title=sess["displayName"])
                 zip_bytes = _zip_dir(out_dir)
+                fname = f"{_safe_dirname(sess['displayName'])}.zip"
+                (out_dir / fname).write_bytes(zip_bytes)
                 return {"session": sess["displayName"], "count": len(rows),
-                        "bytes": len(zip_bytes),
-                        "zip": zip_bytes.hex()}
+                        "bytes": len(zip_bytes), "filename": fname,
+                        "path": str(out_dir)}
         return run
 
     def _safe_dirname(s: str) -> str:
@@ -782,9 +797,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     exp.export(rows, names, self_id, title=sess["displayName"])
                     done.append({"session": sess["displayName"], "count": len(rows)})
                 zip_bytes = _zip_dir(out_dir)
+                fname = f"{_safe_dirname(f'前{top_n}大会话')}.zip"
+                (out_dir / fname).write_bytes(zip_bytes)
                 return {"session": f"{len(done)} 个会话", "count": sum(d["count"] for d in done),
                         "bytes": len(zip_bytes), "sessions": done,
-                        "zip": zip_bytes.hex()}
+                        "filename": fname, "path": str(out_dir)}
         return run
 
     def api_export(payload: dict):
@@ -826,21 +843,67 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 "session": sess["displayName"], "sync": False}
 
     def api_export_download(q) -> tuple[bytes, str, str]:
-        """任务完成后返回 (字节, content-type, 文件名)。"""
+        """从磁盘导出目录取文件：?task=<tid>&name=<文件名>。
+
+        不再走任务注册表里的内存字节——那套在页面离开/服务重启/任务
+        淘汰（keep=20）后就取不回来了。文件落盘，随时能重下。
+        name 只允许纯文件名（防目录穿越），且必须落在该 task 目录内。
+        """
         tid = (q.get("task") or "").strip()
-        t = tasks.fetch(tid)
-        if not t:
-            raise KeyError(tid)
-        if t["status"] == "error":
-            raise RuntimeError(t["error"] or "导出失败")
-        if t["status"] != "done":
-            raise ValueError("任务还没完成")
-        res = t["result"] or {}
-        if t["kind"] == "export-html":
-            return (bytes.fromhex(res["zip"]), "application/zip",
-                    f"{res['session']}.zip")
-        return (bytes.fromhex(res["data"]), "application/octet-stream",
-                f"{res['session']}.{res['ext']}")
+        name = (q.get("name") or "").strip()
+        if not tid or "/" in name or "\\" in name or name in ("", ".", ".."):
+            raise ValueError("参数不合法")
+        art = (EXPORT_ROOT / tid).resolve()
+        f = (art / name).resolve()
+        if not str(f).startswith(str(art) + os.sep) and f != art:
+            raise ValueError("参数不合法")
+        if not f.is_file():
+            # 兼容旧调用：只给 task 时，目录里唯一的 zip/单文件就是它
+            if not name and art.is_dir():
+                cands = sorted(art.glob("*.zip")) or sorted(
+                    p for p in art.iterdir() if p.is_file())
+                if cands:
+                    f = cands[0]
+                else:
+                    raise LookupError(tid)
+            else:
+                raise LookupError(f"{tid}/{name}")
+        ctype = ("application/zip" if f.suffix == ".zip"
+                 else "text/csv" if f.suffix == ".csv"
+                 else "application/json" if f.suffix == ".json"
+                 else "text/plain")
+        return f.read_bytes(), ctype, f.name
+
+    def api_exports(q) -> dict:
+        """导出记录：扫磁盘产物目录，服务重启后依然在，可随时重下。
+
+        任务注册表（内存）只保留最近 20 条且重启即失；这里以磁盘为准，
+        前端「导出记录」卡片的数据源。session 名尽量从注册表补，补不到
+        就只显示文件名（老产物）。
+        """
+        items = []
+        if EXPORT_ROOT.exists():
+            dirs = [d for d in EXPORT_ROOT.iterdir() if d.is_dir()]
+            dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+            for d in dirs[:50]:
+                files, total = [], 0
+                for f in sorted(d.iterdir()):
+                    if f.is_file():
+                        sz = f.stat().st_size
+                        total += sz
+                        files.append({"name": f.name, "size": sz})
+                if not files:
+                    continue
+                t = tasks.fetch(d.name) or {}
+                items.append({
+                    "task": d.name,
+                    "session": (t.get("result") or {}).get("session") or "",
+                    "bytes": total,
+                    "mtime": datetime.fromtimestamp(
+                        d.stat().st_mtime).strftime("%m-%d %H:%M"),
+                    "files": files,
+                })
+        return {"exports": items, "root": str(EXPORT_ROOT)}
 
     # ---------------------------------------------------------------- 联系人
     def api_contacts(q) -> dict:
@@ -943,7 +1006,21 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             return out
 
     # ---------------------------------------------------------------- 画像/年报
-    def _profile_task(sess: str, from_ts, to_ts):
+    def _finish_ai(pd, d: dict, ai_mode: str) -> dict:
+        """AI 人格分析章节在 **_ds_lock 之外**生成。
+
+        LLM 一次调用 30-90 秒：放在锁里，那段时间整个 GUI 的数据 API
+        （消息、统计、联系人）全部瘫痪。统计在锁内算完，AI 章节锁外补。
+        """
+        if ai_mode == "off":
+            d["ai"] = None
+            return d
+        # force=True：统计是用 ai="off" 跑的（锁内防自动烧额度），
+        # 这里显式外挂 AI 章节，不能被 distiller 自己的开关挡掉
+        d["ai"] = pd._ai_layer(d, getattr(pd, "_last_msgs", []), force=True)
+        return d
+
+    def _profile_task(sess: str, from_ts, to_ts, ai_mode: str = "auto"):
         """TaskHub worker：画像蒸馏（联系人画像逐条解压，14 万条的大群要几分钟）。
 
         走异步的意义不只是"不阻塞 HTTP 响应"——同步路径**全程持 _ds_lock**，
@@ -952,26 +1029,35 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         def run(tid):
             with _ds_lock:
                 from core.profile import ProfileDistiller
-                pd = ProfileDistiller(get_ds())
+                pd = ProfileDistiller(get_ds(), ai="off")
                 if sess:
-                    return pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
-                return pd.self_profile(from_ts=from_ts, to_ts=to_ts)
+                    d = pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
+                else:
+                    d = pd.self_profile(from_ts=from_ts, to_ts=to_ts)
+            return _finish_ai(pd, d, ai_mode)
         return run
 
     def api_profile(q) -> dict:
         sess = (q.get("session") or "").strip()
         from_ts, to_ts = _range_ts(q)
+        # AI 章节显式 opt-in（ai=1/true/yes 才开），缺省关。
+        # 与 CLI/MCP 的 auto 不同：GUI 每次切页面都会打这个接口，
+        # auto 等于每次打开画像都烧一次 LLM——按需生成才配得上那颗按钮。
+        # 注意生成发生在 _ds_lock 外，见 _finish_ai。
+        ai_mode = "auto" if str(q.get("ai") or "") in ("1", "true", "yes") else "off"
         # ?async=1 走 TaskHub；不带参数仍走同步旧路径。
         # CLI / MCP 间接依赖 ProfileDistiller 的同步语义，一次切换爆炸半径不值。
         if str(q.get("async") or "") in ("1", "true", "yes"):
-            tid = tasks.submit("profile", _profile_task(sess, from_ts, to_ts))
+            tid = tasks.submit("profile", _profile_task(sess, from_ts, to_ts, ai_mode))
             return {"taskId": tid, "status": "running"}
         with _ds_lock:
             from core.profile import ProfileDistiller
-            pd = ProfileDistiller(get_ds())
+            pd = ProfileDistiller(get_ds(), ai="off")
             if sess:
-                return pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
-            return pd.self_profile(from_ts=from_ts, to_ts=to_ts)
+                d = pd.contact_profile(sess, from_ts=from_ts, to_ts=to_ts)
+            else:
+                d = pd.self_profile(from_ts=from_ts, to_ts=to_ts)
+        return _finish_ai(pd, d, ai_mode)
 
     def api_aicorpus(q) -> dict:
         """AI 对话语料统计（读 ~/.workbuddy 等目录，与微信库无关）。
@@ -1323,6 +1409,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/contacts": (api_contacts, True),
         "/api/contact": (api_contact, True),
         "/api/profile": (api_profile, True),
+        "/api/exports": (api_exports, True),
         "/api/aicorpus": (api_aicorpus, True),
         "/api/report": (api_report, True),
         "/api/accounts": (api_accounts, False),
@@ -1488,6 +1575,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             if path == "/api/export/download":
                 try:
                     data, ctype, fname = api_export_download(self._params())
+                except LookupError:
+                    self._json({"error": "导出文件不存在（可能已被清理）"}, 404)
                 except KeyError:
                     self._json({"error": "任务不存在"}, 404)
                 except ValueError as e:
@@ -1564,10 +1653,20 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             self._json({"error": f"unknown path: {path}"}, 404)
 
-    # 启动时清空导出产物目录（上次运行的临时 HTML/zip，无保留价值）
+    # 启动时只清理 14 天前的导出产物。原先这里是无条件 rmtree——
+    # 「上次运行的临时文件无保留价值」在设计上就没把导出当成果：
+    # 用户重启一次 GUI，上次导出的 zip 连同磁盘副本一起消失，
+    # 而任务注册表（内存）里的下载字节也随之清空，导出即永失。
+    # 现在产物落盘 + 本页「导出记录」可随时重下，只需按年龄防堆积。
     try:
+        cutoff = time.time() - 14 * 86400
         if EXPORT_ROOT.exists():
-            shutil.rmtree(EXPORT_ROOT)
+            for d in EXPORT_ROOT.iterdir():
+                try:
+                    if d.is_dir() and d.stat().st_mtime < cutoff:
+                        shutil.rmtree(d)
+                except Exception:
+                    pass
     except Exception:
         pass
 

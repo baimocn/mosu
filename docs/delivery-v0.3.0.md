@@ -101,8 +101,8 @@ logo 按要求定位为「倾听者 / 陪伴式对话助手」，但 `DEFAULT_PE
 ### 自动化
 
 ```bash
-cd D:/Desktop/墨溯
-C:/Python314/python.exe -m pytest tests/ -p no:typeguard -q -p no:cacheprovider
+cd PROJECT_DIR
+python -m pytest tests/ -p no:typeguard -q -p no:cacheprovider
 # 期望：154 passed
 ```
 
@@ -123,7 +123,7 @@ curl -s -D- -o /dev/null "http://127.0.0.1:8788/api/media?md5=<MD5>"
 
 ```bash
 curl -s -XPOST -d '{"persona":"analyst"}' http://127.0.0.1:8788/api/persona/set
-curl -s -XPOST -d '{"message":"我和张语桐一般多久回一次消息"}' http://127.0.0.1:8788/api/chat
+curl -s -XPOST -d '{"message":"我和李小明一般多久回一次消息"}' http://127.0.0.1:8788/api/chat
 # 期望：回复里出现真实数字（时延/条数），persona 字段为 analyst
 curl -s -XPOST -d '{"persona":"listener"}' http://127.0.0.1:8788/api/persona/set
 curl -s -XPOST -d '{"message":"今天被老板骂了"}' http://127.0.0.1:8788/api/chat

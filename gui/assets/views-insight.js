@@ -570,6 +570,284 @@
     },
   };
 
+  /* ---------------------------------------------------------------- 画像统计的人话排版 */
+  /* 为什么要有这个组件：画像的统计段（总览/作息/话题/风格/社交/互动/情绪/信号）
+     原先全部落 JsonView——渲染出来是带中文标签的 KV 表和 24 行小表格，
+     「给人机看的」。用户原话：「根本不是给人看的，更像是给 ai 看的」。
+     这里给已知段落专属排版：磁贴 / 条形 / 筹码 / 一句话结论；
+     未知结构仍走 JsonView 兜底（任何数据不白屏的老规矩不变）。 */
+  const ProfileStats = {
+    name: "ProfileStats",
+    props: { sec: { type: Object, required: true },
+             data: { type: Object, required: true } },
+    template: `
+    <div>
+      <div v-if="sec.key==='overview'" class="grid grid-4">
+        <div class="tile rise" v-for="t in tiles" :key="t.k">
+          <div class="tile-head">{{ t.k }}</div>
+          <div class="tile-value">{{ t.v }}</div>
+          <div class="tile-foot" v-if="t.f">{{ t.f }}</div>
+        </div>
+      </div>
+
+      <div v-else-if="sec.key==='rhythm'">
+        <div class="ps-line" v-if="rhythmLine">{{ rhythmLine }}</div>
+        <div v-for="h in hourRows" :key="h.h" class="bar-row">
+          <div class="bar-label">{{ h.h }} 点</div>
+          <div class="bar-track">
+            <div class="bar-fill" :style="{width: pct(h.c, maxHour)}"></div>
+          </div>
+          <div class="bar-value">{{ fmtNum(h.c) }}</div>
+        </div>
+        <div class="tiny muted" v-if="!hourRows.length">（这个时间段没有消息）</div>
+      </div>
+
+      <div v-else-if="sec.key==='topics'">
+        <div class="ps-label">话题分布</div>
+        <div class="ps-chips">
+          <span class="chip" v-for="t in topicRows" :key="t.name">
+            {{ t.name }}{{ t.mine != null ? ' 我' + t.mine : '' }}{{ t.theirs != null ? ' · 对方' + t.theirs : '' }}
+          </span>
+        </div>
+        <div class="ps-label" style="margin-top:12px">高频词</div>
+        <div class="ps-chips">
+          <span class="chip" v-for="k in kwRows" :key="k.word">{{ k.word }} · {{ k.count }}</span>
+        </div>
+        <div class="tiny muted" v-if="!topicRows.length && !kwRows.length">
+          （样本里没有可统计的文本）
+        </div>
+      </div>
+
+      <div v-else-if="sec.key==='style'">
+        <div class="grid grid-3">
+          <div class="kv-item"><div class="kv-k">平均长度</div>
+            <div class="kv-v">{{ style.avgLength }} 字</div></div>
+          <div class="kv-item"><div class="kv-k">表情包使用率</div>
+            <div class="kv-v">{{ pctText(style.emojiRate) }}</div></div>
+          <div class="kv-item"><div class="kv-k">提问率</div>
+            <div class="kv-v">{{ pctText(style.questionRate) }}</div></div>
+        </div>
+        <div class="ps-label" style="margin-top:12px">消息类型构成</div>
+        <div class="ps-chips">
+          <span class="chip" v-for="(v,k) in (style.byKind || {})" :key="k">
+            {{ k }} · {{ fmtNum(v) }}
+          </span>
+        </div>
+      </div>
+
+      <div v-else-if="sec.key==='social'">
+        <div v-for="s in socialRows" :key="s.wxid" class="bar-row">
+          <div class="bar-label" :title="s.name">{{ s.name }}</div>
+          <div class="bar-track">
+            <div class="bar-fill" :style="{width: pct(s.mine, maxSocial)}"></div>
+          </div>
+          <div class="bar-value">{{ fmtNum(s.mine) }}</div>
+        </div>
+        <div class="tiny muted" v-if="!socialRows.length">（没有记录）</div>
+      </div>
+
+      <div v-else-if="sec.key==='interaction'">
+        <div class="grid grid-2">
+          <div class="kv-item"><div class="kv-k">谁更常开启话题</div>
+            <div class="kv-v" style="font-size:14px">{{ initLine }}</div></div>
+          <div class="kv-item"><div class="kv-k">平均回复快慢</div>
+            <div class="kv-v" style="font-size:14px">{{ replyLine }}</div></div>
+        </div>
+        <div class="tiny muted" style="margin-top:8px">
+          间隔超过 6 小时算新一轮对话；回复时长只计 12 小时内的一来一回。
+        </div>
+      </div>
+
+      <div v-else-if="sec.key==='sentiment'">
+        <div class="grid grid-2">
+          <div class="kv-item"><div class="kv-k">你的情绪均分</div>
+            <div class="kv-v" style="font-size:14px">{{ sentText(sentiment.mine) }}</div></div>
+          <div class="kv-item"><div class="kv-k">对方的情绪均分</div>
+            <div class="kv-v" style="font-size:14px">{{ sentText(sentiment.theirs) }}</div></div>
+        </div>
+        <div class="tiny muted" style="margin-top:8px">
+          中文情感词典逐条打分（-1 ~ 1），吐槽工作和天气也会算负面，只作参考。
+        </div>
+      </div>
+
+      <div v-else-if="sec.key==='signals'">
+        <div class="grid grid-3">
+          <div class="kv-item"><div class="kv-k">表情包率</div>
+            <div class="kv-v">{{ pctText(signals.emojiRate) }}</div></div>
+          <div class="kv-item"><div class="kv-k">笑声密度</div>
+            <div class="kv-v">每百条 {{ signals.laughPer100 }} 个「哈」</div></div>
+          <div class="kv-item"><div class="kv-k">消息长度趋势</div>
+            <div class="kv-v">{{ signals.lengthTrend || '—' }}</div></div>
+        </div>
+      </div>
+
+      <json-view v-else :data="data[sec.key]" />
+    </div>`,
+    computed: {
+      fmtNum() { return M.fmtNum; },
+      tiles() {
+        const o = this.data.overview || {};
+        if (this.data.scope === "contact") {
+          return [
+            { k: "总消息", v: M.fmtNum(o.totalMessages), f: `跨度 ${o.spanDays} 天` },
+            { k: "我发出", v: M.fmtNum(o.myMessages), f: `占 ${Math.round((o.myShare || 0) * 100)}%` },
+            { k: "对方发出", v: M.fmtNum(o.theirMessages) },
+            { k: "有消息的天数", v: M.fmtNum(o.activeDays) },
+          ];
+        }
+        return [
+          { k: "总消息", v: M.fmtNum(o.totalMessages), f: o.firstText ? `首条 ${o.firstText}` : "" },
+          { k: "我发出", v: M.fmtNum(o.myMessages), f: `占 ${Math.round((o.myShare || 0) * 100)}%` },
+          { k: "有消息的天数", v: M.fmtNum(o.activeDays) },
+          { k: "记录跨度", v: `${o.spanDays} 天`, f: o.lastText ? `末条 ${o.lastText}` : "" },
+        ];
+      },
+      hourRows() {
+        const r = this.data.rhythm || {};
+        if (this.data.scope === "contact") {
+          const mine = r.hourlyMine || [], theirs = r.hourlyTheirs || [];
+          return mine.map((c, h) => ({ h, c: (c || 0) + (theirs[h] || 0) }));
+        }
+        return (r.hourly || []).map((x) => ({ h: x.hour, c: x.total }));
+      },
+      maxHour() {
+        return Math.max(1, ...this.hourRows.map((x) => x.c));
+      },
+      rhythmLine() {
+        const r = this.data.rhythm || {};
+        if (this.data.scope === "contact") {
+          const rows = this.hourRows;
+          if (!rows.length) return "";
+          const top = rows.reduce((a, b) => (b.c > a.c ? b : a));
+          return `最热闹的时段是 ${top.h} 点（${top.c} 条）`;
+        }
+        const bits = [];
+        if (r.peakHour != null) bits.push(`高峰在 ${String(r.peakHour).padStart(2, "0")} 点`);
+        if (r.peakWeekday) bits.push(`最活跃是${r.peakWeekday}`);
+        if (r.nightMessages != null) bits.push(`深夜 0-6 点发了 ${r.nightMessages} 条`);
+        return bits.join("，");
+      },
+      topicRows() {
+        const tp = this.data.topics || {};
+        if (this.data.scope === "contact") {
+          const mi = {}, th = {};
+          (tp.mine || []).forEach((t) => { mi[t.topic] = t.hits; });
+          (tp.theirs || []).forEach((t) => { th[t.topic] = t.hits; });
+          const names = [...new Set([...Object.keys(mi), ...Object.keys(th)])];
+          return names.map((n) => ({ name: n, mine: mi[n], theirs: th[n] }))
+            .sort((a, b) => ((b.mine || 0) + (b.theirs || 0)) - ((a.mine || 0) + (a.theirs || 0)))
+            .slice(0, 10);
+        }
+        return (tp.byTopic || []).slice(0, 10).map((t) => ({ name: t.topic, hits: t.hits }));
+      },
+      kwRows() {
+        const tp = this.data.topics || {};
+        const kws = this.data.scope === "contact" ? (tp.keywordsMine || []) : (tp.keywords || []);
+        return kws.slice(0, 15);
+      },
+      style() { return this.data.style || {}; },
+      socialRows() { return (this.data.social || []).slice(0, 8); },
+      maxSocial() {
+        return Math.max(1, ...this.socialRows.map((s) => s.mine || 0));
+      },
+      initLine() {
+        const it = this.data.interaction || {};
+        const a = it.initiatedByMe || 0, b = it.initiatedByThem || 0;
+        const total = a + b;
+        if (!total) return "—";
+        const who = a >= b ? "你" : "对方";
+        return `${who}更主动（你 ${a} 次 / 对方 ${b} 次）`;
+      },
+      replyLine() {
+        const it = this.data.interaction || {};
+        const mine = it.myAvgReplySeconds, theirs = it.theirAvgReplySeconds;
+        if (mine == null && theirs == null) return "—";
+        const f = (s) => s == null ? "—"
+          : s < 60 ? `${s} 秒` : s < 3600 ? `${Math.round(s / 60)} 分钟` : `${(s / 3600).toFixed(1)} 小时`;
+        return `你 ${f(mine)} · 对方 ${f(theirs)}`;
+      },
+      sentiment() { return this.data.sentiment || {}; },
+      sentText(s) {
+        if (!s || s.avg == null) return "—";
+        const v = s.avg;
+        const mood = v > 0.15 ? "偏正面" : v < -0.15 ? "偏负面" : "中性";
+        return `${mood}（${v >= 0 ? "+" : ""}${v.toFixed(2)}）`;
+      },
+      signals() { return this.data.signals || {}; },
+    },
+    methods: {
+      pct(v, max) { return Math.round((v || 0) / Math.max(1, max) * 100) + "%"; },
+      pctText(v) {
+        if (v == null) return "—";
+        return Math.round(v * 1000) / 10 + "%";
+      },
+    },
+  };
+
+  /* ---------------------------------------------------------------- AI 人格分析 */
+  /* 与 PsychView 同一立场：核心不是「有哪些字段」，而是「判断是什么、
+     证据是哪句原话、反例是什么」。置信度徽标直接复用 psych 的 conf-* 样式。
+     引文带 uid/时间/方向——用户能拿着 uid 回浏览页核对那句是不是真的。 */
+  const AiProfileView = {
+    name: "AiProfileView",
+    props: { data: { type: Object, default: null } },
+    template: `
+    <div>
+      <div v-if="!data" class="muted tiny">尚未生成，点右上角「AI 人格分析」开始。</div>
+      <div v-else-if="!data.available" class="notice">{{ data.reason || '未生成 AI 分析。' }}</div>
+      <template v-else>
+        <div class="ai-meta tiny muted" v-if="metaLine">{{ metaLine }}</div>
+        <div v-if="data.summary" class="ai-summary">{{ data.summary }}</div>
+        <div v-for="d in (data.dimensions || [])" :key="d.key" class="ai-dim">
+          <div class="ai-head">
+            <span class="ai-label">{{ d.label }}</span>
+            <span class="psych-conf" :class="'conf-' + d.confidence">{{ confText(d.confidence) }}</span>
+          </div>
+          <div class="ai-assessment">{{ d.assessment }}</div>
+          <div v-for="(e,i) in (d.evidence || [])" :key="i" class="ai-ev">
+            <div class="ai-quote">「{{ e.quote }}」</div>
+            <div class="ai-ev-meta tiny muted">
+              〔{{ e.uid }} {{ e.ts }} {{ e.dir }}〕<span v-if="e.note"> · {{ e.note }}</span>
+            </div>
+            <div class="ai-ev-analysis">{{ e.analysis }}</div>
+          </div>
+          <div v-for="(c,j) in (d.counterpoints || [])" :key="j" class="ai-cp">
+            <span class="ai-cp-tag">反例</span>{{ c }}
+          </div>
+        </div>
+        <div v-if="(data.insufficient || []).length" class="ai-note">
+          证据不足、未下结论的维度：{{ data.insufficient.join('、') }}
+        </div>
+        <div v-if="(data.dropped || []).length" class="ai-note">
+          未通过证据校验被丢弃的 AI 输出：{{ droppedText }}
+        </div>
+        <div v-if="data.disclaimer" class="ai-note">{{ data.disclaimer }}</div>
+      </template>
+    </div>`,
+    computed: {
+      metaLine() {
+        const d = this.data || {};
+        const bits = [];
+        if (d.model) bits.push("模型 " + d.model);
+        if (d.sampleCount) bits.push("样本 " + d.sampleCount + " 条");
+        if (d.cost != null) bits.push("耗时 " + d.cost + " 秒");
+        // 命中缓存时明确标注：否则用户会疑惑「上次一分钟，这次秒开」
+        if (d.cached) bits.push("（缓存结果）");
+        return bits.join(" · ");
+      },
+      droppedText() {
+        return (this.data && this.data.dropped || [])
+          .map((x) => x.label + "（" + x.reason + "）").join("；");
+      },
+    },
+    methods: {
+      confText(c) {
+        return { high: "证据较强", medium: "证据中等", low: "证据较弱",
+                 insufficient: "证据不足" }[c] || c;
+      },
+    },
+  };
+
   /* ---------------------------------------------------------------- 年报 */
   /* 年报后端只有一个 summary 大对象，值得专属排版而不是 KV 倾倒 */
   const ReportView = {
@@ -699,6 +977,10 @@
       ["topics", "话题与词汇"],
       ["social", "往来对象", "按你发出的消息条数排序，占比指你在该会话里的发言份额。"],
       ["monthly", "月度走势"],
+      ["ai", "AI 人格分析",
+        "点右上角「AI 人格分析」生成：调用你配置的大模型（采样消息会发送至该端点），"
+        + "基于聊天内容做多维人格推断。每条判断附逐字引文与反例，引文对不上真实消息的"
+        + "会被自动丢弃；结果可能出错，不是心理诊断。"],
     ],
     contact: [
       ["overview", "总览"],
@@ -713,6 +995,10 @@
       ["psych", "心理学维度",
         "从聊天行为反推的倾向，不是心理诊断。每条判断都标了证据、样本量和反例可能；"
         + "证据不足时明确写「证据不足」，不给结论。"],
+      ["ai", "AI 人格分析",
+        "点右上角「AI 人格分析」生成：调用你配置的大模型（双方采样消息会发送至该端点），"
+        + "推断对方的人格特质与这段关系的动态。每条判断附逐字引文与反例，引文对不上真实"
+        + "消息的会被自动丢弃；结果可能出错，不是心理诊断。"],
     ],
   };
   /** 这些键不进卡片：meta 进页首脚注，scope/session 已在页首体现。
@@ -721,7 +1007,7 @@
   const PROFILE_HIDDEN = new Set(["meta", "scope", "session"]);
 
   const Insight = {
-    components: { JsonView, ReportView, PsychView },
+    components: { JsonView, ReportView, PsychView, AiProfileView, ProfileStats },
     props: { kind: { type: String, default: "profile" } },   // profile | report
     template: `
     <div class="page">
@@ -747,9 +1033,21 @@
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
         <div class="spacer"></div>
+        <!-- AI 人格分析：按需生成（一次 LLM 调用约 1 分钟），不做成页面默认动作——
+             每次打开画像都烧一次额度，按钮必须掌握在用户手里。
+             只有画像页（self/contact）且已有数据时才出现；年报与 AI 语料模式没有这个章节。 -->
+        <button class="btn btn-sm" v-if="kind==='profile' && mode!=='ai' && data && !loading"
+                @click="runAi" :disabled="aiRunning"
+                :title="aiBtnTip">
+          <span v-if="aiRunning" class="spinner"></span>
+          {{ aiRunning ? 'AI 分析中…' : 'AI 人格分析' }}
+        </button>
         <button class="btn btn-sm" @click="load" :disabled="loading">
           <span v-if="loading" class="spinner"></span>重新生成
         </button>
+      </div>
+      <div v-if="aiErr" class="tiny" style="color:var(--danger);margin-bottom:10px">
+        AI 分析失败：{{ aiErr }}
       </div>
 
       <div v-if="loading" class="grid grid-2">
@@ -850,7 +1148,9 @@
             </div>
           </div>
           <psych-view v-else-if="sec.key==='psych'" :data="data.psych" />
-          <json-view v-else :data="data[sec.key]" />
+          <ai-profile-view v-else-if="sec.key==='ai'" :data="data.ai" />
+          <!-- 统计段走人话排版（磁贴/条形/筹码），未知结构内部回落 JsonView -->
+          <profile-stats v-else :sec="sec" :data="data" />
         </div>
         <div v-if="restKeys.length" class="card">
           <json-view :data="restData" title="补充信息" />
@@ -878,6 +1178,7 @@
       return {
         mode: "self", picked: "", year: "", years: [], sessions: [],
         data: null, loading: false, err: "",
+        aiRunning: false, aiErr: "",
       };
     },
     computed: {
@@ -890,6 +1191,14 @@
           return "正在归纳这段关系的互动与心理维度，约 2-5 秒";
         }
         return "正在归纳你的表达风格、作息与常聊话题，首次约 5 秒";
+      },
+      aiBtnTitle() {
+        return (this.mode === "contact" ? "对方与这段关系" : "你") + "的 AI 人格分析";
+      },
+      aiBtnTip() {
+        return "调用你配置的大模型生成「" + this.aiBtnTitle
+            + "」：统计先在本机算好（秒级），AI 推断约 1 分钟。"
+            + "采样消息会发送至你所配置的 LLM 端点；结果缓存一小时，数据不变再点秒开。";
       },
       sectionConf() {
         return this.kind === "profile"
@@ -995,6 +1304,43 @@
           if (t.status === "error") throw new Error(t.error || "画像生成失败");
         }
         throw new Error("画像生成超时，请重试或缩小数据范围");
+      },
+      /**
+       * AI 人格分析：显式按需触发（ai=1），与页面初始加载解耦——
+       * 初始加载刻意不带 ai，否则每次打开画像都烧一次 LLM 额度。
+       * 轮询写法与 loadProfile 一致；完成后**只把 ai 章节合并进当前数据**，
+       * 不整体替换——统计部分刚算好，没必要因为一个章节重渲染全页。
+       * 失败时原因落 aiErr（页首红字），同时保留按需重试的按钮。
+       */
+      async runAi() {
+        this.aiRunning = true; this.aiErr = "";
+        try {
+          const d = await M.api.get("/api/profile", {
+            ...(this.picked ? { session: this.picked } : {}), ai: 1, async: 1,
+          });
+          const tid = d.taskId || d.id || (d.task && d.task.id);
+          if (!tid) { this.mergeAi(d); return; }            // 服务端没走异步，直接就是结果
+          for (let i = 0; i < 400; i++) {                  // LLM 30-90s，上限约 10 分钟
+            await new Promise((r) => setTimeout(r, 1500));
+            const t = await M.api.get("/api/task", { id: tid });
+            if (t.status === "done") { this.mergeAi(t.result); return; }
+            if (t.status === "error") throw new Error(t.error || "AI 分析失败");
+          }
+          throw new Error("AI 分析超时（约 10 分钟），请重试");
+        } catch (e) {
+          this.aiErr = e.message || String(e);
+          M.toast.err("AI 分析失败：" + this.aiErr);
+        } finally { this.aiRunning = false; }
+      },
+      mergeAi(result) {
+        const ai = result && result.ai;
+        if (ai && ai.available) {
+          // 整体换 data 对象：Vue 2 对后加属性不反应，必须赋新对象
+          this.data = { ...this.data, ai };
+          M.toast.ok("AI 人格分析完成");
+        } else {
+          this.aiErr = (ai && ai.reason) || "服务端未返回 AI 结果";
+        }
       },
     },
     async mounted() {

@@ -192,8 +192,8 @@ class TestProjectName(unittest.TestCase):
         self.assertEqual(project_from_dir("d-Desktop-微信解密软件"), "Desktop-微信解密软件")
 
     def test_keeps_c_users_suffix(self):
-        """`c-Users-35955-WorkBuddy-2026-09-07-20-59-21` 要保留可辨识的尾段。"""
-        name = project_from_dir("c-Users-35955-WorkBuddy-2026-09-07-20-59-21")
+        """`c-Users-demo-WorkBuddy-2026-09-07-20-59-21` 要保留可辨识的尾段。"""
+        name = project_from_dir("c-Users-demo-WorkBuddy-2026-09-07-20-59-21")
         self.assertIn("WorkBuddy", name)
 
     def test_does_not_invent_paths(self):

@@ -757,9 +757,19 @@ def cmd_persona(args, ds: Dataset):
 # ---------------------------------------------------------------- profile（画像蒸馏）
 def cmd_profile(args, ds: Dataset):
     from core.profile import ProfileDistiller
-    pd = ProfileDistiller(ds)
+    ai_mode = "off" if getattr(args, "no_ai", False) else "auto"
+    pd = ProfileDistiller(ds, ai=ai_mode)
     frm = parse_time(getattr(args, "from"))
     to = parse_time(args.to)
+    if ai_mode != "off" and not getattr(ds, "demo", False):
+        # AI 分析要 30-60 秒，先打招呼，别让终端看着像卡死
+        try:
+            from core.aiprofile import AiProfileAnalyzer
+            if AiProfileAnalyzer(ds=ds).available():
+                print("  [i] 检测到大模型配置，正在生成 AI 人格分析"
+                      "（约 30-60 秒，--no-ai 可跳过）…", file=sys.stderr)
+        except (Exception, SystemExit):
+            pass
     if args.session:
         d = pd.contact_profile(args.session, from_ts=frm, to_ts=to, top=args.top)
         title = d["session"]["displayName"]
@@ -1167,6 +1177,8 @@ def build_parser():
     p.add_argument("--top", type=int, default=15, help="榜单条数")
     p.add_argument("--max-msgs", type=int, default=30000,
                    help="全库画像扫描的消息上限（按最近活跃排序）")
+    p.add_argument("--no-ai", action="store_true",
+                   help="不生成 AI 人格分析章节（只输出纯本地统计画像）")
     p.add_argument("--output", help="写入文件（默认打印到终端）")
     p.set_defaults(func=cmd_profile, format="markdown")
 

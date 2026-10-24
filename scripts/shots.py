@@ -46,7 +46,7 @@ FORBIDDEN = [
     "C:\\Users\\",
     "D:\\wechat-data",
     "@im.wechat",
-    "35955",
+    "DEMOUSER",
     "MOSU_KEY_HEX =",
 ]
 

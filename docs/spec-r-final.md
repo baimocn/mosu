@@ -1,7 +1,7 @@
 # 墨溯 · 收尾批次规格定稿（产品设计）
 
 蓝本清｜基线 `933c2c4`｜基线 154 例全绿
-⚠️ 跑测试须用 `C:\Python314\python.exe -m unittest discover -s tests -q`；默认 `python` 缺 jieba，会假失败 14 例
+⚠️ 跑测试须用 `python -m unittest discover -s tests -q`；默认 `python` 缺 jieba，会假失败 14 例
 
 ## 0. 事实核实（与主理人复核结论一致，无冲突）
 
@@ -168,4 +168,4 @@ macOS 的 `.command` 在 Finder 侧**无法**绑图标（只有 `.app` bundle �
 | #7 | `report(session=…)` 返回含 `summary.firstMessage/lastMessage` 且 `content` 非空 |
 | #9 | `time_stats(by="hour")` 恒 24 桶、`"weekday"` 恒 7 桶、`"month"` 不补 |
 | 追加 | 两处 `spanDays` 同为 `float` |
-| 全量 | `C:\Python314\python.exe -m unittest discover -s tests -q` → `OK` 且 `Ran N tests` 中 N ≥ 154+新增 |
+| 全量 | `python -m unittest discover -s tests -q` → `OK` 且 `Ran N tests` 中 N ≥ 154+新增 |

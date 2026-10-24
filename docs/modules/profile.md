@@ -165,7 +165,7 @@ API 都是死的，连取消都做不到，且没有任何超时能救。
 | `/api/report` → `summary.firstMessage` | 会话**真实**首条 | report 不采样、全量聚合，没有"样本"概念 |
 | `/api/profile` → `milestones.firstMessage` | **样本内**最早一条，并带 `sampledOnly: true` | 画像只取最近 cap 条，真实首条可能根本不在样本里 |
 
-真实例子：`54362236371@chatroom` 的 report 给 `2026-05-25`，profile 给
+真实例子：`10000000001@chatroom` 的 report 给 `2026-05-25`，profile 给
 `2026-07-07`（采样窗口内最早）。**两者都不是 bug。** profile 那条已经带
 `sampledOnly`，前端会渲染成「样本内最早 · 非真实首条」。
 

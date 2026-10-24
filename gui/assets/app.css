@@ -1068,6 +1068,77 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
   color: var(--text-2);
 }
 
+/* ---- 画像统计的人话排版：一行结论 + 小标签 + 筹码组 ---- */
+.ps-line {
+  margin-bottom: 12px; padding: 10px 12px; border-radius: var(--r-sm);
+  background: var(--bg-inset); border: 1px solid var(--border);
+  font-size: 12.5px; line-height: 1.6; color: var(--text-1);
+}
+.ps-label {
+  font-size: 11.5px; font-weight: 600; color: var(--text-2);
+  margin-bottom: 8px; letter-spacing: .02em;
+}
+.ps-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---- 导出记录：历史产物可回头重下（跨页面/重启不丢） ---- */
+.hist-row {
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.hist-row:last-child { border-bottom: none; }
+.hist-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font-size: 13px; color: var(--text);
+}
+.hist-files {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px;
+}
+.hist-file {
+  font-size: 12px; color: var(--brand); text-decoration: none;
+  border-bottom: 1px dashed var(--border); padding-bottom: 1px;
+  word-break: break-all;
+}
+.hist-file:hover { border-bottom-color: var(--brand); }
+
+/* ---- AI 人格分析：总体侧写 → 维度 → 引文证据 → 反例 ----
+   置信度徽标复用 psych 的 .psych-conf/.conf-*（同一套语义色）。
+   引文块刻意做出「引用」的视觉：左边线 + 引号，用户能一眼看出
+   这是原话而不是 AI 的总结——防的就是把推测当结论读。 */
+.ai-meta { margin-bottom: 10px; }
+.ai-summary {
+  padding: 12px 14px; margin-bottom: 14px; border-radius: var(--r-md);
+  background: var(--bg-inset); border: 1px solid var(--border);
+  font-size: 13px; line-height: 1.7; color: var(--text-1);
+}
+.ai-dim { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.ai-dim:last-of-type { border-bottom: none; }
+.ai-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ai-label { font-weight: 600; font-size: 13px; color: var(--text); }
+.ai-assessment {
+  font-size: 12.5px; line-height: 1.7; color: var(--text-2); margin-bottom: 8px;
+}
+.ai-ev {
+  padding: 6px 0 6px 10px; border-left: 2px solid var(--border); margin-bottom: 6px;
+}
+.ai-quote { font-size: 13px; line-height: 1.6; color: var(--text); }
+.ai-ev-meta { margin-top: 2px; }
+.ai-ev-analysis {
+  font-size: 12px; line-height: 1.6; color: var(--text-2); margin-top: 2px;
+}
+.ai-cp {
+  margin-top: 4px; font-size: 11.5px; line-height: 1.5;
+  color: var(--text-2); opacity: .8;
+}
+.ai-cp-tag {
+  display: inline-block; margin-right: 6px; padding: 0 6px;
+  border-radius: 4px; background: rgba(245,158,11,.15); color: #b45309;
+  font-size: 10.5px; font-weight: 600;
+}
+.ai-note {
+  margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm);
+  background: rgba(107,114,128,.06); font-size: 11.5px; line-height: 1.6;
+  color: var(--text-2);
+}
+
 /* ---- AI 对话语料：来源 / 规模 / 需求分布 ---- */
 .kv-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

@@ -1,6 +1,6 @@
 # 墨溯 CLI 命令速查
 
-入口：`python cli/mosu.py <命令>`（Windows 本机 Python：`C:\Python314\python.exe`）
+入口：`python cli/mosu.py <命令>`（Windows 本机 Python：`python`）
 
 ## 全局选项
 
@@ -106,6 +106,7 @@ mosu profile                              # 全库：作息/社交图谱/话题/
 mosu profile 张三                        # 单联系人：互动/发起回复/话题对比/情感/信号/时间线
 mosu profile 张三 --format json          # 结构化输出（给 AI/脚本）
 mosu profile --from 2026-01-01 --max-msgs 20000
+mosu profile --no-ai                     # 只要纯本地统计，不调大模型
 
 # 配置
 mosu init --db-path <dir> --key <hex>
@@ -150,8 +151,8 @@ mosu mcp config           # 打印接入用的 mcp.json 片段
 {
   "mosu": {
     "type": "stdio",
-    "command": "C:/Python314/python.exe",
-    "args": ["D:/Desktop/墨溯/core/mcp_server.py"],
+    "command": "python",
+    "args": ["PROJECT_DIR/core/mcp_server.py"],
     "env": { "PYTHONIOENCODING": "utf-8" }
   }
 }

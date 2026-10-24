@@ -9,7 +9,8 @@
   2. contact_profile()  单联系人深度画像：互动概览 / 节律对比 / 发起与回复 /
                         话题对比 / 情感曲线 / 亲密度信号 / 里程碑 / 关键事件时间线
 
-全部纯本地统计 + 规则推断，不调用外部 LLM（开源用户离线可用）。
+统计与规则推断（psych）全部纯本地，不调用外部 LLM。AI 人格分析是**附加层**：
+配了大模型才生成（见 core/aiprofile.py），没配自动降级——开源用户离线可用。
 输出结构化 dict，render_markdown() 渲染成 Markdown 报告。
 """
 from __future__ import annotations
@@ -73,8 +74,12 @@ def _day(ts) -> str:
 
 
 class ProfileDistiller:
-    def __init__(self, ds):
+    def __init__(self, ds, ai: str = "auto", llm=None):
+        """ai: auto=配了大模型就附加 AI 分析章节；on=强制（没配则报原因）；
+        off=完全关闭。llm 可注入假客户端（测试用）。"""
         self.ds = ds
+        self.ai = (ai or "auto").lower()
+        self._ai_llm = llm
 
     # ============================================================ 数据收集
     def _collect(self, sess=None, from_ts=None, to_ts=None, max_msgs: int = 60000,
@@ -248,7 +253,7 @@ class ProfileDistiller:
                                        emoji_rate, q_rate, peak_wd)
 
         span = (agg["last"] - agg["first"]) / 86400 if agg["first"] and agg["last"] else 0
-        return {
+        result = {
             "scope": "self",
             "meta": {"scannedMessages": total, "textSampled": len(msgs),
                      "myMessages": mine_n, "cost": round(time.time() - t0, 1),
@@ -287,6 +292,10 @@ class ProfileDistiller:
                         for k in sorted(month_total)],
             "insights": insights,
         }
+        # _last_msgs 供 GUI 在锁外补 AI 章节用（LLM 调用 30-90s，不能占着 _ds_lock）
+        self._last_msgs = msgs
+        result["ai"] = self._ai_layer(result, msgs)
+        return result
 
     def _bigrams(self, texts, top: int = 20) -> list[dict]:
         freq: Counter = Counter()
@@ -499,7 +508,43 @@ class ProfileDistiller:
         # 心理学维度：用**刚组装好的** result 当输入，保证与页面上的统计数字同源。
         # 单独重算一遍统计会得到两套口径，改一处忘一处就不一致。
         result["psych"] = self._psych(result, msgs)
+        # AI 人格分析：附加层，没配大模型 / 演示模式 / 样本不足都会优雅降级
+        self._last_msgs = msgs
+        result["ai"] = self._ai_layer(result, msgs)
         return result
+
+    def _ai_layer(self, prof: dict, msgs: list[dict], force: bool = False) -> dict:
+        """给画像挂 AI 分析章节。任何失败都降级，绝不让画像本身炸掉。
+
+        force=True 时无视 self.ai=="off"：GUI 的用法是锁内用 ai="off" 跑统计
+        （防止每次打开页面都烧 LLM），锁外再按需外挂 AI 章节——不走这个参数
+        的话，GUI 那条路径会被第一道守卫自己挡掉。
+        """
+        if self.ai == "off" and not force:
+            return None
+        try:
+            from core.aiprofile import AiProfileAnalyzer
+            an = AiProfileAnalyzer(ds=self.ds, llm=self._ai_llm)
+            if not an.available():
+                if self.ai == "on":
+                    return {"available": False,
+                            "reason": "强制 AI 模式但未配置大模型（设置页或 "
+                                      "MOSU_BOT_* 环境变量）"}
+                return None
+            scope = "contact" if prof.get("scope") == "contact" else "self"
+            key = (prof.get("session") or {}).get("sessionId") or "self"
+            subject = (prof.get("session") or {}).get("displayName") or ""
+            self_name = ""
+            try:
+                self_name = self.ds.self_username() or ""
+            except Exception:
+                pass
+            return an.analyze(prof, msgs, scope=scope, session_key=key,
+                              subject=subject, self_name=self_name)
+        except (Exception, SystemExit) as e:     # noqa: BLE001
+            # SystemExit 也要接：LlmClient 未配 key 时抛的就是它
+            return {"available": False,
+                    "reason": f"AI 分析异常已降级：{type(e).__name__}: {e}"}
 
     def _psych(self, prof: dict, msgs: list[dict]) -> dict:
         """心理学维度（依赖原始文本，故在拿到 msgs 的这一层调用）。"""
@@ -577,6 +622,27 @@ class ProfileDistiller:
         if data.get("scope") == "self":
             return self._render_self(data)
         return self._render_contact(data)
+
+    def _append_ai_section(self, L: list, d: dict) -> list:
+        """AI 人格分析章节 + 页脚。页脚必须如实反映有没有外部调用——
+        挂着 AI 章节还写「纯本地统计」是撒谎。"""
+        ai = d.get("ai")
+        if ai and ai.get("available"):
+            from core.aiprofile import render_ai
+            L.append("## AI 人格分析")
+            L.append("")
+            L.append(render_ai(ai))
+            L.append("")
+        elif ai and ai.get("reason"):
+            L.append(f"> AI 人格分析未生成：{ai['reason']}")
+            L.append("")
+        L.append("---")
+        if ai and ai.get("available"):
+            L.append("*统计部分纯本地生成；AI 人格分析章节调用你配置的大模型"
+                     "（采样消息会发送至该端点）*")
+        else:
+            L.append("*由墨溯 mosu profile 生成｜纯本地统计，无外部调用*")
+        return L
 
     # ---------------- 全库
     def _render_self(self, d: dict) -> str:
@@ -656,9 +722,7 @@ class ProfileDistiller:
         for i in d["insights"]:
             L.append(f"- {i}")
         L.append("")
-        L.append("---")
-        L.append("*由墨溯 mosu profile 生成｜纯本地统计，无外部调用*")
-        return "\n".join(L)
+        return "\n".join(self._append_ai_section(L, d))
 
     # ---------------- 单联系人
     def _render_contact(self, d: dict) -> str:
@@ -778,9 +842,7 @@ class ProfileDistiller:
             L.append("")
             L.append(render_psych(psych))
             L.append("")
-        L.append("---")
-        L.append("*由墨溯 mosu profile 生成｜纯本地统计，无外部调用*")
-        return "\n".join(L)
+        return "\n".join(self._append_ai_section(L, d))
 
     @staticmethod
     def _dur(sec: int) -> str:

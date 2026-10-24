@@ -77,7 +77,9 @@ python cli/mosu.py sessions
 - **消息查询**：按会话、类型（文本/图片/语音/视频/文件/表情）、方向、时间段、游标翻页
 - **全文搜索**：逐条解压后匹配，搜得到压缩消息体里的词
 - **统计**：全局概览、联系榜、小时/星期/月分布、单人统计、关键词、群成员榜
-- **画像蒸馏**：全库个人画像 + 单联系人深度画像（作息/社交图谱/话题/情感曲线/亲密度信号）
+- **画像蒸馏**：全库个人画像 + 单联系人深度画像（作息/社交图谱/话题/情感曲线/亲密度信号）；
+  **配了大模型自动追加「AI 人格分析」章节**（六维度，每条判断带逐字引文证据 + 反例 + 置信度，
+  引文对不上真实消息的会被校验器丢弃——防编造；`--no-ai` 可关，没配大模型自动降级纯统计）
 - **个人 bot 素材**：本人发言语料包（jsonl + 按会话分段）+ 风格画像
 - **数字分身服务**（`mosu bot`）：云端 LLM（OpenAI 兼容，任意后端可换）+ RAG 从你的历史发言检索风格参考 + 规则硬校验（AI 腔禁词/长度/感叹号/照抄检测，不达标自动带反馈重生成）
 - **微信通道**（`mosu wechat`）：微信官方 Bot API（iLink）自研实现——扫码登录、长轮询收发、游标持久化、context_token 管理、常驻计划任务。收到消息 → 墨溯用你的风格生成回复 → 原路发回。不依赖任何第三方框架
@@ -100,7 +102,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，516 例）：
+测试（全离线，549 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -247,7 +249,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（516 例）
+tests/                 离线测试（549 例）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
 ```
 
@@ -258,7 +260,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（516 例）
+- [x] 离线测试套件（549 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -352,7 +354,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (516 cases)
+tests/          offline test suite (549 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

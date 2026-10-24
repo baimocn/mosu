@@ -38,9 +38,9 @@ class TestDemoMask(unittest.TestCase):
 
     # ---------------------------------------------------------------- 身份
     def test_wxid_masked(self):
-        self.assertEqual(self.demo.mask_id("wxid_qscqqvaviqat22"), self.demo.mask_id("wxid_qscqqvaviqat22"))
-        self.assertTrue(self.demo.mask_id("wxid_qscqqvaviqat22").startswith("wxid_demo"))
-        self.assertNotIn("qscqqvaviqat22", self.demo.mask_id("wxid_qscqqvaviqat22"))
+        self.assertEqual(self.demo.mask_id("wxid_demo_account"), self.demo.mask_id("wxid_demo_account"))
+        self.assertTrue(self.demo.mask_id("wxid_demo_account").startswith("wxid_demo"))
+        self.assertNotIn("qscqqvaviqat22", self.demo.mask_id("wxid_demo_account"))
 
     def test_chatroom_masked_and_distinguishable(self):
         """群号必须打码，且打码结果要能一眼看出是假的。

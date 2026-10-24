@@ -302,11 +302,42 @@
         <dl class="kv">
           <dt>会话</dt><dd>{{ done.session }}</dd>
           <dt>耗时</dt><dd>{{ fmtDur(done.cost) }}</dd>
-          <dt>文件</dt><dd>{{ done.filename }}</dd>
+          <dt>文件</dt><dd>{{ done.filename || '—' }}</dd>
+          <dt>大小</dt><dd>{{ fmtSize(done.bytes) }}</dd>
         </dl>
-        <button class="btn btn-primary" style="margin-top:12px" @click="download">
+        <div class="tiny muted" style="margin-top:8px">
+          文件已保存在本机目录：<code style="user-select:all">{{ done.path }}</code>
+          （导出记录里可随时重新下载）
+        </div>
+        <button class="btn btn-primary" style="margin-top:12px"
+                @click="download(done.task || done.id, done.filename)"
+                :disabled="!done.filename">
           下载 {{ done.filename }}
         </button>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">导出记录</div>
+        <div class="card-sub">
+          本机导出目录里的历史产物，离开这一页或重启服务后依然在，可随时重新下载。
+          目录：<code style="user-select:all">{{ exportRoot }}</code>
+        </div>
+        <div v-if="!history.length" class="tiny muted" style="padding:10px 0">
+          （还没有导出记录）
+        </div>
+        <div v-for="h in history" :key="h.task" class="hist-row">
+          <div class="hist-head">
+            <b>{{ h.session || '导出产物' }}</b>
+            <span class="tiny muted">{{ h.mtime }} · {{ fmtSize(h.bytes) }}</span>
+          </div>
+          <div class="hist-files">
+            <a v-for="f in h.files" :key="f.name" class="hist-file"
+               :href="'/api/export/download?task=' + h.task + '&name=' + encodeURIComponent(f.name)"
+               :download="f.name">
+              {{ f.name }}（{{ fmtSize(f.size) }}）
+            </a>
+          </div>
+        </div>
       </div>
 
       <div class="card" style="margin-top:16px">
@@ -326,6 +357,7 @@
         formats: [{ v: "html", label: "HTML 存档" }, { v: "csv", label: "CSV" },
                   { v: "json", label: "JSON" }, { v: "txt", label: "TXT" }],
         task: null, done: null, elapsed: 0, timer: null,
+        history: [], exportRoot: "",
       };
     },
     computed: {
@@ -339,7 +371,26 @@
       },
     },
     methods: {
-      ...{ fmtNum: M.fmtNum, fmtDur: (ms) => M.fmtDur(ms * 1000) },
+      ...{ fmtNum: M.fmtNum, fmtDur: (ms) => M.fmtDur(ms * 1000),
+          fmtSize: (b) => M.fmtSize(b) },
+      /** 从磁盘拉导出记录（服务重启后依然在，这是「东西放哪里了」的答案） */
+      async loadHistory() {
+        try {
+          const d = await M.api.get("/api/exports");
+          this.history = d.exports || [];
+          this.exportRoot = d.root || "";
+        } catch (e) { /* 忽略：记录拉不到不影响主流程 */ }
+      },
+      download(tid, name) {
+        if (!tid || !name) return;
+        const a = document.createElement("a");
+        a.href = "/api/export/download?task=" + encodeURIComponent(tid)
+                 + "&name=" + encodeURIComponent(name);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      },
       async run() {
         if (!this.sess) return;
         await this.submit({
@@ -372,9 +423,17 @@
           catch (e) { continue; }
           if (t.status === "done") {
             clearInterval(this.timer);
+            // id 必须带上：下载链接是 /api/export/download?task=<id>。
+            // 历史上这里漏了 id（done.id 为 undefined），完成卡片显示
+            // 「文件 undefined」、下载必然失败——「导出完东西找不到了」
+            // 的投诉一半是这个字段，一半是产物不落盘（现已修）。
+            const session = (this.task || {}).session
+                            || (t.result || {}).session || "";
             this.task = null;
-            this.done = { ...(t.result || {}), cost: t.cost, session: this.task.session };
+            this.done = { ...(t.result || {}), id: tid, task: tid,
+                          cost: t.cost, session };
             M.toast.ok("导出完成");
+            this.loadHistory();
             return;
           }
           if (t.status === "error") {
@@ -388,18 +447,13 @@
         this.task = null;
         M.toast.err("导出超时");
       },
-      download() {
-        if (!this.done) return;
-        const url = "/api/export/download?task=" + this.done.id;
-        const a = document.createElement("a");
-        a.href = url; a.click();
-      },
     },
     async mounted() {
       try {
         const d = await M.api.get("/api/sessions", { limit: 500 });
         this.sessions = d.sessions || [];
       } catch (e) { /* 忽略 */ }
+      this.loadHistory();
       const h = location.hash.match(/session=([^&]+)/);
       if (h) this.sess = decodeURIComponent(h[1]);
     },
