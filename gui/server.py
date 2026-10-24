@@ -1493,10 +1493,18 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             # 无 year 时一律 all_time=True —— 而 all_time 的优先级**高于** session，
             # 于是 ?session= 被静默吞掉、返回全库口径。字段早就实现了，只是送不进去。
             if session:
-                return an.report(session=session)
-            if year:
-                return an.report(year=int(year))
-            return an.report(all_time=True)
+                data = an.report(session=session)
+            elif year:
+                data = an.report(year=int(year))
+            else:
+                data = an.report(all_time=True)
+        # 演示模式脱敏：topContacts[].wxid 混着真实 id（shots.py 黑名单实测
+        # 抓到过 wxid_t5hx… 与 10000000001@chatroom——demo 数据层换了
+        # displayName，但这个字段走的是另一条路径，不会被换）。
+        if bool(int(os.environ.get("MOSU_DEMO", "0"))):
+            for c in ((data.get("summary") or {}).get("topContacts") or []):
+                c["wxid"] = "demo-wxid"
+        return data
 
     def _persona_task():
         """TaskHub worker：全库扫描生成本人语料包（1-2 分钟，必须异步）。"""

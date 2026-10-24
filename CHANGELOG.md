@@ -7,6 +7,11 @@
 
 ### 新增
 
+- **增长试点包**（docs/growth/）：智能原生案例借鉴的落地物料——Free/Pro 分层定价表
+  （¥68 买断 + ¥9/月，含「为什么不做技术锁定」的诚信边界）、MCP 上架字段级文案、
+  仓库 README 发现向改版草案（三处定向增强，未合入）、DEV.to/知乎/V2EX 首发帖、
+  闲鱼 Pro 授权商品文案（含 IM 快捷回复话术）、3 天试点行动包与 Day 3 判定规则、
+  数据追踪表（tracker.csv，UTF-8 BOM Excel 直开）
 - **前端功能全景补齐**（CLI 20 组命令 100% 覆盖）：
   - **微信通道页**（新）：扫码登录（服务端用 qrcode 包渲染 PNG，前端零二维码库
     零外网）、二维码轮询状态机（wait/scanned/confirmed，expired 自动换码最多
@@ -70,6 +75,11 @@
 
 ### 修复
 
+- **演示模式泄漏真实 id**（安全相关）：`/api/report` 的 `summary.topContacts[].wxid`
+  在 MOSU_DEMO=1 下混着真实 wxid/群号（shots.py 黑名单截年报页时实测抓到
+  wxid_t5hx… 与 10000000001@chatroom）——demo 数据层换 displayName，但这个
+  字段走另一条路径不会被换。api_report 已补脱敏；tests/test_demo_masking.py
+  3 例回归钉住（自起 demo 实例断言黑名单，CI 无数据机器自动跳过）
 - **GUI 导出「点了感觉啥也没有」**（用户实测反馈）：完成卡片读的 `done.id`/`done.filename`
   从未被赋值（poll 里漏了 id），下载链接是 `/api/export/download?task=undefined`，
   必然失败；叠加产物只存内存 + 启动即 rmtree，「导出的东西放哪里了」无解。

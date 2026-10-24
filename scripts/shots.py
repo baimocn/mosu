@@ -39,6 +39,7 @@ SHOTS = [
     ("08-moments.png", "#/moments", "朋友圈", 4.0),
     ("09-export.png", "#/export", "导出", 1.5),
     ("10-settings.png", "#/settings", "设置", 1.5),
+    ("11-mcp.png", "#/mcp", "MCP 服务", 1.5),
 ]
 
 # 这些字符串一旦出现在页面上，说明脱敏没生效——直接判失败，不出图。
