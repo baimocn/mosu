@@ -14,7 +14,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-def run_server(corpus_path: str | Path, port: int | None = None) -> None:
+def make_server(corpus_path: str | Path, port: int | None = None):
+    """构造 bot HTTP server（不启动）。
+
+    拆出来是为了让 GUI 能把服务嵌进自己进程里起停（CLI 的 run_server
+    和 GUI 的常驻管理共用同一份 Handler，不复制两份实现）。
+    """
     from core.bot.service import BotService
 
     port = port or int(os.environ.get("MOSU_BOT_PORT", "8787"))
@@ -103,4 +108,10 @@ def run_server(corpus_path: str | Path, port: int | None = None) -> None:
             except Exception as e:  # noqa: BLE001
                 self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    return srv
+
+
+def run_server(corpus_path: str | Path, port: int | None = None) -> None:
+    srv = make_server(corpus_path, port)
+    srv.serve_forever()

@@ -66,6 +66,26 @@
             <span v-else>点击右上角可随时更换</span>
           </div>
         </div>
+        <!-- 分身 API 服务（CLI mosu bot serve）：8787 给外部程序调用。
+             GUI 内起停，端口被外部占用时只读状态不抢。 -->
+        <div class="tile">
+          <div class="tile-head">分身 API（{{ botApi.port }}）</div>
+          <div class="tile-value" style="font-size:20px">
+            <span :class="botApi.running ? 'trend trend-down' : 'trend trend-flat'">
+              {{ botApi.running ? '运行中' : '已停止' }}
+            </span>
+          </div>
+          <div class="tile-foot">
+            <button class="suggest" style="height:22px;padding:0 10px"
+                    @click="toggleBotApi" :disabled="botApiBusy"
+                    :title="botApi.corpusReady ? '' : '先在「个人语料」页生成语料'">
+              {{ botApi.running ? '停止' : '启动' }}
+            </button>
+            <span class="tiny muted" style="margin-left:6px">
+              {{ botApi.running && !botApi.managed ? '外部进程在跑' : '给外部程序调用' }}
+            </span>
+          </div>
+        </div>
       </div>
 
       <div class="console" style="flex:1;min-height:0">
@@ -145,7 +165,10 @@
     </div>`,
     data() {
       return { q: "", log: [], sending: false, events: [], art: EmptyArt,
-               suggestions: SUGGESTIONS, personas: [], persona: "" };
+               suggestions: SUGGESTIONS, personas: [], persona: "",
+               botApi: { running: false, managed: false, port: 8787,
+                         corpusReady: false },
+               botApiBusy: false };
     },
     computed: {
       curPersona() {
@@ -285,9 +308,30 @@
           this.events = d.events || [];
         } catch (e) { /* 流水是辅助信息，失败不影响主流程 */ }
       },
+      async loadBotApi() {
+        try {
+          const d = await M.api.get("/api/bot-serve");
+          this.botApi = d;
+        } catch (e) { /* 服务状态拉不到就当停止，不影响主流程 */ }
+      },
+      async toggleBotApi() {
+        this.botApiBusy = true;
+        try {
+          const act = this.botApi.running ? "stop" : "start";
+          const d = await M.api.post("/api/bot-serve", { action: act });
+          this.botApi = { ...this.botApi, running: d.running,
+                          managed: act === "start" };
+          M.toast.ok(d.running ? `分身 API 已在 ${this.botApi.port} 端口运行`
+                               : "分身 API 已停止");
+        } catch (e) {
+          M.toast.err("操作失败：" + e.message);
+          await this.loadBotApi();
+        } finally { this.botApiBusy = false; }
+      },
     },
     mounted() {
       this.loadLog();
+      this.loadBotApi();
       M.api.get("/api/personas").then((d) => {
         this.personas = d.personas || [];
         this.persona = d.current || "";

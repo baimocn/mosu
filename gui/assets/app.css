@@ -1068,8 +1068,26 @@ mark { background: rgba(250, 204, 21, 0.4); color: inherit; border-radius: 2px; 
   color: var(--text-2);
 }
 
+/* ---- 多账号管理：一行一个账号 ---- */
+.acct-row {
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.acct-row:last-of-type { border-bottom: none; }
+.acct-name {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; font-size: 13px; color: var(--text);
+}
+
 /* ---- 画像统计的人话排版：一行结论 + 小标签 + 筹码组 ---- */
-.ps-line {
+/* ---- 风格画像预览：md 原文预格式化（不引 markdown 库，结构用等宽保留） ---- */
+.md-pre {
+  margin: 0; padding: 14px 16px; border-radius: var(--r-md);
+  background: var(--bg-inset); border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.75; color: var(--text-1);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 520px; overflow: auto;
+}.ps-line {
   margin-bottom: 12px; padding: 10px 12px; border-radius: var(--r-sm);
   background: var(--bg-inset); border: 1px solid var(--border);
   font-size: 12.5px; line-height: 1.6; color: var(--text-1);

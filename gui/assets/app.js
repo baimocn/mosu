@@ -17,11 +17,16 @@
       { id: "stats", name: "数据统计", icon: "stats", comp: "Stats" },
       { id: "profile", name: "画像", icon: "profile", comp: "Insight", props: { kind: "profile" } },
       { id: "report", name: "年报", icon: "report", comp: "Insight", props: { kind: "report" } },
+      { id: "persona", name: "个人语料", icon: "corpus", comp: "Persona" },
       { id: "contacts", name: "联系人", icon: "contacts", comp: "Contacts" },
     ] },
     { group: "数据", items: [
       { id: "moments", name: "朋友圈", icon: "moments", comp: "Moments" },
       { id: "export", name: "导出", icon: "export", comp: "ExportView" },
+    ] },
+    { group: "连接", items: [
+      { id: "wechat", name: "微信通道", icon: "wechat", comp: "WeChat" },
+      { id: "mcp", name: "MCP 服务", icon: "plug", comp: "Mcp" },
     ] },
     { group: "系统", items: [
       { id: "settings", name: "设置", icon: "settings", comp: "Settings" },
@@ -32,6 +37,7 @@
     components: {
       Console: V.Console, Browse: V.Browse, Stats: V.Stats, Insight: V.Insight,
       Contacts: V.Contacts, Moments: V.Moments, ExportView: V.ExportView,
+      WeChat: V.WeChat, Persona: V.Persona, Mcp: V.Mcp,
       Settings: V.Settings, Wizard: V.Wizard, Lightbox: V.Lightbox,
     },
     template: `

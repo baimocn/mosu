@@ -169,6 +169,52 @@
         </div>
       </div>
 
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">多账号管理</div>
+        <div class="card-sub">
+          一台机器登录过多个微信时，各存各的目录与密钥，随时切换。对应 CLI 的
+          <span class="mono">mosu account</span> 命令组。
+        </div>
+        <div v-for="a in accounts" :key="a.name" class="acct-row">
+          <div class="acct-name">
+            {{ a.name }}
+            <span v-if="a.current" class="badge badge-success">当前</span>
+          </div>
+          <div class="tiny muted mono" style="word-break:break-all">
+            {{ a.dbPath || '未设目录' }}
+          </div>
+          <div class="tiny muted">
+            数据库密钥 {{ a.hasKey ? ('已配置 ' + a.keyPreview) : '未配置' }} ·
+            图片密钥 {{ a.hasImgKey ? '已配置' : '未配置' }}
+          </div>
+          <div class="row" style="margin-top:6px" v-if="!a.current">
+            <button class="btn btn-sm" @click="useAccount(a.name)" :disabled="busy">
+              设为当前
+            </button>
+            <button class="btn btn-sm btn-ghost" @click="removeAccount(a.name)"
+                    :disabled="busy">删除</button>
+          </div>
+        </div>
+        <div v-if="!accounts.length" class="tiny muted" style="padding:10px 0">
+          （还没有多账号配置——单账号场景不用管这里）
+        </div>
+        <div class="divider"></div>
+        <div class="row" style="flex-wrap:wrap;gap:8px">
+          <input class="input" style="width:240px" v-model="newName"
+                 placeholder="新账号 wxid，如 wxid_abc123" />
+          <button class="btn btn-primary" @click="addAccount"
+                  :disabled="busy || !newName.trim()">添加账号</button>
+        </div>
+        <div class="field-hint">
+          添加时只需名字；目录与密钥随后在「数据目录与密钥」里配，
+          或用 <span class="mono">mosu account add &lt;wxid&gt; --db-path &lt;目录&gt; --key &lt;hex&gt;</span>
+          一次性带上。删除只从墨溯配置里移除，不动微信数据。
+        </div>
+        <div v-if="acctErr" class="tiny" style="color:var(--danger);margin-top:8px">
+          {{ acctErr }}
+        </div>
+      </div>
+
       <div style="margin-top:16px">
         <llm-card :cfg="llm" @saved="refresh" />
       </div>
@@ -185,7 +231,8 @@
         </ul>
       </div>
     </div>`,
-    data() { return { keyTest: null, port: location.port }; },
+    data() { return { keyTest: null, port: location.port,
+                      accounts: [], newName: "", busy: false, acctErr: "" }; },
     computed: {
       cfg() { return M.store.config; },
       llm() { return M.store.llm; },
@@ -199,8 +246,54 @@
         catch (e) { M.toast.err("校验失败：" + e.message); }
       },
       async refresh() { await M.refreshConfig(); },
+      async loadAccounts() {
+        try {
+          const d = await M.api.get("/api/accounts");
+          this.accounts = d.accounts || [];
+        } catch (e) { /* 账号列表拉不到不影响其他设置 */ }
+      },
+      async useAccount(name) {
+        this.busy = true; this.acctErr = "";
+        try {
+          await M.api.post("/api/account", { action: "use", name });
+          await this.loadAccounts();
+          await this.refresh();
+          await M.refreshStatus();
+          await M.refreshSessions(true);
+          M.toast.ok("已切换到 " + name);
+        } catch (e) { this.acctErr = e.message; }
+        finally { this.busy = false; }
+      },
+      async removeAccount(name) {
+        if (!confirm(`确定从墨溯配置里删除账号「${name}」？\n`
+                     + "只是删除配置，不会动微信里的任何数据。")) return;
+        this.busy = true; this.acctErr = "";
+        try {
+          await M.api.post("/api/account", { action: "remove", name });
+          await this.loadAccounts();
+          await this.refresh();
+          M.toast.ok("已删除 " + name);
+        } catch (e) { this.acctErr = e.message; }
+        finally { this.busy = false; }
+      },
+      async addAccount() {
+        const name = this.newName.trim();
+        if (!name) return;
+        this.busy = true; this.acctErr = "";
+        try {
+          await M.api.post("/api/account", { action: "add", name });
+          this.newName = "";
+          await this.loadAccounts();
+          await this.refresh();
+          M.toast.ok("已添加 " + name + "（记得配目录与密钥）");
+        } catch (e) { this.acctErr = e.message; }
+        finally { this.busy = false; }
+      },
     },
-    mounted() { if (!M.store.config) M.refreshConfig(); },
+    mounted() {
+      if (!M.store.config) M.refreshConfig();
+      this.loadAccounts();
+    },
   };
 
   /* ---------------------------------------------------------------- 首启向导 */

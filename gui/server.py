@@ -1013,6 +1013,293 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         return {"exports": items, "root": str(EXPORT_ROOT),
                 "dests": _export_dests()}
 
+    # ---------------------------------------------------------------- 微信通道
+    # CLI `mosu wechat` 的前端化：扫码登录 / 状态 / 常驻管理。
+    # 登录是三步握手：取码（服务端渲染 PNG，前端零二维码依赖）→ 轮询状态
+    # （confirmed 时服务端直接落凭证）→ 必要时补验证码。
+    def _wechat_task_info() -> dict:
+        """常驻任务的结构化状态（core/task.py 的函数是打印式的，API 要数据）。"""
+        from core import task
+        from core.wechat import TASK_NAME
+        info = {"name": TASK_NAME, "installed": False, "channel": "", "state": ""}
+        try:
+            r = task._ps(f"Get-ScheduledTask -TaskName '{TASK_NAME}' "
+                         "-ErrorAction SilentlyContinue | "
+                         "Select-Object -ExpandProperty State")
+            out = (r.stdout or "").strip()
+            if out:
+                info["installed"] = True
+                info["channel"] = "计划任务"
+                info["state"] = out.splitlines()[0].strip()
+        except Exception:
+            pass
+        try:
+            vbs = task._startup_dir() / f"{TASK_NAME}.vbs"
+            if vbs.exists():
+                info["installed"] = True
+                if not info["channel"]:
+                    info["channel"] = "启动文件夹守护"
+                info["vbs"] = str(vbs)
+        except Exception:
+            pass
+        return info
+
+    def api_wechat_login(payload: dict) -> dict:
+        from core.wechat import WeixinClient
+        client = WeixinClient()
+        try:
+            qr = client.fetch_qrcode()
+        except Exception as e:               # noqa: BLE001
+            raise ValueError(f"获取二维码失败：{type(e).__name__}: {e}")
+        qrcode_id = qr.get("qrcode") or ""
+        url = qr.get("qrcode_img_content") or ""
+        if not qrcode_id:
+            raise ValueError(f"服务端未返回 qrcode：{qr}")
+        # 服务端把 URL 渲染成 PNG：前端不引二维码库、不连外网
+        # （CLI 存 ~/.mosu/wechat-login.png，同路径，前端 /api/wechat/qr 取）
+        qr_ok = False
+        try:
+            import qrcode as _qr
+            from core.dataset import KEYVAULT
+            p = KEYVAULT.parent / "wechat-login.png"
+            _qr.make(url).save(p)
+            qr_ok = True
+        except Exception:
+            pass
+        return {"qrcode": qrcode_id, "url": url, "qrReady": qr_ok,
+                "ttl": 300, "maxRefresh": 3}
+
+    def api_wechat_poll(q) -> dict:
+        qrcode = (q.get("qrcode") or "").strip()
+        verify = (q.get("verify") or "").strip()
+        if not qrcode:
+            raise ValueError("缺少 qrcode")
+        from core.wechat import WeixinClient
+        st = WeixinClient().poll_qr_status(qrcode, verify_code=verify)
+        status = st.get("status") or ""
+        if status == "confirmed":
+            from core.wechat import save_cred
+            token = st.get("bot_token") or ""
+            if token:
+                save_cred(token, st.get("baseurl") or "",
+                          st.get("ilink_bot_id") or "", st.get("ilink_user_id") or "")
+                return {"status": "confirmed", "saved": True}
+            return {"status": "confirmed", "saved": False,
+                    "error": "服务端未返回 bot_token"}
+        # 其余状态原样回传（wait/scanned/expired/need_verifycode…），
+        # 但 token 类字段永不外泄
+        return {"status": status,
+                "raw": {k: v for k, v in st.items() if "token" not in k}}
+
+    def api_wechat_action(payload: dict) -> dict:
+        act = (payload.get("action") or "").strip()
+        if act == "install":
+            from core import task
+            from core.wechat import TASK_NAME
+            rc = task.install_task(TASK_NAME, "wechat serve")
+            return {"ok": rc == 0, "task": _wechat_task_info()}
+        if act == "uninstall":
+            from core import task
+            from core.wechat import TASK_NAME
+            task.uninstall_task(TASK_NAME)
+            return {"ok": True, "task": _wechat_task_info()}
+        if act == "logout":
+            from core.wechat import clear_cred
+            clear_cred()
+            return {"ok": True}
+        raise ValueError(f"未知操作：{act}")
+
+    # ---------------------------------------------------------------- MCP 服务
+    # CLI `mosu mcp` 的前端化：工具清单 / 接入配置 / 一键自检。
+    # MCP server 本体是 AI 客户端按需拉起的 stdio 进程，GUI 不常驻它——
+    # 所以这里没有「启停」，只有「怎么接」和「测一下好不好用」。
+    def api_mcp(q) -> dict:
+        from core.mcp_server import TOOLS
+        tools = [{"name": t["name"], "description": t.get("description", "")}
+                 for t in TOOLS]
+        cfg = {"mosu": {"type": "stdio", "command": "python",
+                        "args": [str(ROOT / "core" / "mcp_server.py")],
+                        "env": {"PYTHONIOENCODING": "utf-8"}}}
+        return {"tools": tools, "count": len(tools), "config": cfg}
+
+    def api_mcp_selftest(payload: dict) -> dict:
+        """跑一遍 self_test（真数据冒烟），输出回传前端。
+
+        两个坑：① self_test 直接 print，要 redirect_stdout 收；
+        ② 它摸真实数据库（搜索「的」要逐条解压），可能很慢——
+        daemon 线程 + 150s 超时，且全程持 _ds_lock（McpServer 自建
+        Dataset，和 GUI 共用 .cache 快照，不能并发解密）。
+        """
+        import io
+        import contextlib
+        from core.mcp_server import self_test
+        box: dict = {}
+
+        def run():
+            buf = io.StringIO()
+            try:
+                with _ds_lock, contextlib.redirect_stdout(buf):
+                    rc = self_test()
+                box["rc"] = rc
+            except Exception as e:           # noqa: BLE001
+                box["err"] = f"{type(e).__name__}: {e}"
+            box["out"] = buf.getvalue()
+
+        th = threading.Thread(target=run, daemon=True, name="mosu-mcp-selftest")
+        th.start()
+        th.join(150)
+        if th.is_alive():
+            return {"ok": False, "output": box.get("out", ""),
+                    "error": "自测超时（150 秒）——数据库太大时属正常，换个小会话再试"}
+        if "err" in box:
+            return {"ok": False, "output": box.get("out", ""), "error": box["err"]}
+        rc = box.get("rc")
+        return {"ok": rc == 0, "output": box.get("out", ""),
+                "error": None if rc == 0 else f"退出码 {rc}"}
+
+    # ---------------------------------------------------------------- 分身 API 服务
+    # CLI `mosu bot serve` 的前端化：8787 服务嵌进 GUI 进程起停。
+    # 端口可能被外部进程占着（用户自己跑过 CLI）——managed=False 但
+    # running=True 时要能区分，别去抢一个已经在听的端口。
+    _bot_srv: dict = {"srv": None}
+
+    def _bot_port() -> int:
+        return int(os.environ.get("MOSU_BOT_PORT", "8787"))
+
+    def _bot_corpus() -> Path:
+        # 语料是 persona/corpus.jsonl **文件**（StyleRetriever 直接 open 它，
+        # 传目录在 Windows 上会 PermissionError——GUI 版实测踩过）
+        return ROOT / "persona" / "corpus.jsonl"
+
+    def api_bot_serve(q) -> dict:
+        import socket
+        port = _bot_port()
+        managed = _bot_srv["srv"] is not None
+        with socket.socket() as s:
+            external = s.connect_ex(("127.0.0.1", port)) == 0
+        corpus = _bot_corpus()
+        return {"running": managed or external, "managed": managed,
+                "port": port, "corpus": str(corpus),
+                "corpusReady": corpus.is_file()}
+
+    def api_bot_serve_post(payload: dict) -> dict:
+        act = (payload.get("action") or "").strip()
+        port = _bot_port()
+        if act == "start":
+            if _bot_srv["srv"] is not None:
+                return {"ok": True, "running": True, "port": port}
+            corpus = _bot_corpus()
+            if not corpus.is_file():
+                raise ValueError("语料不存在：先去「个人语料」页生成一份")
+            # 端口被外部占用（用户自己跑着 CLI）→ 不抢，说清楚
+            import socket
+            with socket.socket() as s:
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    raise ValueError(
+                        f"端口 {port} 已被其他进程占用"
+                        "（可能你自己跑着 mosu bot serve）。先停掉它，"
+                        "或设 MOSU_BOT_PORT 换个端口")
+            from core.bot.server import make_server
+            try:
+                srv = make_server(corpus, port=port)
+            except OSError as e:
+                raise ValueError(f"服务起不来：{e}")
+            threading.Thread(target=srv.serve_forever, daemon=True,
+                             name="mosu-bot-http").start()
+            _bot_srv["srv"] = srv
+            return {"ok": True, "running": True, "port": port}
+        if act == "stop":
+            srv = _bot_srv["srv"]
+            if srv is not None:
+                try:
+                    srv.shutdown()
+                    srv.server_close()
+                except Exception:
+                    pass
+                _bot_srv["srv"] = None
+            return {"ok": True, "running": False}
+        raise ValueError(f"未知操作：{act}")
+
+    # ---------------------------------------------------------------- 个人语料
+    # CLI `mosu persona` 的前端化：全库收集本人发言 → 语料包 + 风格画像。
+    # 产物落项目 persona/（.gitignore）——这个位置是功能性的：bot 的
+    # StyleRetriever 写死从这里读，所以不给「保存到」选择，只提供下载副本。
+    def _persona_dir() -> Path:
+        return ROOT / "persona"
+
+    def _persona_state() -> dict:
+        d = _persona_dir()
+        st = {"exists": d.is_dir(), "path": str(d), "corpus": 0,
+              "sessions": 0, "styleProfile": False, "mtime": ""}
+        if not d.is_dir():
+            return st
+        jsonl = d / "corpus.jsonl"
+        if jsonl.is_file():
+            try:
+                st["corpus"] = sum(1 for line in
+                                   jsonl.read_text(encoding="utf-8").splitlines()
+                                   if line.strip())
+            except Exception:
+                pass
+        try:
+            # 按会话分段的语料在 corpus_by_session/ 子目录（write_corpus 的结构）
+            sub = d / "corpus_by_session"
+            st["sessions"] = len(list(sub.glob("*.txt"))) if sub.is_dir() else 0
+        except Exception:
+            pass
+        md = d / "style_profile.md"
+        if md.is_file():
+            st["styleProfile"] = True
+            try:
+                st["mtime"] = datetime.fromtimestamp(
+                    md.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+        return st
+
+    def _persona_task(rebuild: bool):
+        def run(tid):
+            with _ds_lock:
+                from core.persona import build_persona
+                r = build_persona(get_ds(), _persona_dir())
+            return {"ok": True, "result": r, "state": _persona_state()}
+        return run
+
+    def api_persona_corpus(q) -> dict:
+        """查当前语料包状态（不触发生成）。"""
+        return {"state": _persona_state()}
+
+    def api_persona_corpus_post(payload: dict) -> dict:
+        # 已有语料时要求确认——全库扫描 1-2 分钟，误点重跑很烦
+        st = _persona_state()
+        if st["corpus"] and not payload.get("rebuild"):
+            raise ValueError("已有语料包。确认要花 1-2 分钟重新生成的话，"
+                             "勾选「重新生成」再来。")
+        tid = tasks.submit("persona", _persona_task(bool(payload.get("rebuild"))))
+        return {"taskId": tid, "status": "running"}
+
+    def api_persona_file(q) -> tuple[bytes, str, str]:
+        """下载语料包里的文件（style_profile.md / corpus.jsonl）。
+
+        路径锁死在 persona/ 根下：name 限纯文件名，禁穿越。
+        """
+        name = (q.get("name") or "").strip()
+        if name not in ("style_profile.md", "corpus.jsonl") or "/" in name:
+            raise ValueError("只允许下载 style_profile.md / corpus.jsonl")
+        f = _persona_dir() / name
+        if not f.is_file():
+            raise LookupError(name)
+        ctype = "text/markdown; charset=utf-8" if name.endswith(".md") \
+            else "application/x-ndjson; charset=utf-8"
+        return f.read_bytes(), ctype, name
+
+    def api_persona_md(q) -> dict:
+        """风格画像正文（前端预览用）。"""
+        f = _persona_dir() / "style_profile.md"
+        if not f.is_file():
+            raise LookupError("还没生成风格画像")
+        return {"md": f.read_text(encoding="utf-8")[:20000]}
+
     # ---------------------------------------------------------------- 联系人
     def api_contacts(q) -> dict:
         with _ds_lock:
@@ -1517,6 +1804,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/contacts": (api_contacts, True),
         "/api/contact": (api_contact, True),
         "/api/profile": (api_profile, True),
+        "/api/persona-corpus": (api_persona_corpus, True),
+        "/api/persona-corpus/md": (api_persona_md, True),
+        "/api/mcp": (api_mcp, True),
+        "/api/bot-serve": (api_bot_serve, True),
+        "/api/wechat/poll": (api_wechat_poll, True),
+        "/api/wechat/task": (lambda q: _wechat_task_info(), True),
         "/api/exports": (api_exports, True),
         "/api/export/dests": (api_export_dests, True),
         "/api/aicorpus": (api_aicorpus, True),
@@ -1681,6 +1974,43 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return
+            if path == "/api/persona-corpus/file":
+                try:
+                    data, ctype, fname = api_persona_file(self._params())
+                except LookupError:
+                    self._json({"error": "文件不存在（可能还没生成）"}, 404)
+                except ValueError as e:
+                    self._json({"error": str(e)}, 400)
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                else:
+                    quoted = quote(fname)
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Disposition",
+                                     f"attachment; filename*=UTF-8''{quoted}")
+                    self.end_headers()
+                    self.wfile.write(data)
+                return
+            if path == "/api/wechat/qr":
+                # 登录二维码 PNG（服务端用 qrcode 包渲染，存 ~/.mosu/）。
+                # 演示模式不 serve：二维码本身就是凭证类 artifact。
+                try:
+                    if bool(int(os.environ.get("MOSU_DEMO", "0"))):
+                        raise ValueError("演示模式不提供二维码")
+                    from core.dataset import KEYVAULT
+                    p = KEYVAULT.parent / "wechat-login.png"
+                    if not p.is_file():
+                        raise LookupError("二维码图片不存在，请先点「获取二维码」")
+                    self._send(p.read_bytes(), "image/png",
+                               headers={"Cache-Control": "no-store"})
+                except LookupError:
+                    self._json({"error": "二维码不存在或已过期，请重新获取"}, 404)
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
             if path == "/api/export/download":
                 try:
                     data, ctype, fname = api_export_download(self._params())
@@ -1759,6 +2089,21 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/export":
                 self._guard(api_export, payload)
+                return
+            if path == "/api/wechat/login":
+                self._guard(api_wechat_login, payload)
+                return
+            if path == "/api/wechat/action":
+                self._guard(api_wechat_action, payload)
+                return
+            if path == "/api/persona-corpus":
+                self._guard(api_persona_corpus_post, payload)
+                return
+            if path == "/api/mcp/selftest":
+                self._guard(api_mcp_selftest, payload)
+                return
+            if path == "/api/bot-serve":
+                self._guard(api_bot_serve_post, payload)
                 return
             self._json({"error": f"unknown path: {path}"}, 404)
 
