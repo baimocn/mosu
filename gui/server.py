@@ -718,15 +718,21 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             total = len(rows)
             page = rows[offset:offset + limit]
             # 每张图标注来源：local=本地媒体库（最快）| remote=走服务端代理
-            # 抓微信 CDN（带 token）| none=两条路都拿不到
+            # 抓微信 CDN（带 token）| video=视频（不走图片代理，否则白名单必 404）
+            # | none=两条路都拿不到
             store = get_media()
             for e in page:
                 flags = []
                 for it in e.get("mediaItems") or []:
                     md5 = (it.get("md5") or "").lower()
+                    url = (it.get("url") or "")
                     if md5 and store.has_image(md5):
                         flags.append("local")
-                    elif it.get("url"):
+                    elif "snsvideodownload" in url or "video.qq.com" in url:
+                        # 视频走图片代理必 404（remoteimg 白名单只放行图床域名）；
+                        # 前端据此显示「视频暂不支持预览」占位，不再发无意义请求
+                        flags.append("video")
+                    elif url:
                         flags.append("remote")
                     else:
                         flags.append("none")

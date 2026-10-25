@@ -58,12 +58,17 @@
             <div v-if="imgList(e).length" class="moment-imgs">
               <div v-for="(m,i) in imgList(e)" :key="i" class="moment-img-cell">
                 <template v-if="m">
-                  <img :src="m.thumb + (m.bust || '')" loading="lazy"
-                       @click="openImg(m)" @error="onImgErr(m)" />
-                  <div v-if="m.failed" class="moment-img-fallback">
-                    <span>图片不可用</span>
-                    <button class="btn btn-sm" @click.stop="retryImg(m)">重试</button>
+                  <div v-if="m.video" class="moment-img-fallback" style="cursor:default">
+                    <span>🎬 视频暂不支持预览</span>
                   </div>
+                  <template v-else>
+                    <img :src="m.thumb + (m.bust || '')" loading="lazy"
+                         @click="openImg(m)" @error="onImgErr(m)" />
+                    <div v-if="m.failed" class="moment-img-fallback">
+                      <span>图片不可用</span>
+                      <button class="btn btn-sm" @click.stop="retryImg(m)">重试</button>
+                    </div>
+                  </template>
                 </template>
                 <div v-else class="moment-img-fallback" style="cursor:default">
                   <span>本机没有这张图</span>
@@ -141,6 +146,12 @@
           const it = items[i];
           const md5 = (it.md5 || "").toLowerCase();
           const kind = src[i] || "none";
+          if (kind === "video") {
+            // 视频：本地缓存命中走 local 分支，这里只处理远程视频——
+            // 服务端代理白名单只放行图床域名，视频必失败，不发起请求，直接占位
+            out.push({ video: true, size: it.width ? (it.width + "×" + it.height) : "" });
+            continue;
+          }
           if (!md5 || kind === "none") { out.push(null); continue; }
           if (kind === "remote" && this.probeOk[md5] === false) {
             out.push(null);                       // 已确认取不到，别让用户白点
