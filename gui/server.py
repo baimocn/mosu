@@ -1488,6 +1488,51 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             "features": feat,
         }
 
+    def api_insight_presets(q) -> dict:
+        """洞察预设问题（前端渲染成一排可点的卡片）。"""
+        from core.insight import PRESETS
+        return {"presets": PRESETS}
+
+    def api_insight_ask(payload: dict) -> dict:
+        """洞察问答：大模型基于已核对事实回答用户问题。
+
+        全链路要 20–40 秒（关键词统计 + LLM 推理），必须异步：
+        同步会占住 HTTP 连接，前端只能干等。
+        任务走 TaskHub，前端轮询 /api/task?id=<tid>。
+        """
+        question = (payload.get("question") or "").strip()
+        if not question:
+            raise ValueError("问题不能为空")
+        session = (payload.get("session") or "").strip() or None
+        topk = int(payload.get("topk") or 8)
+
+        def run(tid):
+            from core import insight
+            # 事实采集要读库 → 持锁；LLM 推理不碰库 → 放开，
+            # 否则一次提问就把整个 GUI 的数据 API 卡住 30 秒。
+            with _ds_lock:
+                fb = insight.collect_facts(get_ds(), session=session)
+                ds_obj = get_ds()
+            corpus = ROOT / "persona" / "corpus.jsonl"
+            samples = insight.retrieve_samples(corpus, question, topk=topk)
+            from core.bot.llm import LlmClient
+            llm = LlmClient()
+            messages = insight.build_prompt(question, fb["facts"], samples)
+            answer = llm.chat(messages, temperature=0.7, max_tokens=1200)
+            cited = insight.split_citations(answer)
+            return {
+                "question": question,
+                "answer": answer,
+                "citations": cited["citations"],
+                "facts": fb["facts"],
+                "samples": samples,
+                "metrics": fb["metrics"],
+                "model": llm.model,
+            }
+
+        tid = tasks.submit("insight", run)
+        return {"taskId": tid, "status": "running"}
+
     def api_report(q) -> dict:
         year = q.get("year")
         session = (q.get("session") or "").strip()
@@ -1838,6 +1883,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/stats/global": (api_stats_global, True),
         "/api/stats/contacts": (api_stats_contacts, True),
         "/api/stats/time": (api_stats_time, True),
+        "/api/insight/presets": (api_insight_presets, True),
         "/api/task": (api_task, True),
     }
 
@@ -2118,6 +2164,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/bot-serve":
                 self._guard(api_bot_serve_post, payload)
+                return
+            if path == "/api/insight/ask":
+                self._guard(api_insight_ask, payload)
                 return
             self._json({"error": f"unknown path: {path}"}, 404)
 

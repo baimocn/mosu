@@ -326,6 +326,8 @@ class Dataset:
 
         self._plain: dict[str, Path] = {}
         self._broken: set[str] = set()
+        self._force: set[str] = set()   # 这些库必须重新解密（连接自愈时用）
+        self._ver: dict[str, int] = {}  # 每个库当前明文副本的版本号（源文件 mtime）
         self._con: dict[str, sqlite3.Connection] = {}
         self._contacts: dict[str, dict] | None = None
         self._sessions: list[dict] | None = None
@@ -351,6 +353,11 @@ class Dataset:
         return pt + b"\x00" * RESERVE
 
     def _decrypt_main(self, snap: Path, dst: Path) -> None:
+        """解密主库到 dst。
+
+        dst 必须是**私有临时文件**（不共享、不被别的连接打开），
+        所以这里直接写即可——调用方负责在写完后原子改名到正式名字。
+        """
         enc_key = self._enc_key(snap)
         size = snap.stat().st_size
         npages = size // PAGE_SIZE
@@ -402,40 +409,98 @@ class Dataset:
         except Exception:
             return False
 
+    def _close_con(self, rel: str) -> None:
+        """关掉某个库的旧连接。
+
+        必须在下一次解密覆盖 plain 文件**之前**调用：SQLite 连接持有文件句柄，
+        若文件被原地覆盖，同一个连接再读就会抛
+        `DatabaseError: database disk image is malformed`（连接活着，文件没了）。
+        """
+        con = self._con.pop(rel, None)
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+
     def plain(self, rel: str) -> Path | None:
-        """拿到某个库的明文副本（带缓存）。失败返回 None（微信正在写入导致快照损坏时）。"""
-        if rel in self._plain:
-            return self._plain[rel]
+        """拿到某个库的明文副本（带缓存）。失败返回 None（微信正在写入导致快照损坏时）。
+
+        明文副本用**版本化文件名**：`{name}_plain_{srcmtime}.db`。
+        为什么不叫固定名直接覆盖：
+          - Windows 不允许替换被其他进程 SQLite 连接打开的文件（PermissionError）
+          - 强行原地覆盖 → 对方连接读到半截文件 → `database disk image is malformed`
+        改成「写新文件 → 读者切到新连接 → 旧文件延后清理」后，
+        任何时刻每个文件都是完整的，也没人会被别人覆盖掉。
+        """
         src = self.db_root / rel
         if not src.exists():
             raise SystemExit(f"[x] 找不到数据库 {src}")
         name = src.stem
         snap = CACHE / f"{name}_snap.db"
-        plain = CACHE / f"{name}_plain.db"
         wal_snap = CACHE / f"{name}_snap.db-wal"
 
-        stale = (self.refresh or not plain.exists()
-                 or plain.stat().st_mtime < src.stat().st_mtime)
+        # 源文件的 mtime 当版本号：微信一改，版本就变
+        try:
+            ver = int(src.stat().st_mtime)
+        except OSError:
+            ver = 0
+        plain = CACHE / f"{name}_plain_{ver}.db"
+
+        # 已经是当前版本 → 直接用
+        # 注意：_force（自愈重解）时不能复用同名文件——那个可能已被污染
+        if rel in self._plain and self._ver.get(rel) == ver and rel not in self._force:
+            cur = self._plain[rel]
+            if cur is not None and cur.exists():
+                return cur
+            # cur 为 None（上一轮解密失败）或文件已被删 → 落到下面重解
+            self._plain.pop(rel, None)
+            self._ver.pop(rel, None)
+        # 源文件更新了：若别的进程已经解出这一版，直接切过去（不用重解）
+        # 注意：_force（自愈重解）时绝不能走这条——那个同名文件可能已被污染
+        elif rel not in self._force and plain.exists():
+            # 同名文件可能是上一轮的残留坏文件（写到一半被杀、磁盘满等），
+            # 复用前必须验一下，否则会把 malformed 一直传下去。
+            if self._check_db(plain):
+                self._close_con(rel)
+                self._plain[rel] = plain
+                self._ver[rel] = ver
+                return plain
+            # 验不过 → 当它不存在，重新解一份
+            self.log(f"  [!] {name} 缓存副本校验失败，重新解密")
+            try:
+                plain.unlink()
+            except Exception:
+                pass
+
+        stale = (self.refresh or rel in self._force or not plain.exists())
         if stale:
+            # 覆盖前先关自己的旧连接（本次进程内）
+            self._close_con(rel)
             t0 = time.time()
             ok = False
+            if rel in self._force:
+                # 强制重解：换个全新文件名，绝不复用可能被污染的那份
+                plain = CACHE / f"{name}_plain_{ver}_{int(time.time() * 1000)}.db"
+            # 写临时文件，成功后原子改名到版本化名字
+            tmp_plain = CACHE / f"{name}_plain_{ver}.tmp"
             for attempt in range(2):          # 微信边写边拷可能损坏，重试一次
                 shutil.copyfile(src, snap)
-                self._decrypt_main(snap, plain)
+                self._decrypt_main(snap, tmp_plain)
                 merged = 0
                 wal_src = Path(str(src) + "-wal")
                 if self.with_wal and wal_src.exists() and wal_src.stat().st_size > 32:
                     try:
                         shutil.copyfile(wal_src, wal_snap)
-                        merged = self._apply_wal(snap, wal_snap, plain)
-                        if merged and not self._integrity_ok(plain):
+                        merged = self._apply_wal(snap, wal_snap, tmp_plain)
+                        if merged and not self._integrity_ok(tmp_plain):
                             self.log(f"  [!] {name} WAL 合并后校验失败，回退到纯主库")
-                            self._decrypt_main(snap, plain)
+                            self._decrypt_main(snap, tmp_plain)
                             merged = 0
                     except Exception as e:
                         self.log(f"  [!] {name} WAL 合并跳过: {str(e)[:60]}")
                         merged = 0
-                if self._check_db(plain):
+                if self._check_db(tmp_plain):
                     ok = True
                     tail = f"（含 WAL {merged} 帧）" if merged else ""
                     self.log(f"  [✓] {name} 解密 {src.stat().st_size/1048576:.1f}MB "
@@ -452,14 +517,34 @@ class Dataset:
                 self.log(f"  [!] {name} 解密后校验失败（微信正在写入），本次跳过该库")
                 self._broken.add(rel)
                 self._plain[rel] = None
-                if plain.exists():
+                if tmp_plain.exists():
                     try:
-                        plain.unlink()
+                        tmp_plain.unlink()
                     except Exception:
                         pass
                 return None
+            # 临时文件 → 版本化正式文件（同目录内 rename，原子）
+            try:
+                os.replace(tmp_plain, plain)
+            except Exception as e:
+                self.log(f"  [!] {name} 落盘失败: {str(e)[:60]}")
+                self._plain[rel] = None
+                return None
+            self._force.discard(rel)
+            self._ver[rel] = ver
+            self._cleanup_old_plains(name, keep=plain)
         self._plain[rel] = plain
         return plain
+
+    def _cleanup_old_plains(self, name: str, keep: Path) -> None:
+        """删掉旧版本的明文副本。被别的进程占用时跳过（Windows 会锁）。"""
+        for p in CACHE.glob(f"{name}_plain_*.db"):
+            if p == keep:
+                continue
+            try:
+                p.unlink()
+            except Exception:
+                pass   # 正被别的进程读着，留着不碍事
 
     @staticmethod
     def _check_db(plain: Path) -> bool:
@@ -473,7 +558,20 @@ class Dataset:
 
     def conn(self, rel: str) -> sqlite3.Connection:
         if rel in self._con:
-            return self._con[rel]
+            con = self._con[rel]
+            # 自愈：连接可能是「文件被别的进程覆盖后」留下的坏连接。
+            # 探针必须真读文件（SELECT 1 是常量表达式，不碰磁盘，探不出来），
+            # 所以用 sqlite_master 的行数——它要读 schema 页。
+            try:
+                con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+                return con
+            except sqlite3.DatabaseError:
+                self._close_con(rel)
+                self._plain.pop(rel, None)
+                self._ver.pop(rel, None)
+                # 强制重新解密：污染过的 plain 文件 mtime 比源新，
+                # 光靠 stale 判定会直接复用坏文件，必须显式标记强制重解。
+                self._force.add(rel)
         p = self.plain(rel)
         if p is None:
             raise RuntimeError(f"数据库暂不可用: {rel}")

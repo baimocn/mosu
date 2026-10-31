@@ -1,94 +1,183 @@
 /* ==========================================================================
-   墨溯 v2 · 洞察工作台
-   合并「数据统计」「画像」「年报」三页。
-   关键改进：一次 /api/profile + /api/report 请求，三个视图共享同一份数据，
-   切 tab 不重复拉取，也不重复画同样的 KPI 卡。
+   墨溯 v2 · 洞察工作台（以大模型为核心）
+   --------------------------------------------------------------------------
+   旧形态：三个 tab 铺满统计图表，用户自己看图找结论。
+   新形态：用户提问 → 大模型基于「已核对事实 + 语料样本」回答，
+           图表降级为可展开的「支撑数据」，只作为答案的佐证。
+
+   为什么这样改：
+     - 看图找结论要求用户具备读图能力并自己提出问题，成本高
+     - 大模型能把「24 万条消息」压成一句话结论，且能指出反直觉之处
+     - 但模型自己算数会编数字 → 所有数字由后端算好并标注口径，
+       模型只做转述与解读，答案里必须带「依据」
    ========================================================================== */
 (function (global) {
   "use strict";
   const M = global.Mosu;
-  const { ref, computed, onMounted } = Vue;
-
-  const TABS = [
-    { id: "overview", name: "总览" },
-    { id: "profile", name: "我的画像" },
-    { id: "report", name: "年度总结" },
-  ];
+  const { ref, computed, onMounted, nextTick, watch } = Vue;
 
   const Insight = {
     props: { route: { type: String, default: "insight" } },
     template: `
-    <div class="v2-page v2-scroll">
-      <div class="v2-narr">
-        <div class="v2-page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
-          <div>
-            <h1 class="v2-page-title">洞察</h1>
-            <p class="v2-page-desc">
-              从 {{ M.fmtNum(total) }} 条消息里读出的事实。只算已解密入库的部分，
-              不猜测、不推断。
-            </p>
-          </div>
-          <button class="v2-btn" @click="reload" :disabled="loading">
-            {{ loading ? '分析中…' : '重新计算' }}
+    <div class="v2-page v2-scroll v2-ia">
+      <div class="v2-page-head">
+        <div>
+          <h1 class="v2-page-title">洞察</h1>
+          <p class="v2-page-desc">
+            问一个问题，大模型基于你本机的
+            <strong>{{ M.fmtNum(libTotal) }}</strong> 条聊天记录回答。
+            数字全部由数据库算出并标注口径，模型只负责解读。
+          </p>
+        </div>
+        <div v-if="model" class="v2-ia-model">
+          <span class="v2-ia-model-dot"></span>{{ model }}
+        </div>
+      </div>
+
+      <!-- ============ 提问区 ============ -->
+      <div class="v2-ia-ask-wrap">
+        <div class="v2-ia-ask">
+          <textarea
+            v-model="question"
+            class="v2-ia-input"
+            :placeholder="ph"
+            rows="1"
+            @keydown.enter.exact.prevent="submit"
+            @input="autoGrow"></textarea>
+          <button class="v2-btn v2-ia-go" :disabled="!question.trim() || busy" @click="submit">
+            <span v-if="busy" class="v2-spin"></span>
+            <span v-else>问</span>
           </button>
         </div>
-
-        <div class="v2-tabs">
-          <button v-for="t in tabs" :key="t.id" class="v2-tab"
-                  :class="{active: tab===t.id}" @click="tab=t.id">{{ t.name }}</button>
+        <div v-if="!answered && presets.length" class="v2-ia-presets">
+          <div class="v2-ia-presets-label">试试这些问题</div>
+          <div class="v2-ia-preset-row">
+            <button v-for="p in presets" :key="p.id"
+                    class="v2-ia-preset" @click="usePreset(p)">
+              <div class="v2-ia-preset-q">{{ p.q }}</div>
+              <div class="v2-ia-preset-h">{{ p.hint }}</div>
+            </button>
+          </div>
         </div>
 
-        <div v-if="loading && !profile" style="display:flex;flex-direction:column;gap:16px">
-          <div class="v2-card" style="display:flex;align-items:center;gap:14px">
-            <div class="v2-skel" style="width:34px;height:34px;border-radius:10px;flex-shrink:0"></div>
-            <div style="flex:1">
-              <div style="font-size:14px;font-weight:500;color:var(--text-1)">正在扫描全部消息…</div>
-              <div style="font-size:12px;color:var(--text-4);margin-top:3px">
-                首次分析需解密并解压全库消息，约 5–10 秒。之后走缓存，秒开。
-              </div>
+        <!-- 库里有：首屏给出可提问的素材范围 -->
+        <div v-if="!answered && libTotal" class="v2-ia-scope">
+          <div class="v2-ia-sec-title">库里有这些，可以随便问</div>
+          <div class="v2-ia-scope-row">
+            <div class="v2-ia-scope-item">
+              <div class="v2-ia-scope-val">{{ M.fmtNum(libTotal) }}</div>
+              <div class="v2-ia-scope-lab">条消息</div>
+            </div>
+            <div class="v2-ia-scope-item">
+              <div class="v2-ia-scope-val">{{ M.fmtNum(libSessions) }}</div>
+              <div class="v2-ia-scope-lab">个会话</div>
+            </div>
+            <div class="v2-ia-scope-item">
+              <div class="v2-ia-scope-val">{{ M.fmtNum(libContacts) }}</div>
+              <div class="v2-ia-scope-lab">个联系人</div>
+            </div>
+            <div class="v2-ia-scope-item">
+              <div class="v2-ia-scope-val">{{ libSpan }}</div>
+              <div class="v2-ia-scope-lab">时间跨度</div>
             </div>
           </div>
-          <div class="v2-skel" style="height:120px;border-radius:16px"></div>
-          <div class="v2-skel" style="height:200px;border-radius:16px"></div>
+          <div v-if="topNames.length" class="v2-ia-scope-top">
+            <span class="v2-ia-scope-top-lab">聊得最多的</span>
+            <span v-for="(t, i) in topNames" :key="i" class="v2-ia-chip">
+              {{ t.name }}<span class="v2-ia-chip-n">{{ M.fmtNum(t.total) }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 状态 ============ -->
+      <div v-if="busy" class="v2-ia-status">
+        <div class="v2-ia-status-row">
+          <span class="v2-spin"></span>
+          <span>{{ stageText }}</span>
+        </div>
+        <div class="v2-ia-progress"><div class="v2-ia-progress-bar"></div></div>
+        <div class="v2-ia-hint">
+          全库 {{ M.fmtNum(libTotal) }} 条消息要重新扫一遍，加上模型推理，约 20–40 秒。
+        </div>
+      </div>
+
+      <div v-else-if="error" class="v2-note danger">{{ error }}</div>
+
+      <!-- ============ 回答 ============ -->
+      <div v-else-if="result" class="v2-ia-answer-wrap">
+        <div class="v2-ia-q-echo">
+          <span class="v2-ia-q-mark">问</span>{{ result.question }}
         </div>
 
-        <div v-else-if="error" class="v2-note danger">{{ error }}</div>
+        <article class="v2-ia-answer" v-html="rendered"></article>
 
-        <!-- ============ 总览 ============ -->
-        <template v-else-if="tab==='overview'">
-          <div class="v2-narr-lead">
-            <h2 class="v2-narr-lead-title">
-              {{ M.fmtNum(ov.totalMessages) }} 条消息，跨 {{ M.fmtNum(ov.activeDays) }} 天
-            </h2>
-            <div class="v2-narr-metrics">
-              <div class="v2-metric accent">
-                <div class="v2-metric-val">{{ M.fmtNum(ov.totalMessages) }}</div>
-                <div class="v2-metric-label">消息总数</div>
-              </div>
-              <div class="v2-metric">
-                <div class="v2-metric-val">{{ M.fmtNum(ov.myMessages) }}</div>
-                <div class="v2-metric-label">我发出</div>
-                <div class="v2-metric-sub">{{ pct(ov.myShare) }}%</div>
-              </div>
-              <div class="v2-metric">
-                <div class="v2-metric-val">{{ M.fmtNum(ov.activeDays) }}</div>
-                <div class="v2-metric-label">有消息的天</div>
-              </div>
-              <div class="v2-metric">
-                <div class="v2-metric-val">{{ M.fmtNum(ov.spanDays) }}</div>
-                <div class="v2-metric-label">跨度（天）</div>
+        <!-- 依据 -->
+        <div v-if="citedFacts.length" class="v2-ia-cites">
+          <div class="v2-ia-sec-title">答案引用了这些依据</div>
+          <div class="v2-ia-cite-row">
+            <span v-for="(c, i) in citedFacts" :key="i" class="v2-ia-cite" :title="c.full">{{ c.label }}</span>
+          </div>
+        </div>
+
+        <!-- 支撑数据：折叠抽屉 -->
+        <div class="v2-ia-evidence">
+          <button class="v2-ia-ev-toggle" @click="evOpen = !evOpen">
+            <span class="v2-ia-ev-caret" :class="{open: evOpen}">›</span>
+            支撑数据
+            <span class="v2-ia-ev-count">
+              {{ (result.facts || []).length }} 条事实 ·
+              {{ (result.samples || []).length }} 条样本
+            </span>
+          </button>
+
+          <div v-if="evOpen" class="v2-ia-ev-body">
+            <div class="v2-ia-sec-title">已核对事实（数字来自数据库，可回溯）</div>
+            <ul class="v2-ia-facts">
+              <li v-for="(f, i) in (result.facts || [])" :key="i">{{ f }}</li>
+            </ul>
+
+            <div v-if="(result.samples || []).length" class="v2-ia-sec-title" style="margin-top:18px">
+              语料样本（真实聊天片段，用于判断语气，不是答案素材）
+            </div>
+            <div v-if="(result.samples || []).length" class="v2-ia-samples">
+              <div v-for="(s, i) in result.samples" :key="i" class="v2-ia-sample">
+                <div class="v2-ia-sample-meta">
+                  <span class="v2-ia-sample-who">{{ s.speaker }}</span>
+                  <span v-if="s.time" class="v2-ia-sample-time">{{ s.time }}</span>
+                </div>
+                <div class="v2-ia-sample-text">{{ s.text }}</div>
               </div>
             </div>
-          </div>
 
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">活跃度日历</h3>
-            <p class="v2-narr-block-desc">
+            <button class="v2-btn v2-ia-again" @click="evOpen = false">收起</button>
+          </div>
+        </div>
+
+        <div class="v2-ia-foot">
+          <span>用时 {{ cost }} 秒</span>
+          <button class="v2-btn" @click="askAgain">换个问题</button>
+        </div>
+      </div>
+
+      <!-- ============ 原始数据（证据的另一面） ============ -->
+      <div class="v2-ia-raw">
+        <button class="v2-ia-ev-toggle" @click="rawOpen = !rawOpen">
+          <span class="v2-ia-ev-caret" :class="{open: rawOpen}">›</span>
+          原始统计图表
+          <span class="v2-ia-ev-count">活跃度日历 · 时段分布 · 话题分布</span>
+        </button>
+
+        <div v-if="rawOpen" class="v2-ia-ev-body">
+          <div v-if="rawLoading" class="v2-ia-hint">正在统计…</div>
+          <template v-else>
+            <!-- 日历 -->
+            <div class="v2-ia-sec-title">活跃度日历</div>
+            <p class="v2-ia-sec-desc">
               每天的消息数，颜色越深越活跃。共 {{ heatDays }} 天有记录。
             </p>
-            <div class="v2-card">
-              <div class="v2-heat-wrap" v-if="calendar.length">
-                <div class="v2-heat-inner">
+            <div class="v2-heat-wrap" v-if="calendar.length">
+              <div class="v2-heat-inner">
                 <div class="v2-heat-months" :style="{width: heatWidth + 'px'}">
                   <span v-for="m in heatMonths" :key="m.key"
                         :style="{left: m.left + 'px'}">{{ m.label }}</span>
@@ -99,300 +188,277 @@
                        :style="c ? {background: heatColor(c.level)} : {background:'transparent'}"
                        :title="c ? (c.date + ' · ' + c.n + ' 条') : ''"></div>
                 </div>
-                </div>
-              </div>
-              <div v-else class="v2-empty" style="padding:24px">
-                <div class="v2-empty-desc">暂无日历数据</div>
-              </div>
-              <div style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:11px;color:var(--text-4)">
-                <span>少</span>
-                <span v-for="l in [0,1,2,3,4,5]" :key="l"
-                      :style="{width:'11px',height:'11px',borderRadius:'3px',background:heatColor(l)}"></span>
-                <span>多</span>
               </div>
             </div>
-          </div>
 
-          <div class="v2-narr-cols">
-            <div class="v2-narr-block">
-              <h3 class="v2-narr-block-title">消息构成</h3>
-              <p class="v2-narr-block-desc">按消息类型拆分。</p>
-              <div class="v2-card">
-                <div class="v2-bar-row" v-for="(c,i) in kindRows" :key="i">
-                  <span class="v2-bar-label">{{ c.name }}</span>
-                  <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:c.pct+'%'}"></span></span>
-                  <span class="v2-bar-val">{{ M.fmtNum(c.n) }}</span>
+            <!-- 时段 -->
+            <div class="v2-ia-sec-title" style="margin-top:22px">时段分布</div>
+            <p class="v2-ia-sec-desc">一天里哪个小时最活跃。</p>
+            <div class="v2-bar-list">
+              <div v-for="r in hourlyRows" :key="r.h" class="v2-bar-row">
+                <span class="v2-bar-label">{{ r.h }}时</span>
+                <div class="v2-bar-track">
+                  <div class="v2-bar-fill" :style="{width: r.pct + '%'}"></div>
                 </div>
+                <span class="v2-bar-val">{{ M.fmtNum(r.n) }}</span>
               </div>
             </div>
-            <div class="v2-narr-block">
-              <h3 class="v2-narr-block-title">时段分布</h3>
-              <p class="v2-narr-block-desc">24 小时里什么时候话最多。</p>
-              <div class="v2-card">
-                <div class="v2-bar-row" v-for="(h,i) in hourlyRows" :key="i">
-                  <span class="v2-bar-label">{{ String(h.h).padStart(2,'0') }}:00</span>
-                  <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:h.pct+'%'}"></span></span>
-                  <span class="v2-bar-val">{{ M.fmtNum(h.n) }}</span>
+
+            <!-- 话题 -->
+            <div class="v2-ia-sec-title" style="margin-top:22px">话题分布</div>
+            <p class="v2-ia-sec-desc">按你发出的内容归纳。</p>
+            <div class="v2-bar-list">
+              <div v-for="t in topics" :key="t.name" class="v2-bar-row">
+                <span class="v2-bar-label wide">{{ t.name }}</span>
+                <div class="v2-bar-track">
+                  <div class="v2-bar-fill" :style="{width: t.pct + '%'}"></div>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-narr-block" v-if="weekdayRows.length">
-            <h3 class="v2-narr-block-title">一周节奏</h3>
-            <p class="v2-narr-block-desc">哪天话最多。</p>
-            <div class="v2-card">
-              <div class="v2-bar-row" v-for="(w,i) in weekdayRows" :key="i">
-                <span class="v2-bar-label">{{ w.day }}</span>
-                <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:w.pct+'%'}"></span></span>
-                <span class="v2-bar-val">{{ M.fmtNum(w.total) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">聊得最多的会话</h3>
-            <p class="v2-narr-block-desc">按消息条数排序的前 12 个。</p>
-            <div class="v2-card">
-              <div class="v2-bar-row" v-for="(c,i) in topContacts" :key="i">
-                <span class="v2-bar-label">{{ c.name }}</span>
-                <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:c.pct+'%'}"></span></span>
-                <span class="v2-bar-val">{{ M.fmtNum(c.total) }}</span>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <!-- ============ 我的画像 ============ -->
-        <template v-else-if="tab==='profile'">
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">结论速览</h3>
-            <p class="v2-narr-block-desc">由数据直接统计得出，不含 AI 生成内容。</p>
-            <div class="v2-card">
-              <div class="v2-insight-list" v-if="insights.length">
-                <div class="v2-insight-item" v-for="(it,i) in insights" :key="i">
-                  <span class="v2-insight-mark"></span>
-                  <span v-html="it"></span>
-                </div>
-              </div>
-              <div v-else class="v2-empty" style="padding:24px">
-                <div class="v2-empty-desc">样本不足以给出结论</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">表达风格</h3>
-            <p class="v2-narr-block-desc">你发消息的习惯。</p>
-            <div class="v2-narr-cols">
-              <div class="v2-card">
-                <div class="v2-metrics" style="grid-template-columns:1fr 1fr;gap:16px">
-                  <div class="v2-metric accent">
-                    <div class="v2-metric-val">{{ style.avgLength }}</div>
-                    <div class="v2-metric-label">平均长度（字）</div>
-                  </div>
-                  <div class="v2-metric">
-                    <div class="v2-metric-val">{{ pct(style.emojiRate) }}</div>
-                    <div class="v2-metric-label">表情使用率</div>
-                  </div>
-                  <div class="v2-metric">
-                    <div class="v2-metric-val">{{ pct(style.questionRate) }}</div>
-                    <div class="v2-metric-label">提问率</div>
-                  </div>
-                  <div class="v2-metric">
-                    <div class="v2-metric-val">{{ M.fmtNum(style.byKind && style.byKind.text) }}</div>
-                    <div class="v2-metric-label">文本条数</div>
-                  </div>
-                </div>
-              </div>
-              <div class="v2-card">
-                <div class="v2-card-title" style="margin-bottom:10px">高频词</div>
-                <div style="display:flex;flex-wrap:wrap;gap:6px">
-                  <span v-for="k in keywords" :key="k.word" class="v2-tag">
-                    {{ k.word }}<span style="color:var(--text-4)">{{ k.count }}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">话题分布</h3>
-            <p class="v2-narr-block-desc">按主题聚类，看你最常聊什么。</p>
-            <div class="v2-card">
-              <div class="v2-bar-row" v-for="(t,i) in topics" :key="i">
-                <span class="v2-bar-label">{{ t.name || t.topic }}</span>
-                <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:t.pct+'%'}"></span></span>
                 <span class="v2-bar-val">{{ M.fmtNum(t.count) }}</span>
               </div>
             </div>
-          </div>
-
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">月度节奏</h3>
-            <p class="v2-narr-block-desc">每月我发出 / 收到的消息量。</p>
-            <div class="v2-card">
-              <div class="v2-bar-row" v-for="(m,i) in monthly" :key="i">
-                <span class="v2-bar-label">{{ m.month }}</span>
-                <span class="v2-bar-track">
-                  <span class="v2-bar-fill" :style="{width: m.pct+'%'}"></span>
-                </span>
-                <span class="v2-bar-val">{{ M.fmtNum(m.total) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-note" style="margin-top:20px">
-            分析样本 {{ M.fmtNum(meta.scannedMessages) }} 条，文本采样 {{ M.fmtNum(meta.textSampled) }} 条，
-            耗时 {{ meta.cost }} 秒{{ meta.truncated ? '（已达采样上限，结果为近似值）' : '' }}。
-          </div>
-        </template>
-
-        <!-- ============ 年度总结 ============ -->
-        <template v-else>
-          <div class="v2-narr-block">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-              <div>
-                <h3 class="v2-narr-block-title" style="margin-bottom:2px">年度总结</h3>
-                <p class="v2-narr-block-desc">{{ reportYear }}</p>
-              </div>
-              <div class="v2-seg">
-                <button v-for="y in years" :key="y" :class="{active: year===y}" @click="setYear(y)">{{ y }}</button>
-              </div>
-            </div>
-            <div class="v2-narr-lead">
-              <h2 class="v2-narr-lead-title">
-                {{ M.fmtNum(rs.totalMessages) }} 条消息，
-                {{ M.fmtNum(rs.sentMessages) }} 条是你发的。
-              </h2>
-              <div class="v2-narr-metrics">
-                <div class="v2-metric accent">
-                  <div class="v2-metric-val">{{ M.fmtNum(rs.totalMessages) }}</div>
-                  <div class="v2-metric-label">全部</div>
-                </div>
-                <div class="v2-metric">
-                  <div class="v2-metric-val">{{ M.fmtNum(rs.sentMessages) }}</div>
-                  <div class="v2-metric-label">我发出</div>
-                </div>
-                <div class="v2-metric">
-                  <div class="v2-metric-val">{{ M.fmtNum(rs.receivedMessages) }}</div>
-                  <div class="v2-metric-label">收到</div>
-                </div>
-                <div class="v2-metric">
-                  <div class="v2-metric-val">{{ M.fmtNum(rs.activeDays) }}</div>
-                  <div class="v2-metric-label">活跃天数</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-narr-cols">
-            <div class="v2-narr-block">
-              <h3 class="v2-narr-block-title">最常联系</h3>
-              <p class="v2-narr-block-desc">这一段时间里聊得最多的人。</p>
-              <div class="v2-card">
-                <div class="v2-bar-row" v-for="(c,i) in reportContacts" :key="i">
-                  <span class="v2-bar-label">{{ c.name }}</span>
-                  <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:c.pct+'%'}"></span></span>
-                  <span class="v2-bar-val">{{ M.fmtNum(c.total) }}</span>
-                </div>
-              </div>
-            </div>
-            <div class="v2-narr-block">
-              <h3 class="v2-narr-block-title">高频词</h3>
-              <p class="v2-narr-block-desc">出现最多的词。</p>
-              <div class="v2-card">
-                <div style="display:flex;flex-wrap:wrap;gap:6px">
-                  <span v-for="k in reportKeywords" :key="k.word" class="v2-tag">
-                    {{ k.word }}<span style="color:var(--text-4)">{{ k.count }}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="v2-narr-block">
-            <h3 class="v2-narr-block-title">一天里的节奏</h3>
-            <p class="v2-narr-block-desc">24 小时消息分布。</p>
-            <div class="v2-card">
-              <div class="v2-bar-row" v-for="(h,i) in reportHours" :key="i">
-                <span class="v2-bar-label">{{ String(h.h).padStart(2,'0') }}:00</span>
-                <span class="v2-bar-track"><span class="v2-bar-fill" :style="{width:h.pct+'%'}"></span></span>
-                <span class="v2-bar-val">{{ M.fmtNum(h.n) }}</span>
-              </div>
-            </div>
-          </div>
-        </template>
+          </template>
+        </div>
       </div>
-    </div>`,
+    </div>
+    `,
+
     setup(props) {
-      const tab = ref("overview");
-      const loading = ref(false);
+      const question = ref("");
+      const presets = ref([]);
+      const result = ref(null);
+      const busy = ref(false);
       const error = ref("");
+      const cost = ref(0);
+      const evOpen = ref(false);
+      const rawOpen = ref(false);
+      const rawLoading = ref(false);
+      const model = ref("");
+      const libTotal = ref(0);
+      const libSessions = ref(0);
+      const libContacts = ref(0);
+      const libSpan = ref("");
+      const topNames = ref([]);
+
+      // 原始统计
       const profile = ref(null);
-      const report = ref(null);
-      const heat = ref(null);
-      const year = ref(null);
+      const heat = ref({});
+      const stageText = ref("正在扫描全部消息…");
 
-      const ov = computed(() => (profile.value && profile.value.overview) || {});
-      const meta = computed(() => (profile.value && profile.value.meta) || {});
-      const style = computed(() => (profile.value && profile.value.style) || {});
-      const total = computed(() => ov.value.totalMessages || 0);
-
-      const insights = computed(() => (profile.value && profile.value.insights) || []);
-      const keywords = computed(() => {
-        const t = (profile.value && profile.value.topics) || {};
-        return (t.keywords || []).slice(0, 24);
-      });
-      const topics = computed(() => {
-        const t = (profile.value && profile.value.topics) || {};
-        // 后端 byTopic 项形如 { topic, hits, ratio }
-        const list = t.byTopic || [];
-        const max = list.reduce((a, x) => Math.max(a, x.hits || 0), 0) || 1;
-        return list.map((x) => Object.assign({}, x, {
-          name: x.topic || x.name,
-          count: x.hits || x.count || 0,
-          pct: Math.round((x.hits || 0) / max * 100),
-        }));
-      });
-      const monthly = computed(() => {
-        const list = (profile.value && profile.value.monthly) || [];
-        const max = list.reduce((a, x) => Math.max(a, x.total || 0), 0) || 1;
-        return list.map((x) => Object.assign({}, x, { pct: Math.round((x.total || 0) / max * 100) }));
+      const ph = computed(() => {
+        const n = libTotal.value;
+        if (!n) return "问我任何关于你聊天记录的事…";
+        return `问我任何关于这 ${M.fmtNum(n)}条聊天的事，比如：我什么时候最话多？`;
       });
 
-      const kindRows = computed(() => {
-        const bk = style.value.byKind || {};
-        const names = { text: "文本", image: "图片", file: "文件", voice: "语音", video: "视频", other: "其他", system: "系统" };
-        const list = Object.entries(bk).map(([k, n]) => ({ name: names[k] || k, n }));
-        const total = list.reduce((a, x) => a + x.n, 0) || 1;
-        return list.sort((a, b) => b.n - a.n).map((x) => Object.assign(x, { pct: Math.round(x.n / total * 100) }));
+      let pollTimer = null;
+
+      onMounted(async () => {
+        // 从命令面板进来「原始统计图表」→ 直接展开
+        if (props.route === "insight.raw") rawOpen.value = true;
+        // 预设问题
+        try {
+          const p = await M.api.get("/api/insight/presets");
+          presets.value = (p && p.presets) || [];
+        } catch (e) {
+          presets.value = [];
+        }
+        // 库概况（轻量接口，用于首屏信息带）
+        try {
+          const s = await M.api.get("/api/stats/global");
+          libTotal.value = (s && s.totalMessages) || 0;
+          libSessions.value = (s && s.totalSessions) || 0;
+          libContacts.value = (s && s.totalContacts) || 0;
+          const tr = (s && s.timeRange) || {};
+          if (tr.firstText && tr.lastText) {
+            libSpan.value = tr.firstText.slice(0, 7) + " → " + tr.lastText.slice(0, 7);
+          }
+        } catch (e) {
+          libTotal.value = 0;
+        }
+        // 聊得最多的几个（轻量接口）
+        try {
+          const c = await M.api.get("/api/stats/contacts");
+          const list = (c && (c.contacts || c.items)) || [];
+          topNames.value = list.slice(0, 6).map((x) => ({
+            name: x.displayName || x.name || x.wxid || "—",
+            total: x.messageCount || x.count || x.total || 0,
+          }));
+        } catch (e) {
+          topNames.value = [];
+        }
       });
 
-      const hourlyRows = computed(() => {
-        const rh = (profile.value && profile.value.rhythm) || {};
-        const list = rh.hourly || [];
-        // 后端 hourly 项形如 { hour, total, mine }
-        const max = list.reduce((a, x) => Math.max(a, x.total || 0), 0) || 1;
-        return list.map((x) => ({ h: x.hour, n: x.total || 0 }))
-          .map((x) => Object.assign(x, { pct: Math.round(x.n / max * 100) }));
+      // ---------------------------------------------------------------- 提问
+      async function submit() {
+        const q = question.value.trim();
+        if (!q || busy.value) return;
+        busy.value = true;
+        error.value = "";
+        result.value = null;
+        evOpen.value = false;
+        stageText.value = "正在扫描全部消息…";
+        try {
+          const r = await M.api.post("/api/insight/ask", { question: q });
+          await pollTask(r.taskId);
+        } catch (e) {
+          error.value = (e && e.message) || String(e);
+          busy.value = false;
+        }
+      }
+
+      function pollTask(tid) {
+        return new Promise((resolve, reject) => {
+          const tick = async () => {
+            try {
+              const t = await M.api.get("/api/task", { id: tid });
+              if (!t) throw new Error("任务丢失");
+              if (t.status === "done") {
+                result.value = t.result || {};
+                cost.value = t.cost || 0;
+                model.value = (t.result && t.result.model) || model.value;
+                busy.value = false;
+                resolve();
+                return;
+              }
+              if (t.status === "error") {
+                throw new Error(t.error || "任务失败");
+              }
+              // 阶段提示：跑得越久越可能已经进 LLM 阶段
+              const c = t.cost || 0;
+              if (c === 0) stageText.value = "正在扫描全部消息…";
+              else if (c < 12) stageText.value = "正在扫描全部消息…";
+              else stageText.value = "模型正在思考…";
+              pollTimer = setTimeout(tick, 1200);
+            } catch (e) {
+              error.value = (e && e.message) || String(e);
+              busy.value = false;
+              reject(e);
+            }
+          };
+          tick();
+        });
+      }
+
+      function usePreset(p) {
+        question.value = p.q;
+        nextTick(() => submit());
+      }
+
+      function askAgain() {
+        result.value = null;
+        question.value = "";
+        nextTick(() => {
+          const el = document.querySelector(".v2-ia-input");
+          if (el) el.focus();
+        });
+      }
+
+      function autoGrow(e) {
+        const el = e.target;
+        el.style.height = "auto";
+        el.style.height = Math.min(160, el.scrollHeight) + "px";
+      }
+
+      // ---------------------------------------------------------------- 渲染
+      const answered = computed(() => !!result.value);
+
+      // 依据：优先用模型自己标的；模型没标时按事实清单关键词兜底
+      // chip 只放短标签，完整原句挂在 title 上（悬停可见）——避免整段事实塞进一个泡里
+      const citedFacts = computed(() => {
+        const r = result.value;
+        if (!r) return [];
+        const facts = r.facts || [];
+        let cites = (r.citations || []).slice();
+        if (!cites.length) {
+          // 兜底：拿答案里出现的关键短语去事实清单里找对应项
+          const ans = r.answer || "";
+          const keys = [
+            ["消息量最多的联系人", "联系人"],
+            ["高频词", "词"],
+            ["时段", "点"],
+            ["深夜", "深夜"],
+            ["消息构成", "文本"],
+            ["你发出", "你发"],
+            ["时间跨度", "跨度"],
+          ];
+          facts.forEach((f) => {
+            if (cites.length >= 4) return;
+            for (const [label, hint] of keys) {
+              if (f.includes(label) && ans.includes(hint)) {
+                cites.push(f);
+                break;
+              }
+            }
+          });
+        }
+        // 去重 + 抽短标签
+        const seen = new Set();
+        const out = [];
+        cites.forEach((full) => {
+          const t = String(full || "").trim();
+          if (!t || seen.has(t)) return;
+          seen.add(t);
+          out.push({ full: t, label: shortLabel(t) });
+        });
+        return out.slice(0, 8);
       });
 
-      const topContacts = computed(() => {
-        const list = (profile.value && profile.value.social) || [];
-        const max = list.reduce((a, x) => Math.max(a, x.total || 0), 0) || 1;
-        return list.slice(0, 12).map((x) => Object.assign({}, x, { pct: Math.round((x.total || 0) / max * 100) }));
+      // 从一句话里抽一个能当标签的短句
+      function shortLabel(t) {
+        // 优先取「标签：值」形式的中文冒号前半段（半角冒号多见于时间，别乱切）
+        const cn = t.indexOf("：");
+        if (cn > 0 && cn <= 20) return t.slice(0, cn);
+        // 否则截到第一个逗号/顿号
+        const cut = t.split(/[，,、；;]/)[0];
+        if (cut.length <= 16) return cut;
+        // 别切在括号中间——回退到配对闭合处
+        const open = Math.max(cut.lastIndexOf("（"), cut.lastIndexOf("("));
+        if (open > 0) {
+          const close = cut.indexOf(open === cut.lastIndexOf("（") ? "）" : ")", open);
+          if (close > 0 && close + 1 <= 18) return cut.slice(0, close + 1);
+        }
+        return cut.slice(0, 16) + "…";
+      }
+
+      const rendered = computed(() => {        const a = (result.value && result.value.answer) || "";
+        if (!a) return "";
+        // 极简 markdown：**粗体** 与段落
+        let html = a
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/`([^`]+)`/g, "<code>$1</code>");
+        html = html.split(/\n{2,}/).map((p) => {
+          const t = p.trim();
+          if (!t) return "";
+          if (/^###\s/.test(t)) return "<h4>" + t.replace(/^###\s*/, "") + "</h4>";
+          if (/^[-*]\s/.test(t)) {
+            const items = t.split(/\n/).map((li) => {
+              const s = li.trim().replace(/^[-*]\s*/, "");
+              return s ? "<li>" + s + "</li>" : "";
+            }).join("");
+            return "<ul>" + items + "</ul>";
+          }
+          if (/^\d+\.\s/.test(t)) {
+            const items = t.split(/\n/).map((li) => {
+              const s = li.trim().replace(/^\d+\.\s*/, "");
+              return s ? "<li>" + s + "</li>" : "";
+            }).join("");
+            return "<ol>" + items + "</ol>";
+          }
+          return "<p>" + t.replace(/\n/g, "<br/>") + "</p>";
+        }).join("");
+        return html;
       });
 
+      // ---------------------------------------------------------------- 原始统计
       const calendar = computed(() => {
-        // 日粒度活跃度来自 /api/stats/time?by=date（profile 里没有这层粒度）
         const dist = heat.value || {};
         const entries = Object.entries(dist).sort((a, b) => a[0].localeCompare(b[0]));
         if (!entries.length) return [];
         const counts = entries.map(([, n]) => n);
         const max = Math.max.apply(null, counts) || 1;
-        // 后端只给出「有消息的日期」，中间可能缺整段（如换号/未登录的空档）。
-        // 若直接首尾相接，空档之后的星期对齐全错位。→ 先补成连续日期轴。
+        // 后端只给「有消息的日期」，中间可能缺整段 → 先补成连续日期轴，
+        // 否则空档之后的星期对齐全错位
         const first = new Date(entries[0][0] + "T00:00:00");
         const last = new Date(entries[entries.length - 1][0] + "T00:00:00");
         const map = new Map(entries);
@@ -405,12 +471,10 @@
           const n = map.get(ds) || 0;
           days.push({
             date: ds, n,
-            // 无消息的日子用 level 0（空格子），与「有消息但很少」区分开
             level: n === 0 ? 0 : Math.min(5, Math.ceil(n / max * 5)),
           });
         }
-        // 按周对齐：首行前面补空格，让每列对应同一星期几；末行补齐到整周
-        const lead = first.getDay();   // 0=周日
+        const lead = first.getDay();
         const cells = [];
         for (let i = 0; i < lead; i++) cells.push(null);
         days.forEach((c) => cells.push(c));
@@ -419,18 +483,14 @@
         return cells;
       });
 
-      // 有记录的天数（calendar 里混了首尾补位的空格子，不能直接用 length）
       const heatDays = computed(() => {
         const dist = heat.value || {};
         return Object.values(dist).filter((n) => Number(n) > 0).length;
       });
 
-      // 日历网格：每列 7 天（按周对齐），列宽 11px + 间距 3px
       const HEAT_COL_W = 14;
-      const heatCols = computed(() => Math.ceil(calendar.value.length / 7));
-      const heatWidth = computed(() => heatCols.value * HEAT_COL_W - 3);
+      const heatWidth = computed(() => Math.ceil(calendar.value.length / 7) * HEAT_COL_W - 3);
 
-      // 月份标签：在每个月的第一天所在列上方标注，间距过近的合并掉
       const heatMonths = computed(() => {
         const cells = calendar.value;
         if (!cells.length) return [];
@@ -442,116 +502,68 @@
           const key = d.getFullYear() + "-" + (d.getMonth() + 1);
           if (key === lastKey) return;
           lastKey = key;
-          const col = Math.floor(i / 7);
-          const left = col * HEAT_COL_W;
-          // 与上一个标签间距不足 28px 就跳过，避免文字叠字
+          const left = Math.floor(i / 7) * HEAT_COL_W;
           if (out.length && left - out[out.length - 1].left < 28) return;
-          out.push({
-            key: key,
-            left: left,
-            label: (d.getMonth() + 1) + "月",
-          });
+          out.push({ key: key, left: left, label: (d.getMonth() + 1) + "月" });
         });
         return out;
       });
 
-      const weekdayRows = computed(() => {
+      const hourlyRows = computed(() => {
         const rh = (profile.value && profile.value.rhythm) || {};
-        const list = rh.weekday || [];
+        const list = rh.hourly || [];
+        // 后端 hourly 项形如 { hour, total, mine }
         const max = list.reduce((a, x) => Math.max(a, x.total || 0), 0) || 1;
-        return list.map((x) => Object.assign({}, x, { pct: Math.round((x.total || 0) / max * 100) }));
-      });
-
-      const rs = computed(() => (report.value && report.value.summary) || {});
-      const reportContacts = computed(() => {
-        // 后端 topContacts 项形如 { wxid, displayName, count }
-        const list = rs.value.topContacts || [];
-        const max = list.reduce((a, x) => Math.max(a, x.count || 0), 0) || 1;
-        return list.map((x) => Object.assign({}, x, {
-          name: x.displayName || x.name || x.wxid,
-          total: x.count || x.total || 0,
-          pct: Math.round((x.count || 0) / max * 100),
+        return list.map((x) => ({
+          h: x.hour, n: x.total || 0,
+          pct: Math.round((x.total || 0) / max * 100),
         }));
       });
-      const reportKeywords = computed(() => (rs.value.topKeywords || []).slice(0, 30));
-      const reportHours = computed(() => {
-        const hd = rs.value.hourlyDistribution || {};
-        const list = Object.entries(hd).map(([h, n]) => ({ h: Number(h), n }));
-        const max = list.reduce((a, x) => Math.max(a, x.n), 0) || 1;
-        return list.map((x) => Object.assign(x, { pct: Math.round(x.n / max * 100) }));
-      });
 
-      const years = computed(() => {
-        const y = new Date().getFullYear();
-        return [y, y - 1, y - 2];
+      const topics = computed(() => {
+        const tp = (profile.value && profile.value.topics) || {};
+        const list = tp.mine || tp.byTopic || [];
+        const max = list.reduce((a, x) => Math.max(a, x.hits || x.count || 0), 0) || 1;
+        return list.slice(0, 10).map((x) => {
+          const c = x.hits || x.count || 0;
+          return { name: x.topic || x.name, count: c, pct: Math.round(c / max * 100) };
+        });
       });
-      const reportYear = computed(() => (report.value && report.value.year) || "全部年份");
-
-      function pct(x) {
-        if (x === null || x === undefined) return "—";
-        const n = Number(x);
-        if (n <= 1) return (n * 100).toFixed(1);
-        return n.toFixed(1);
-      }
 
       function heatColor(level) {
-        const map = ["var(--heat-0)", "var(--heat-1)", "var(--heat-2)", "var(--heat-3)", "var(--heat-4)", "var(--heat-5)"];
+        const map = ["var(--heat-0)", "var(--heat-1)", "var(--heat-2)",
+          "var(--heat-3)", "var(--heat-4)", "var(--heat-5)"];
         return map[level] || map[0];
       }
 
-      async function load() {
-        loading.value = true;
-        error.value = "";
+      // 展开「原始统计」时才去拉数据（重接口，不占首屏）
+      async function loadRaw() {
+        if (profile.value) return;
+        rawLoading.value = true;
         try {
-          // 三个接口并行。/api/profile 首次要扫全库（~5s），其余走缓存（~0s）。
-          // 不用 Promise.all —— 一个失败会把另外两个的结果一起丢掉。
-          const [p, r, h] = await Promise.allSettled([
+          const [p, h] = await Promise.allSettled([
             M.api.get("/api/profile"),
-            M.api.get("/api/report", year.value ? { year: year.value } : {}),
             M.api.get("/api/stats/time", { by: "date" }),
           ]);
           if (p.status === "fulfilled" && p.value) profile.value = p.value;
-          if (r.status === "fulfilled" && r.value) report.value = r.value;
           if (h.status === "fulfilled" && h.value) heat.value = h.value.distribution || {};
-
-          if (!profile.value && !report.value) {
-            const why = p.status === "rejected" ? p.reason : (r.status === "rejected" ? r.reason : null);
-            throw new Error(why ? String(why.message || why) : "后端未返回数据");
-          }
-          if (!year.value && report.value && report.value.year) year.value = report.value.year;
         } catch (e) {
-          error.value = "加载失败：" + e.message;
+          /* 图表是补充，失败不打扰主流程 */
         } finally {
-          loading.value = false;
+          rawLoading.value = false;
         }
       }
-
-      async function reload() { await load(); }
-
-      async function setYear(y) {
-        year.value = y;
-        try {
-          report.value = await M.api.get("/api/report", { year: y });
-        } catch (e) {
-          M.toast.err("加载年度数据失败：" + e.message);
-        }
-      }
-
-      onMounted(async () => {
-        // 路由带 tab：insight.profile / insight.report
-        if (props.route && props.route.includes(".")) {
-          const t = props.route.split(".")[1];
-          if (TABS.some((x) => x.id === t)) tab.value = t;
-        }
-        await load();
-      });
+      watch(rawOpen, (open) => { if (open) loadRaw(); });
+      // 从「原始统计图表」入口直接进来时，rawOpen 初始已是 true，watch 不触发
+      if (props.route === "insight.raw") loadRaw();
 
       return {
-        tabs: TABS, tab, loading, error, ov, meta, style, total,
-        insights, keywords, topics, monthly, kindRows, hourlyRows, weekdayRows, topContacts, calendar,
-        heatDays, heatWidth, heatMonths,
-        rs, reportContacts, reportKeywords, reportHours, years, year, reportYear,
-        pct, heatColor, reload, setYear, M,
+        question, presets, result, busy, error, cost, evOpen, rawOpen,
+        rawLoading, model, libTotal, libSessions, libContacts, libSpan,
+        topNames, ph, stageText, answered, citedFacts,
+        rendered, calendar, heatDays, heatWidth, heatMonths,
+        hourlyRows, topics, heatColor,
+        submit, usePreset, askAgain, autoGrow, M,
       };
     },
   };
