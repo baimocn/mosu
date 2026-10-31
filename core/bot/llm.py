@@ -135,3 +135,67 @@ class LlmClient:
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data["choices"][0]["message"]["content"].strip()
+
+    # ---------------------------------------------------------------- 工具调用
+    def chat_tools(self, messages: list[dict], tools: list[dict],
+                   temperature: float = 0.3, max_tokens: int = 1500,
+                   tool_choice: str | dict = "auto") -> dict:
+        """带工具的对话。返回 {content, tool_calls, finish_reason, usage}。
+
+        与 chat() 的区别：chat() 假设模型只会说话，这里假设模型可能反过来
+        要工具。返回的 tool_calls 是原样透传（id / name / arguments），
+        后续把执行结果拼成 role=tool 消息再发回来。
+
+        注意：OpenAI 兼容协议里「有工具调用时 content 可能是 null」，
+        调用方必须处理这种情况（不能直接 .strip()）。
+        """
+        body = json.dumps({
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }).encode("utf-8")
+        headers = self._headers()
+
+        conn = self._persistent()
+        if conn is not None:
+            for attempt in (1, 2):
+                try:
+                    conn.request("POST", self._path(), body=body, headers=headers)
+                    resp = conn.getresponse()
+                    data = json.loads(resp.read().decode("utf-8"))
+                    return self._parse_tool_resp(data)
+                except Exception:
+                    self._close_conn()
+                    if attempt == 2:
+                        raise
+                    conn = self._persistent()
+
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions", data=body,
+            headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return self._parse_tool_resp(data)
+
+    @staticmethod
+    def _parse_tool_resp(data: dict) -> dict:
+        ch = (data.get("choices") or [{}])[0]
+        msg = ch.get("message") or {}
+        calls = []
+        for c in msg.get("tool_calls") or []:
+            fn = c.get("function") or {}
+            raw = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except Exception:
+                args = {"_raw": raw}
+            calls.append({"id": c.get("id"), "name": fn.get("name"), "args": args})
+        return {
+            "content": (msg.get("content") or "").strip(),
+            "tool_calls": calls,
+            "finish_reason": ch.get("finish_reason"),
+            "usage": data.get("usage") or {},
+        }

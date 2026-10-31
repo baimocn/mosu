@@ -274,13 +274,25 @@ class _TaskHub:
         tid = uuid.uuid4().hex[:12]
         with self._lock:
             self._tasks[tid] = {"id": tid, "kind": kind, "status": "queued",
-                                "cost": None, "result": None, "error": None}
+                                "cost": None, "result": None, "error": None,
+                                "live": {}}
             done = [t for t in self._tasks.values()
                     if t["status"] in ("done", "error")]
             for t in done[:max(0, len(done) - self.keep + 1)]:
                 self._tasks.pop(t["id"], None)
         self._queue.put((tid, fn))
         return tid
+
+    def report(self, tid: str, **fields) -> None:
+        """worker 往任务里写实时进度（前端轮询时能看到）。
+
+        Agent 洞察要 20–60 秒，工具调用轨迹是这个过程的**唯一可见反馈**——
+        没有它用户只看到一行「正在分析」，体验上跟旧版黑盒没区别。
+        """
+        with self._lock:
+            t = self._tasks.get(tid)
+            if t:
+                t.setdefault("live", {}).update(fields)
 
     def _loop(self):
         while True:
@@ -390,6 +402,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                                   # （RLock：api_* 持锁时内部 get_ds 可重入），
                                   # 同时防并发首次触发重复解密
     tasks = _TaskHub(EXPORT_ROOT)   # 异步任务（关键词统计/导出）
+    # Agent 洞察的工具调用轨迹：task_id → steps 列表。
+    # TaskHub.report 是覆盖式更新，多步累积必须自己存一份再整体覆盖。
+    _agent_steps: dict[str, list] = {}
 
     def get_ds():
         nonlocal _ds, _ds_err
@@ -1494,11 +1509,53 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         return {"presets": PRESETS}
 
     def api_insight_ask(payload: dict) -> dict:
-        """洞察问答：大模型基于已核对事实回答用户问题。
+        """洞察问答（Agentic 版）：模型自己调工具查数据，再回答。
 
-        全链路要 20–40 秒（关键词统计 + LLM 推理），必须异步：
-        同步会占住 HTTP 连接，前端只能干等。
-        任务走 TaskHub，前端轮询 /api/task?id=<tid>。
+        与旧版（固定管道：预塞 7 条事实 + 8 条样本）的根本区别：
+        旧版模型被绑住了手——问「我和某人上个月聊了什么」它看不到那份记录，
+        只能答「数据里没有这一项」。现在模型有工具，能自己去找。
+
+        全链路 30–90 秒（工具调用 + 多轮推理），必须异步：
+        任务走 TaskHub，前端轮询 /api/task?id=<tid>，
+        工具调用轨迹通过 tasks.report() 实时回传（前端能看到「它在查什么」）。
+        """
+        question = (payload.get("question") or "").strip()
+        if not question:
+            raise ValueError("问题不能为空")
+        history = payload.get("history") or []
+        session = (payload.get("session") or "").strip() or None
+
+        def run(tid):
+            from core.agent_engine import InsightAgent
+            with _ds_lock:
+                ds_obj = get_ds()
+            ag = InsightAgent(ds_obj)
+
+            # steps 要跨回调累积：tasks.report 是「覆盖式更新」，
+            # 多步时必须自己拼一份再整体覆盖。
+            steps_box = _agent_steps.setdefault(tid, [])
+
+            def on_step(step):
+                steps_box.append(step)
+                tasks.report(tid, steps=list(steps_box))
+
+            tasks.report(tid, steps=[])
+            run_obj = ag.run(question, history=history, on_step=on_step)
+            out = run_obj.to_dict()
+            out["model"] = ag.llm.model
+            # 兼容旧字段：前端老组件读 facts/citations
+            out["facts"] = []
+            out["citations"] = []
+            return out
+
+        tid = tasks.submit("insight-agent", run)
+        _agent_steps[tid] = []
+        return {"taskId": tid, "status": "running"}
+
+    def api_insight_ask_legacy(payload: dict) -> dict:
+        """洞察问答（旧版固定管道，保留作降级路径）。
+
+        Agent 引擎若因网关不支持 tool_calls 而失败，前端可退回这个接口。
         """
         question = (payload.get("question") or "").strip()
         if not question:
@@ -1508,11 +1565,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
         def run(tid):
             from core import insight
-            # 事实采集要读库 → 持锁；LLM 推理不碰库 → 放开，
-            # 否则一次提问就把整个 GUI 的数据 API 卡住 30 秒。
             with _ds_lock:
                 fb = insight.collect_facts(get_ds(), session=session)
-                ds_obj = get_ds()
             corpus = ROOT / "persona" / "corpus.jsonl"
             samples = insight.retrieve_samples(corpus, question, topk=topk)
             from core.bot.llm import LlmClient
@@ -1528,6 +1582,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 "samples": samples,
                 "metrics": fb["metrics"],
                 "model": llm.model,
+                "legacy": True,
             }
 
         tid = tasks.submit("insight", run)
@@ -2167,6 +2222,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/insight/ask":
                 self._guard(api_insight_ask, payload)
+                return
+            if path == "/api/insight/ask-legacy":
+                self._guard(api_insight_ask_legacy, payload)
                 return
             self._json({"error": f"unknown path: {path}"}, 404)
 

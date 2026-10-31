@@ -968,6 +968,144 @@
   font-size: var(--fs-12); color: var(--text-4);
 }
 
+/* ================================================================
+   Agentic 洞察（2026-11-03 第二版）
+   核心新增：对话轮次、工具调用轨迹、证据出处、追问建议
+   ================================================================ */
+.v2-ia-turn {
+  margin-top: var(--sp-6);
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.v2-ia-turn:last-of-type { border-bottom: none; }
+
+/* 运行中 */
+.v2-ia-running {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+}
+.v2-ia-progress {
+  height: 2px; margin-top: var(--sp-2);
+  background: var(--border); border-radius: var(--r-full); overflow: hidden;
+}
+.v2-ia-progress-bar {
+  height: 100%; width: 34%; border-radius: var(--r-full);
+  background: var(--brand);
+  animation: v2-slide 1.5s var(--ease) infinite;
+}
+@keyframes v2-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+/* 工具调用轨迹 —— Agentic 的可信度来源 */
+.v2-ia-steps {
+  margin-top: var(--sp-3);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.v2-ia-steps.done {
+  margin-top: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  border-left: 2px solid var(--brand);
+}
+.v2-ia-steps-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.v2-ia-steps-title {
+  font-size: var(--fs-12); font-weight: 600; color: var(--text-2);
+}
+.v2-ia-steps-count {
+  margin-left: auto; font-size: var(--fs-11); color: var(--text-4);
+}
+.v2-ia-step {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  font-size: var(--fs-12); line-height: 1.6;
+}
+.v2-ia-step-no {
+  flex: 0 0 auto;
+  width: 17px; height: 17px; border-radius: var(--r-full);
+  background: var(--brand-soft); color: var(--brand);
+  font-size: 10px; font-weight: 700; text-align: center; line-height: 17px;
+}
+.v2-ia-step-label {
+  flex: 0 0 auto; font-weight: 600; color: var(--text-1);
+}
+.v2-ia-step-sum {
+  flex: 1 1 auto; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 证据出处 */
+.v2-ia-cites { margin-top: var(--sp-4); }
+.v2-ia-ev-row {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 340px; overflow-y: auto;
+}
+.v2-ia-ev {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  width: 100%; text-align: left;
+  padding: 7px 10px; border-radius: var(--r-md);
+  background: var(--bg-inset); border: 1px solid transparent;
+  cursor: pointer; font: inherit; color: inherit;
+}
+.v2-ia-ev:hover { border-color: var(--brand); background: var(--brand-soft); }
+/* 展开态：摘要仍在第一行，完整原文另起一行铺满 */
+.v2-ia-ev.open { align-items: flex-start; flex-wrap: wrap; background: var(--bg-1); }
+.v2-ia-ev.open .v2-ia-ev-text { flex: 1 1 auto; }
+.v2-ia-ev-full {
+  flex: 1 0 100%; white-space: pre-wrap; word-break: break-word;
+  margin-top: 4px; padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: var(--fs-12); color: var(--text-1); line-height: 1.55;
+  text-align: left;
+}
+.v2-ia-ev-time {
+  flex: 0 0 auto; font-size: var(--fs-11); color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+.v2-ia-ev-sender {
+  flex: 0 0 auto; font-size: var(--fs-11); font-weight: 600; color: var(--brand);
+  max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.v2-ia-ev-text {
+  flex: 1 1 auto; font-size: var(--fs-12); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 统计类证据：不可点开（没有全文），用不同底色区分于原话 */
+.v2-ia-ev-stat {
+  cursor: default; background: var(--bg-inset);
+  border: 1px dashed var(--border);
+}
+.v2-ia-ev-stat:hover { border-color: var(--border); background: var(--bg-inset); }
+.v2-ia-ev-more {
+  margin-top: var(--sp-2);
+  background: none; border: none; cursor: pointer;
+  font-size: var(--fs-12); color: var(--brand);
+  padding: 2px 0;
+}
+
+/* 追问建议 */
+.v2-ia-follow {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-top: var(--sp-4);
+}
+.v2-ia-follow-tip { font-size: var(--fs-12); color: var(--text-4); }
+.v2-ia-follow-btn {
+  padding: 4px 11px; border-radius: var(--r-full);
+  background: var(--bg-inset); border: 1px solid var(--border);
+  color: var(--text-2); font-size: var(--fs-12); cursor: pointer;
+}
+.v2-ia-follow-btn:hover {
+  border-color: var(--brand); color: var(--brand);
+  background: var(--brand-soft);
+}
+
 /* --------------------------------------------------------------- 响应式 */
 @media (max-width: 1180px) {
   .v2-ws { grid-template-columns: 260px 1fr 280px; }

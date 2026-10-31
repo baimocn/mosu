@@ -95,3 +95,6 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# 竞品参考项目（第三方开源，只做本地对照，不入库）
+CipherTalk-Backup-main/

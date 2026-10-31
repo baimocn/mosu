@@ -1,15 +1,19 @@
 /* ==========================================================================
-   墨溯 v2 · 洞察工作台（以大模型为核心）
+   墨溯 v2 · 洞察工作台（Agentic）
    --------------------------------------------------------------------------
-   旧形态：三个 tab 铺满统计图表，用户自己看图找结论。
-   新形态：用户提问 → 大模型基于「已核对事实 + 语料样本」回答，
-           图表降级为可展开的「支撑数据」，只作为答案的佐证。
+   2026-11-03 重构第二版。上一版是「固定管道」：后端预先塞 7 条事实 + 8 条
+   语料样本，模型一次调用就结束。用户反馈「ai 功能好差劲」——根因不是模型，
+   是**模型被绑住了手**：问「我和某人上个月聊了什么」，它压根看不到那份记录。
 
-   为什么这样改：
-     - 看图找结论要求用户具备读图能力并自己提出问题，成本高
-     - 大模型能把「24 万条消息」压成一句话结论，且能指出反直觉之处
-     - 但模型自己算数会编数字 → 所有数字由后端算好并标注口径，
-       模型只做转述与解读，答案里必须带「依据」
+   现在改成 Agentic：模型自己调工具查数据，工具调用轨迹实时可见。
+   三块核心：
+     1. 轨迹（steps）  —— 它查了什么、查到了什么，一步步摊开给用户看
+     2. 证据（evidence）—— 每条带时间+说话人+原文，可点开核对
+     3. 多轮追问      —— 可以接着问「那上个月呢」，上下文带得上
+
+   与竞品 CipherTalk 的差异（有意为之）：
+     - 竞品靠 embedding 做语义检索，墨溯零外部依赖 → 关键词 + 精确时间 + 会话定向
+     - 竞品给模型 query_sql 兜底，墨溯**不给** → 数字只能来自工具，不会被编出来
    ========================================================================== */
 (function (global) {
   "use strict";
@@ -24,9 +28,9 @@
         <div>
           <h1 class="v2-page-title">洞察</h1>
           <p class="v2-page-desc">
-            问一个问题，大模型基于你本机的
-            <strong>{{ M.fmtNum(libTotal) }}</strong> 条聊天记录回答。
-            数字全部由数据库算出并标注口径，模型只负责解读。
+            大模型会自己查你的
+            <strong>{{ M.fmtNum(libTotal) }}</strong> 条聊天记录来回答，
+            查了什么、依据什么，都摊开给你看。
           </p>
         </div>
         <div v-if="model" class="v2-ia-model">
@@ -49,7 +53,7 @@
             <span v-else>问</span>
           </button>
         </div>
-        <div v-if="!answered && presets.length" class="v2-ia-presets">
+        <div v-if="!turns.length && presets.length" class="v2-ia-presets">
           <div class="v2-ia-presets-label">试试这些问题</div>
           <div class="v2-ia-preset-row">
             <button v-for="p in presets" :key="p.id"
@@ -61,7 +65,7 @@
         </div>
 
         <!-- 库里有：首屏给出可提问的素材范围 -->
-        <div v-if="!answered && libTotal" class="v2-ia-scope">
+        <div v-if="!turns.length && libTotal" class="v2-ia-scope">
           <div class="v2-ia-sec-title">库里有这些，可以随便问</div>
           <div class="v2-ia-scope-row">
             <div class="v2-ia-scope-item">
@@ -90,105 +94,113 @@
         </div>
       </div>
 
-      <!-- ============ 状态 ============ -->
-      <div v-if="busy" class="v2-ia-status">
-        <div class="v2-ia-status-row">
-          <span class="v2-spin"></span>
-          <span>{{ stageText }}</span>
-        </div>
-        <div class="v2-ia-progress"><div class="v2-ia-progress-bar"></div></div>
-        <div class="v2-ia-hint">
-          全库 {{ M.fmtNum(libTotal) }} 条消息要重新扫一遍，加上模型推理，约 20–40 秒。
-        </div>
-      </div>
-
-      <div v-else-if="error" class="v2-note danger">{{ error }}</div>
-
-      <!-- ============ 回答 ============ -->
-      <div v-else-if="result" class="v2-ia-answer-wrap">
+      <!-- ============ 对话轮次 ============ -->
+      <div v-for="(t, ti) in turns" :key="ti" class="v2-ia-turn">
+        <!-- 问题 -->
         <div class="v2-ia-q-echo">
-          <span class="v2-ia-q-mark">问</span>{{ result.question }}
+          <span class="v2-ia-q-mark">问</span>{{ t.question }}
         </div>
 
-        <article class="v2-ia-answer" v-html="rendered"></article>
-
-        <!-- 依据 -->
-        <div v-if="citedFacts.length" class="v2-ia-cites">
-          <div class="v2-ia-sec-title">答案引用了这些依据</div>
-          <div class="v2-ia-cite-row">
-            <span v-for="(c, i) in citedFacts" :key="i" class="v2-ia-cite" :title="c.full">{{ c.label }}</span>
+        <!-- 运行中：工具轨迹 -->
+        <div v-if="t.pending" class="v2-ia-running">
+          <div class="v2-ia-status-row">
+            <span class="v2-spin"></span>
+            <span>{{ t.stage || "正在思考…" }}</span>
+          </div>
+          <div class="v2-ia-progress"><div class="v2-ia-progress-bar"></div></div>
+          <div v-if="t.steps && t.steps.length" class="v2-ia-steps">
+            <div v-for="s in t.steps" :key="s.index" class="v2-ia-step">
+              <span class="v2-ia-step-no">{{ s.index }}</span>
+              <span class="v2-ia-step-label">{{ s.label }}</span>
+              <span class="v2-ia-step-sum">{{ s.summary }}</span>
+            </div>
           </div>
         </div>
 
-        <!-- 支撑数据：折叠抽屉 -->
-        <div class="v2-ia-evidence">
-          <button class="v2-ia-ev-toggle" @click="evOpen = !evOpen">
-            <span class="v2-ia-ev-caret" :class="{open: evOpen}">›</span>
-            支撑数据
-            <span class="v2-ia-ev-count">
-              {{ (result.facts || []).length }} 条事实 ·
-              {{ (result.samples || []).length }} 条样本
-            </span>
-          </button>
+        <!-- 失败 -->
+        <div v-else-if="t.error" class="v2-note danger">{{ t.error }}</div>
 
-          <div v-if="evOpen" class="v2-ia-ev-body">
-            <div class="v2-ia-sec-title">已核对事实（数字来自数据库，可回溯）</div>
-            <ul class="v2-ia-facts">
-              <li v-for="(f, i) in (result.facts || [])" :key="i">{{ f }}</li>
-            </ul>
-
-            <div v-if="(result.samples || []).length" class="v2-ia-sec-title" style="margin-top:18px">
-              语料样本（真实聊天片段，用于判断语气，不是答案素材）
+        <!-- 回答 -->
+        <template v-else>
+          <!-- 工具轨迹（完成后仍展示，这是可信度的来源） -->
+          <div v-if="t.steps && t.steps.length" class="v2-ia-steps done">
+            <div class="v2-ia-steps-head">
+              <span class="v2-ia-steps-title">它是这样查的</span>
+              <span class="v2-ia-steps-count">{{ t.steps.length }} 步 · {{ t.cost || 0 }} 秒</span>
             </div>
-            <div v-if="(result.samples || []).length" class="v2-ia-samples">
-              <div v-for="(s, i) in result.samples" :key="i" class="v2-ia-sample">
-                <div class="v2-ia-sample-meta">
-                  <span class="v2-ia-sample-who">{{ s.speaker }}</span>
-                  <span v-if="s.time" class="v2-ia-sample-time">{{ s.time }}</span>
-                </div>
-                <div class="v2-ia-sample-text">{{ s.text }}</div>
+            <div v-for="s in t.steps" :key="s.index" class="v2-ia-step">
+              <span class="v2-ia-step-no">{{ s.index }}</span>
+              <span class="v2-ia-step-label">{{ s.label }}</span>
+              <span class="v2-ia-step-sum">{{ s.summary }}</span>
+            </div>
+          </div>
+
+          <article class="v2-ia-answer" v-html="rendered(t)"></article>
+
+          <!-- 证据出处 -->
+          <div v-if="(t.evidence || []).length" class="v2-ia-cites">
+            <!-- 原话：能点开看全文 -->
+            <template v-if="quotes(t, ti).length">
+              <div class="v2-ia-sec-title">它读了这些原话（点开看全文）</div>
+              <div class="v2-ia-ev-row">
+                <button v-for="q in quotes(t, ti)" :key="'q' + q._i"
+                        class="v2-ia-ev" :class="{open: evOpen(ti, q._i)}"
+                        @click="toggleEv(ti, q._i)">
+                  <span class="v2-ia-ev-time">{{ q.time }}</span>
+                  <span class="v2-ia-ev-sender">{{ q.sender }}</span>
+                  <!-- 折叠显示摘要，展开显示全文（两者不同时出现，避免同一句显示两遍） -->
+                  <span v-if="!(evOpen(ti, q._i) && q.full)" class="v2-ia-ev-text">{{ q.text }}</span>
+                  <span v-if="evOpen(ti, q._i) && q.full" class="v2-ia-ev-full">{{ q.full }}</span>
+                </button>
               </div>
-            </div>
-
-            <button class="v2-btn v2-ia-again" @click="evOpen = false">收起</button>
+            </template>
+            <!-- 统计口径：数字来自 SQL，不是原话 -->
+            <template v-if="stats(t).length">
+              <div class="v2-ia-sec-title">它算出的数字（数据库直接算的）</div>
+              <div class="v2-ia-ev-row">
+                <div v-for="(e, ei) in stats(t)" :key="'s' + ei" class="v2-ia-ev v2-ia-ev-stat">
+                  <span class="v2-ia-ev-time">{{ e.time }}</span>
+                  <span class="v2-ia-ev-sender">{{ e.sender }}</span>
+                  <span class="v2-ia-ev-text">{{ e.text }}</span>
+                </div>
+              </div>
+            </template>
+            <button v-if="(t.evidence || []).length > 6"
+                    class="v2-ia-ev-more"
+                    @click="evShown[ti] = (evShown[ti] || 6) >= (t.evidence || []).length ? 6 : (t.evidence || []).length">
+              {{ (evShown[ti] || 6) >= (t.evidence || []).length ? '收起' : '展开全部 ' + (t.evidence || []).length + ' 条' }}
+            </button>
           </div>
-        </div>
 
-        <div class="v2-ia-foot">
-          <span>用时 {{ cost }} 秒</span>
-          <button class="v2-btn" @click="askAgain">换个问题</button>
-        </div>
+          <!-- 追问提示 -->
+          <div class="v2-ia-follow">
+            <span class="v2-ia-follow-tip">接着问</span>
+            <button v-for="f in followUps(t)" :key="f"
+                    class="v2-ia-follow-btn" @click="askFollow(f)">{{ f }}</button>
+          </div>
+        </template>
       </div>
 
-      <!-- ============ 原始数据（证据的另一面） ============ -->
+      <!-- ============ 原始统计（证据的另一面） ============ -->
       <div class="v2-ia-raw">
         <button class="v2-ia-ev-toggle" @click="rawOpen = !rawOpen">
           <span class="v2-ia-ev-caret" :class="{open: rawOpen}">›</span>
           原始统计图表
-          <span class="v2-ia-ev-count">活跃度日历 · 时段分布 · 话题分布</span>
+          <span class="v2-ia-ev-count">{{ rawLoading ? '加载中…' : '不依赖模型，直接从数据库算' }}</span>
         </button>
-
-        <div v-if="rawOpen" class="v2-ia-ev-body">
-          <div v-if="rawLoading" class="v2-ia-hint">正在统计…</div>
-          <template v-else>
-            <!-- 日历 -->
-            <div class="v2-ia-sec-title">活跃度日历</div>
-            <p class="v2-ia-sec-desc">
-              每天的消息数，颜色越深越活跃。共 {{ heatDays }} 天有记录。
-            </p>
-            <div class="v2-heat-wrap" v-if="calendar.length">
-              <div class="v2-heat-inner">
-                <div class="v2-heat-months" :style="{width: heatWidth + 'px'}">
-                  <span v-for="m in heatMonths" :key="m.key"
-                        :style="{left: m.left + 'px'}">{{ m.label }}</span>
-                </div>
-                <div class="v2-heat">
-                  <div v-for="(c,i) in calendar" :key="i"
-                       class="v2-heat-cell"
-                       :style="c ? {background: heatColor(c.level)} : {background:'transparent'}"
-                       :title="c ? (c.date + ' · ' + c.n + ' 条') : ''"></div>
-                </div>
-              </div>
+        <div v-if="rawOpen" class="v2-ia-ev-body" v-cloak>
+          <template v-if="rawData">
+            <!-- 热力日历 -->
+            <div class="v2-ia-sec-title">活跃日历</div>
+            <p class="v2-ia-sec-desc">每格一天，颜色深浅代表消息量。</p>
+            <div class="v2-heat-months">
+              <span v-for="m in heatMonths" :key="m" class="v2-heat-month">{{ m }}</span>
+            </div>
+            <div class="v2-heat">
+              <div v-for="(c,i) in calendar" :key="i"
+                   class="v2-heat-cell"
+                   :style="c ? {background: heatColor(c.level)} : {background:'transparent'}"
+                   :title="c ? (c.date + ' · ' + c.n + ' 条') : ''"></div>
             </div>
 
             <!-- 时段 -->
@@ -217,6 +229,7 @@
               </div>
             </div>
           </template>
+          <div v-else class="v2-note">正在加载统计数据…</div>
         </div>
       </div>
     </div>
@@ -225,24 +238,24 @@
     setup(props) {
       const question = ref("");
       const presets = ref([]);
-      const result = ref(null);
+      // 对话轮次：[{question, answer, steps, evidence, cost, pending, error}]
+      const turns = ref([]);
       const busy = ref(false);
       const error = ref("");
-      const cost = ref(0);
-      const evOpen = ref(false);
-      const rawOpen = ref(false);
-      const rawLoading = ref(false);
       const model = ref("");
       const libTotal = ref(0);
       const libSessions = ref(0);
       const libContacts = ref(0);
       const libSpan = ref("");
       const topNames = ref([]);
+      const evShown = ref({});     // 每轮默认显示几条证据
+      const evOpenMap = ref({});   // 哪几条被展开了（ti:ei → true）
 
       // 原始统计
-      const profile = ref(null);
-      const heat = ref({});
-      const stageText = ref("正在扫描全部消息…");
+      const rawOpen = ref(false);
+      const rawLoading = ref(false);
+      const rawData = ref(null);
+      const stageText = ref("正在思考…");
 
       const ph = computed(() => {
         const n = libTotal.value;
@@ -253,16 +266,13 @@
       let pollTimer = null;
 
       onMounted(async () => {
-        // 从命令面板进来「原始统计图表」→ 直接展开
         if (props.route === "insight.raw") rawOpen.value = true;
-        // 预设问题
         try {
           const p = await M.api.get("/api/insight/presets");
           presets.value = (p && p.presets) || [];
         } catch (e) {
           presets.value = [];
         }
-        // 库概况（轻量接口，用于首屏信息带）
         try {
           const s = await M.api.get("/api/stats/global");
           libTotal.value = (s && s.totalMessages) || 0;
@@ -275,7 +285,6 @@
         } catch (e) {
           libTotal.value = 0;
         }
-        // 聊得最多的几个（轻量接口）
         try {
           const c = await M.api.get("/api/stats/contacts");
           const list = (c && (c.contacts || c.items)) || [];
@@ -294,43 +303,75 @@
         if (!q || busy.value) return;
         busy.value = true;
         error.value = "";
-        result.value = null;
-        evOpen.value = false;
-        stageText.value = "正在扫描全部消息…";
+        question.value = "";
+        const turn = {
+          question: q,
+          answer: "",
+          steps: [],
+          evidence: [],
+          cost: 0,
+          pending: true,
+          error: "",
+          stage: "正在思考…",
+        };
+        turns.value.push(turn);
+        const ti = turns.value.length - 1;
         try {
-          const r = await M.api.post("/api/insight/ask", { question: q });
-          await pollTask(r.taskId);
+          // 带上前面的对话，让模型能接住追问
+          const history = turns.value.slice(0, ti).flatMap((t) => [
+            { role: "user", content: t.question },
+            { role: "assistant", content: t.answer || "" },
+          ]);
+          const r = await M.api.post("/api/insight/ask", { question: q, history });
+          await pollTask(r.taskId, ti);
         } catch (e) {
-          error.value = (e && e.message) || String(e);
+          turn.pending = false;
+          turn.error = (e && e.message) || String(e);
           busy.value = false;
         }
       }
 
-      function pollTask(tid) {
+      function pollTask(tid, ti) {
         return new Promise((resolve, reject) => {
           const tick = async () => {
             try {
               const t = await M.api.get("/api/task", { id: tid });
               if (!t) throw new Error("任务丢失");
+              const turn = turns.value[ti];
+              if (!turn) return;
+              // 实时轨迹：这是 Agentic 最重要的体验差异
+              const live = t.live || {};
+              if (live.steps && live.steps.length) {
+                turn.steps = live.steps;
+                const last = live.steps[live.steps.length - 1];
+                turn.stage = "正在「" + (last.label || "查数据") + "」…";
+              }
               if (t.status === "done") {
-                result.value = t.result || {};
-                cost.value = t.cost || 0;
-                model.value = (t.result && t.result.model) || model.value;
+                const res = t.result || {};
+                turn.answer = res.answer || "";
+                turn.steps = res.steps || turn.steps;
+                turn.evidence = res.evidence || [];
+                turn.cost = t.cost || 0;
+                turn.pending = false;
+                if (res.model) model.value = res.model;
                 busy.value = false;
                 resolve();
                 return;
               }
               if (t.status === "error") {
-                throw new Error(t.error || "任务失败");
+                turn.pending = false;
+                turn.error = t.error || "任务失败";
+                busy.value = false;
+                reject(new Error(turn.error));
+                return;
               }
-              // 阶段提示：跑得越久越可能已经进 LLM 阶段
-              const c = t.cost || 0;
-              if (c === 0) stageText.value = "正在扫描全部消息…";
-              else if (c < 12) stageText.value = "正在扫描全部消息…";
-              else stageText.value = "模型正在思考…";
-              pollTimer = setTimeout(tick, 1200);
+              pollTimer = setTimeout(tick, 900);
             } catch (e) {
-              error.value = (e && e.message) || String(e);
+              const turn = turns.value[ti];
+              if (turn) {
+                turn.pending = false;
+                turn.error = (e && e.message) || String(e);
+              }
               busy.value = false;
               reject(e);
             }
@@ -344,13 +385,58 @@
         nextTick(() => submit());
       }
 
-      function askAgain() {
-        result.value = null;
-        question.value = "";
-        nextTick(() => {
-          const el = document.querySelector(".v2-ia-input");
-          if (el) el.focus();
+      function askFollow(text) {
+        question.value = text;
+        nextTick(() => submit());
+      }
+
+      // 追问建议：从模型这一步查过的东西反推，比写死三个模板有用
+      function followUps(t) {
+        const out = [];
+        const steps = t.steps || [];
+        const sawTimeline = steps.some((s) => s.tool === "read_timeline");
+        const sawStats = steps.some((s) => s.tool === "chat_stats");
+        if (sawTimeline) out.push("那上个月呢？");
+        if (sawStats) out.push("换个时间段看呢？");
+        if ((t.evidence || []).length) out.push("把原话再多读几段");
+        if (!out.length) out.push("再详细点", "有没有反直觉的地方");
+        return out.slice(0, 3);
+      }
+
+      // 点击证据 → 展开完整原文（这才是「可核对」的意义：默认截断，点了看全）
+      // 注意：展开态单独放 evOpenMap，不要和 evShown（每轮显示条数）混在
+      // 一个对象里——之前两套键混用，导致点了没反应。
+      function toggleEv(ti, ei) {
+        const key = ti + ":" + ei;
+        const next = Object.assign({}, evOpenMap.value);
+        if (next[key]) {
+          delete next[key];
+        } else {
+          next[key] = true;
+        }
+        evOpenMap.value = next;
+      }
+
+      function evOpen(ti, ei) {
+        return !!(evOpenMap.value || {})[ti + ":" + ei];
+      }
+
+      // 证据分两类：原话（可点开看全文）vs 统计数字（SQL 算的，不是原话）。
+      // 混在一起摆会让人误以为「消息量 158565 条」是某句话。
+      // _i 保留原始下标，展开状态才不会错位。
+      function quotes(t, ti) {
+        const all = t.evidence || [];
+        const picked = [];
+        all.forEach((e, i) => {
+          if ((e.kind || "quote") === "quote" && picked.length < (evShown.value[ti] || 6)) {
+            picked.push(Object.assign({}, e, { _i: i }));
+          }
         });
+        return picked;
+      }
+
+      function stats(t) {
+        return (t.evidence || []).filter(e => e.kind === "stat");
       }
 
       function autoGrow(e) {
@@ -360,210 +446,120 @@
       }
 
       // ---------------------------------------------------------------- 渲染
-      const answered = computed(() => !!result.value);
-
-      // 依据：优先用模型自己标的；模型没标时按事实清单关键词兜底
-      // chip 只放短标签，完整原句挂在 title 上（悬停可见）——避免整段事实塞进一个泡里
-      const citedFacts = computed(() => {
-        const r = result.value;
-        if (!r) return [];
-        const facts = r.facts || [];
-        let cites = (r.citations || []).slice();
-        if (!cites.length) {
-          // 兜底：拿答案里出现的关键短语去事实清单里找对应项
-          const ans = r.answer || "";
-          const keys = [
-            ["消息量最多的联系人", "联系人"],
-            ["高频词", "词"],
-            ["时段", "点"],
-            ["深夜", "深夜"],
-            ["消息构成", "文本"],
-            ["你发出", "你发"],
-            ["时间跨度", "跨度"],
-          ];
-          facts.forEach((f) => {
-            if (cites.length >= 4) return;
-            for (const [label, hint] of keys) {
-              if (f.includes(label) && ans.includes(hint)) {
-                cites.push(f);
-                break;
-              }
-            }
-          });
-        }
-        // 去重 + 抽短标签
-        const seen = new Set();
-        const out = [];
-        cites.forEach((full) => {
-          const t = String(full || "").trim();
-          if (!t || seen.has(t)) return;
-          seen.add(t);
-          out.push({ full: t, label: shortLabel(t) });
-        });
-        return out.slice(0, 8);
-      });
-
-      // 从一句话里抽一个能当标签的短句
-      function shortLabel(t) {
-        // 优先取「标签：值」形式的中文冒号前半段（半角冒号多见于时间，别乱切）
-        const cn = t.indexOf("：");
-        if (cn > 0 && cn <= 20) return t.slice(0, cn);
-        // 否则截到第一个逗号/顿号
-        const cut = t.split(/[，,、；;]/)[0];
-        if (cut.length <= 16) return cut;
-        // 别切在括号中间——回退到配对闭合处
-        const open = Math.max(cut.lastIndexOf("（"), cut.lastIndexOf("("));
-        if (open > 0) {
-          const close = cut.indexOf(open === cut.lastIndexOf("（") ? "）" : ")", open);
-          if (close > 0 && close + 1 <= 18) return cut.slice(0, close + 1);
-        }
-        return cut.slice(0, 16) + "…";
-      }
-
-      const rendered = computed(() => {        const a = (result.value && result.value.answer) || "";
+      function rendered(t) {
+        const a = t.answer || "";
         if (!a) return "";
-        // 极简 markdown：**粗体** 与段落
         let html = a
           .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/^### (.*)$/gm, "<h4>$1</h4>")
+          .replace(/^## (.*)$/gm, "<h3>$1</h3>")
+          .replace(/^# (.*)$/gm, "<h3>$1</h3>")
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
           .replace(/`([^`]+)`/g, "<code>$1</code>");
-        html = html.split(/\n{2,}/).map((p) => {
-          const t = p.trim();
-          if (!t) return "";
-          if (/^###\s/.test(t)) return "<h4>" + t.replace(/^###\s*/, "") + "</h4>";
-          if (/^[-*]\s/.test(t)) {
-            const items = t.split(/\n/).map((li) => {
-              const s = li.trim().replace(/^[-*]\s*/, "");
-              return s ? "<li>" + s + "</li>" : "";
-            }).join("");
-            return "<ul>" + items + "</ul>";
+        const blocks = html.split(/\n{2,}/);
+        html = blocks.map((blk) => {
+          const lines = blk.split("\n");
+          if (lines.every((l) => /^\s*[-*]\s+/.test(l))) {
+            return "<ul>" + lines.map((l) =>
+              "<li>" + l.replace(/^\s*[-*]\s+/, "") + "</li>").join("") + "</ul>";
           }
-          if (/^\d+\.\s/.test(t)) {
-            const items = t.split(/\n/).map((li) => {
-              const s = li.trim().replace(/^\d+\.\s*/, "");
-              return s ? "<li>" + s + "</li>" : "";
-            }).join("");
-            return "<ol>" + items + "</ol>";
+          if (lines.every((l) => /^\s*\d+[.、]\s+/.test(l))) {
+            return "<ol>" + lines.map((l) =>
+              "<li>" + l.replace(/^\s*\d+[.、]\s+/, "") + "</li>").join("") + "</ol>";
           }
-          return "<p>" + t.replace(/\n/g, "<br/>") + "</p>";
+          if (/^<h[34]>/.test(blk)) return blk;
+          return "<p>" + blk.replace(/\n/g, "<br>") + "</p>";
         }).join("");
         return html;
-      });
-
-      // ---------------------------------------------------------------- 原始统计
-      const calendar = computed(() => {
-        const dist = heat.value || {};
-        const entries = Object.entries(dist).sort((a, b) => a[0].localeCompare(b[0]));
-        if (!entries.length) return [];
-        const counts = entries.map(([, n]) => n);
-        const max = Math.max.apply(null, counts) || 1;
-        // 后端只给「有消息的日期」，中间可能缺整段 → 先补成连续日期轴，
-        // 否则空档之后的星期对齐全错位
-        const first = new Date(entries[0][0] + "T00:00:00");
-        const last = new Date(entries[entries.length - 1][0] + "T00:00:00");
-        const map = new Map(entries);
-        const span = Math.round((last - first) / 86400000);
-        const days = [];
-        for (let i = 0; i <= span; i++) {
-          const d = new Date(first.getTime() + i * 86400000);
-          const ds = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") +
-            "-" + String(d.getDate()).padStart(2, "0");
-          const n = map.get(ds) || 0;
-          days.push({
-            date: ds, n,
-            level: n === 0 ? 0 : Math.min(5, Math.ceil(n / max * 5)),
-          });
-        }
-        const lead = first.getDay();
-        const cells = [];
-        for (let i = 0; i < lead; i++) cells.push(null);
-        days.forEach((c) => cells.push(c));
-        const rem = cells.length % 7;
-        if (rem) for (let i = 0; i < 7 - rem; i++) cells.push(null);
-        return cells;
-      });
-
-      const heatDays = computed(() => {
-        const dist = heat.value || {};
-        return Object.values(dist).filter((n) => Number(n) > 0).length;
-      });
-
-      const HEAT_COL_W = 14;
-      const heatWidth = computed(() => Math.ceil(calendar.value.length / 7) * HEAT_COL_W - 3);
-
-      const heatMonths = computed(() => {
-        const cells = calendar.value;
-        if (!cells.length) return [];
-        const out = [];
-        let lastKey = "";
-        cells.forEach((c, i) => {
-          if (!c) return;
-          const d = new Date(c.date + "T00:00:00");
-          const key = d.getFullYear() + "-" + (d.getMonth() + 1);
-          if (key === lastKey) return;
-          lastKey = key;
-          const left = Math.floor(i / 7) * HEAT_COL_W;
-          if (out.length && left - out[out.length - 1].left < 28) return;
-          out.push({ key: key, left: left, label: (d.getMonth() + 1) + "月" });
-        });
-        return out;
-      });
-
-      const hourlyRows = computed(() => {
-        const rh = (profile.value && profile.value.rhythm) || {};
-        const list = rh.hourly || [];
-        // 后端 hourly 项形如 { hour, total, mine }
-        const max = list.reduce((a, x) => Math.max(a, x.total || 0), 0) || 1;
-        return list.map((x) => ({
-          h: x.hour, n: x.total || 0,
-          pct: Math.round((x.total || 0) / max * 100),
-        }));
-      });
-
-      const topics = computed(() => {
-        const tp = (profile.value && profile.value.topics) || {};
-        const list = tp.mine || tp.byTopic || [];
-        const max = list.reduce((a, x) => Math.max(a, x.hits || x.count || 0), 0) || 1;
-        return list.slice(0, 10).map((x) => {
-          const c = x.hits || x.count || 0;
-          return { name: x.topic || x.name, count: c, pct: Math.round(c / max * 100) };
-        });
-      });
-
-      function heatColor(level) {
-        const map = ["var(--heat-0)", "var(--heat-1)", "var(--heat-2)",
-          "var(--heat-3)", "var(--heat-4)", "var(--heat-5)"];
-        return map[level] || map[0];
       }
 
-      // 展开「原始统计」时才去拉数据（重接口，不占首屏）
+      // ---------------------------------------------------------------- 原始统计
       async function loadRaw() {
-        if (profile.value) return;
+        if (rawData.value || rawLoading.value) return;
         rawLoading.value = true;
         try {
-          const [p, h] = await Promise.allSettled([
-            M.api.get("/api/profile"),
-            M.api.get("/api/stats/time", { by: "date" }),
-          ]);
-          if (p.status === "fulfilled" && p.value) profile.value = p.value;
-          if (h.status === "fulfilled" && h.value) heat.value = h.value.distribution || {};
+          const p = await M.api.get("/api/profile");
+          rawData.value = p || {};
         } catch (e) {
-          /* 图表是补充，失败不打扰主流程 */
+          rawData.value = null;
         } finally {
           rawLoading.value = false;
         }
       }
-      watch(rawOpen, (open) => { if (open) loadRaw(); });
-      // 从「原始统计图表」入口直接进来时，rawOpen 初始已是 true，watch 不触发
-      if (props.route === "insight.raw") loadRaw();
+      watch(rawOpen, (v) => { if (v) loadRaw(); });
+
+      const profile = computed(() => rawData.value || {});
+
+      const heat = computed(() => profile.value.heat || {});
+
+      const calendar = computed(() => {
+        const h = heat.value;
+        const days = h.days || [];
+        if (!days.length) return [];
+        const first = days[0].date;
+        const last = days[days.length - 1].date;
+        const max = Math.max(1, ...days.map((d) => d.n || 0));
+        const out = [];
+        const start = new Date(first + "T00:00:00");
+        const end = new Date(last + "T00:00:00");
+        // 先补成连续日期轴，再排网格 —— 否则空档之后星期对齐全错位
+        const cur = new Date(start);
+        while (cur <= end) {
+          const ds = cur.toISOString().slice(0, 10);
+          const hit = days.find((d) => d.date === ds);
+          out.push(hit ? { date: ds, n: hit.n, level: Math.ceil(((hit.n || 0) / max) * 4) } : null);
+          cur.setDate(cur.getDate() + 1);
+        }
+        while (out.length % 7 !== 0) out.push(null);
+        return out;
+      });
+
+      const heatMonths = computed(() => {
+        const out = [];
+        const cells = calendar.value;
+        let lastMonth = "";
+        for (let i = 0; i < cells.length; i += 7) {
+          const c = cells[i];
+          const m = c ? c.date.slice(0, 7) : "";
+          if (m && m !== lastMonth) {
+            out.push(m.slice(5) + "月");
+            lastMonth = m;
+          }
+        }
+        return out;
+      });
+
+      const hourlyRows = computed(() => {
+        const rh = (profile.value.rhythm || {}).hourly || [];
+        const max = Math.max(1, ...rh.map((x) => x.total || 0));
+        return rh.map((x) => ({
+          h: x.hour, n: x.total || 0,
+          pct: Math.round(((x.total || 0) / max) * 100),
+        }));
+      });
+
+      const topics = computed(() => {
+        const by = (profile.value.topics || {}).byTopic || [];
+        const max = Math.max(1, ...by.map((x) => x.hits || 0));
+        return by.map((x) => ({
+          name: x.topic, count: x.hits || 0,
+          pct: Math.round(((x.hits || 0) / max) * 100),
+        }));
+      });
+
+      function heatColor(level) {
+        const map = ["#e8f0ec", "#c3ded0", "#8cc3aa", "#4f9e7c", "#2d6a4f"];
+        return map[Math.max(0, Math.min(4, level || 0))];
+      }
 
       return {
-        question, presets, result, busy, error, cost, evOpen, rawOpen,
-        rawLoading, model, libTotal, libSessions, libContacts, libSpan,
-        topNames, ph, stageText, answered, citedFacts,
-        rendered, calendar, heatDays, heatWidth, heatMonths,
-        hourlyRows, topics, heatColor,
-        submit, usePreset, askAgain, autoGrow, M,
+        question, presets, turns, busy, error, cost: ref(0), model,
+        libTotal, libSessions, libContacts, libSpan, topNames, ph,
+        rawOpen, rawLoading, rawData, evShown, evOpenMap,
+        submit, usePreset, askFollow, followUps, toggleEv, evOpen, autoGrow,
+        quotes, stats,
+        rendered, calendar, heatMonths, hourlyRows, topics, heatColor,
+        M,
       };
     },
   };

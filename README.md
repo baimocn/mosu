@@ -63,7 +63,7 @@ python cli/mosu.py sessions
 
 | 层 | 做法 |
 |---|---|
-| 加密层 | 自有 SQLCipher 4 实现（PBKDF2-HMAC-SHA512 × 256000，AES-256-CBC + HMAC-SHA512） |
+| 加密层 | 自有 SQLCipher 4 实现（PBKDF2-HMAC-SHA512 × 256030，AES-256-CBC + HMAC-SHA512） |
 | 解析层 | zstd 解压 + protobuf + XML，消息/联系人/群/语音/视频/朋友圈全格式 |
 | 媒体层 | 图片 V0（XOR）与 V2（私有容器，AES-128-ECB + 尾部 XOR）解密 |
 | 应用层 | CLI 命令集 + MCP Server，五种输出格式 |
@@ -102,7 +102,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，561 例）：
+测试（全离线，603 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -249,7 +249,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（561 例）
+tests/                 离线测试（603 例）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
 ```
 
@@ -260,7 +260,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（561 例）
+- [x] 离线测试套件（603 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -354,7 +354,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (561 cases)
+tests/          offline test suite (603 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 
