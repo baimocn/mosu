@@ -102,7 +102,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，603 例）：
+测试（全离线，612 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -215,6 +215,39 @@ python cli/mosu.py mcp config         # 打印接入用的配置片段
 }
 ```
 
+## 接入 Pi（agent harness）
+
+Pi 是一个可编程的 agent harness。把墨溯挂成它的 MCP server，**Pi 的 agent 就有了
+「手」**——能实时查你解出来的微信数据、自主多步分析，而不是只看到一段预置的摘要。
+
+```bash
+python scripts/install_pi_mcp.py          # 装/更新（含本机网关的兼容修正）
+python scripts/install_pi_mcp.py --check  # 体检
+pi mcp list                               # 应显示 mosu: connected, 12 tools
+```
+
+装完直接提问即可：
+
+```
+$ pi
+> 用 mosu 查：谁跟我聊天最多？针对排第一的那个人，看我们的往来特征并给结论
+```
+
+实测 Pi 的 agent 会自主调用 `mosu_status` → `mosu_contacts` → `mosu_profile`，
+输出带具体数字、双方对比和依据标注。MCP server 冷启动约 7 秒（解密 + 建索引），
+之后单次工具调用 0.0–1.0 秒。
+
+接入 Pi 需要额外修三处**兼容性配置**（安装脚本已自动处理，手改容易踩）：
+
+| 配置 | 默认值 | 为什么必须改 |
+|---|---|---|
+| `api` | `openai-responses` | 本机网关只有 `/v1/chat/completions`，responses 端点 404 |
+| `authHeader` | `false` | Pi 默认不发 `Authorization: Bearer`，网关认不出渠道 |
+| `compat.supportsDeveloperRole` | `true` | 网关上游不认 `role: "developer"`，会报「unapproved channel」 |
+
+这三个坑的报错都**不指向真正原因**（看着像账号或权限问题），所以
+`tests/test_pi_mcp.py` 把正确值锁死了。
+
 ## 隐私与合规
 
 - **只读**：从不写入、修改、删除微信的任何文件；解密产物落在项目 `.cache/`，可随时清
@@ -249,7 +282,9 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（603 例）
+tests/                 离线测试（612 例）
+scripts/
+  install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
 ```
 
@@ -260,7 +295,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（603 例）
+- [x] 离线测试套件（612 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -354,7 +389,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (603 cases)
+tests/          offline test suite (612 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 
