@@ -8,7 +8,7 @@
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/assets/theme.css" />
-  <link rel="stylesheet" href="/assets/app.css" />
+  <link rel="stylesheet" href="/assets/v2/app.css" />
   <script src="/vendor/vue.global.prod.js"></script>
   <style>
     /* 首屏骨架：Vue 挂载前先给点东西，避免白屏 */
@@ -35,34 +35,32 @@
     </div>
   </div>
 
-  <!-- 加载顺序 = 依赖顺序：内核 → 页面组件 → 外壳（外壳最后挂载） -->
+  <!-- 加载顺序 = 依赖顺序：内核 → 图标 → 灯箱 → 视图 → 桥 → 外壳（外壳最后挂载） -->
   <script src="/assets/core.js"></script>
   <script src="/assets/icons.js"></script>
   <script src="/assets/lightbox.js"></script>
-  <script src="/assets/views-insight.js"></script>
-  <script src="/assets/views-browse.js"></script>
-  <script src="/assets/views-data.js"></script>
-  <script src="/assets/views-console.js"></script>
-  <script src="/assets/views-wechat.js"></script>
-  <script src="/assets/views-persona.js"></script>
-  <script src="/assets/views-mcp.js"></script>
-  <script src="/assets/views-setup.js"></script>
-  <script src="/assets/app.js"></script>
+  <script src="/assets/v2/views-home.js"></script>
+  <script src="/assets/v2/views-chat.js"></script>
+  <script src="/assets/v2/views-insight.js"></script>
+  <script src="/assets/v2/views-share.js"></script>
+  <script src="/assets/v2/views-settings.js"></script>
+  <script src="/assets/v2/bridge.js"></script>
+  <script src="/assets/v2/shell.js"></script>
   <script>
     // Vue 挂载后移除首屏骨架；若脚本加载失败，骨架上直接显示原因
     window.addEventListener("error", function (e) {
       var b = document.getElementById("boot");
-      if (b && !document.querySelector(".app")) {
+      if (b && !document.querySelector(".v2-app")) {
         b.innerHTML = '<div style="text-align:center;max-width:520px;padding:24px">'
           + '<div class="mark" style="background:#dc2626">!</div>'
-          + '<div style="font-weight:600;color:var(--text-2);margin-bottom:6px">界面加载失败</div>'
+          + '<div style="font-weight:600;color:#475569;margin-bottom:6px">界面加载失败</div>'
           + '<div style="font-size:13px">' + (e.message || "未知错误") + '</div>'
           + '<div style="font-size:12px;margin-top:8px">确认服务是从项目目录启动的（资源在 gui/assets/）</div>'
           + '</div>';
       }
     });
     var t = setInterval(function () {
-      if (document.querySelector(".app")) {
+      if (document.querySelector(".v2-app")) {
         var b = document.getElementById("boot");
         if (b) { b.style.opacity = "0"; setTimeout(function () { b.remove(); }, 200); }
         clearInterval(t);
