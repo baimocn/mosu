@@ -150,6 +150,9 @@ class AgentRun:
         self.t0 = time.time()
         # 工具返回里出现过的所有数字（字符串形式）——用来核对答案里的数字有没有出处
         self.tool_numbers: set[str] = set()
+        # 阶段契约判定结果（core/pipeline.py）。
+        # 没有它就只是一段文本答案；有了它，每个阶段的状态码可机械核验。
+        self.contract: dict = {}
 
     def to_dict(self) -> dict:
         return {
@@ -160,6 +163,8 @@ class AgentRun:
             "branches": [b.to_dict() for b in self.branches],
             "tokens": self.tokens,
             "cost": round(time.time() - self.t0, 2),
+            # 阶段契约：stages / gates / forbidden / okToProceed
+            "contract": self.contract,
         }
 
 
@@ -396,6 +401,30 @@ class InsightAgent:
             messages.append({"role": "user", "content": FINAL_HINT})
             resp = self.llm.chat_tools(messages, [], temperature=0.3, max_tokens=1500)
             run.answer = (resp.get("content") or "").strip() or "（未能在步数限制内给出答案）"
+
+        # ---- 阶段契约判定
+        #
+        # 顺序很要紧：**先判契约，再拼审计提示**。
+        # 审计提示本身含数字（「2904」会被写进提醒里），
+        # 先拼提示再判定的话，契约会拿「提示里的数字」当答案的数字来自证，
+        # 判出「有出处」——自己给自己签了通过。
+        #
+        # 契约判定也**不改变**答案：它只产出一个可核验的结构（stages/gates），
+        # 答案里该提醒什么仍由 _audit_numbers 决定。两件事分开做、各管各的。
+        try:
+            from core import pipeline
+            run.contract = pipeline.evaluate({
+                "steps": run.steps,
+                "evidence": run.evidence,
+                "answer": run.answer,
+                "toolNumbers": run.tool_numbers,
+                "branches": run.branches,
+                "unsourcedNumbers": _unsourced_numbers(run),
+            })
+        except Exception:
+            # 契约判定失败**不能连带整轮失败**——答案已经算出来了。
+            # 契约是附加的验收信息，不是主链路。
+            run.contract = {}
 
         run.answer = _audit_numbers(run)
         return run
@@ -684,6 +713,26 @@ def _is_structural(text: str, n: str) -> bool:
     return False
 
 
+def _unsourced_numbers(run: AgentRun) -> list[str]:
+    """算出答案里**没有出处**的数字。
+
+    与 _audit_numbers 同口径，但只返回列表、不拼提示文本。
+    拆出来的原因：阶段契约（core/pipeline.py）要用这份清单判状态码，
+    而提示文本本身含数字（「2904」会被写进提醒里），
+    所以**判定必须用原始答案**，不能用拼完提示的答案——否则会自证。
+    """
+    ans = run.answer or ""
+    if not ans.strip():
+        return []
+    nums = _numbers_in(ans)
+    return sorted(
+        (n for n in nums
+         if not _has_source(n, run.tool_numbers)
+         and not _is_structural(ans, n)),
+        key=lambda x: (len(x), x),
+    )
+
+
 def _audit_numbers(run: AgentRun) -> str:
     """核对答案里的数字有没有出处。
 
@@ -697,13 +746,7 @@ def _audit_numbers(run: AgentRun) -> str:
     ans = run.answer or ""
     if not ans.strip():
         return ans
-    nums = _numbers_in(ans)
-    unknown = sorted(
-        (n for n in nums
-         if not _has_source(n, run.tool_numbers)
-         and not _is_structural(ans, n)),
-        key=lambda x: (len(x), x),
-    )
+    unknown = _unsourced_numbers(run)
     # 最多报 5 个，多了是噪音
     if not unknown:
         return ans

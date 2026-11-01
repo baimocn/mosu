@@ -162,6 +162,47 @@
 
         <!-- 回答 -->
         <template v-else>
+          <!-- 阶段契约（对标 Lancer PROCESS.json）：这条回答过了哪些环节、哪些没过 -->
+          <div v-if="t.contract && t.contract.stages && t.contract.stages.length"
+               class="v2-ia-contract"
+               :class="{blocked: !t.contract.okToProceed}">
+            <div class="v2-ia-steps-head">
+              <span class="v2-ia-steps-title">验收环节</span>
+              <span class="v2-ia-steps-count">
+                {{ t.contract.okToProceed ? "全部通过" : "有环节未通过" }}
+              </span>
+            </div>
+            <div class="v2-ia-contract-stages">
+              <div v-for="s in t.contract.stages" :key="s.id"
+                   class="v2-ia-cstage"
+                   :class="{bad: !s.status.okToProceed, skip: s.status.code === 'SKIPPED'}"
+                   :data-stage-id="s.id"
+                   :data-status-code="s.status.code"
+                   :data-ok-to-proceed="String(s.status.okToProceed)">
+                <span class="v2-ia-cstage-dot"></span>
+                <span class="v2-ia-cstage-label">{{ s.label }}</span>
+                <span class="v2-ia-cstage-code">{{ s.status.label }}</span>
+                <span class="v2-ia-cstage-sum">{{ s.summary }}</span>
+              </div>
+            </div>
+            <div v-if="!t.contract.okToProceed" class="v2-ia-contract-warn">
+              <div v-for="s in t.contract.stages" :key="'w' + s.id"
+                   v-show="!s.status.okToProceed && s.status.hint"
+                   class="v2-ia-contract-warn-row">
+                <b>{{ s.label }}</b>：{{ s.status.hint }}
+              </div>
+            </div>
+            <div v-if="(t.contract.forbidden || []).some(f => f.violated)"
+                 class="v2-ia-contract-forbid">
+              <div class="v2-ia-contract-forbid-title">违反的禁止项</div>
+              <div v-for="f in t.contract.forbidden" :key="f.id"
+                   v-show="f.violated" class="v2-ia-contract-forbid-row">
+                <b>{{ f.text }}</b>
+                <span v-if="f.detail">—— {{ f.detail }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- 工具轨迹（完成后仍展示，这是可信度的来源） -->
           <div v-if="t.steps && t.steps.length" class="v2-ia-steps done">
             <div class="v2-ia-steps-head">
@@ -366,6 +407,8 @@
           steps: [],
           evidence: [],
           branches: [],
+          // 阶段契约：跑完才有值，先占位（Vue 响应式要求字段预先存在）
+          contract: {},
           cost: 0,
           pending: true,
           error: "",
@@ -412,6 +455,8 @@
                 turn.answer = res.answer || "";
                 turn.steps = res.steps || turn.steps;
                 turn.evidence = res.evidence || [];
+                // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
+                turn.contract = res.contract || {};
                 // 分支树：主代理派的子代理各查各的
                 turn.branches = res.branches || [];
                 turn.cost = t.cost || 0;
@@ -521,6 +566,8 @@
             turn.answer = res.answer || "";
             turn.steps = res.steps || turn.steps;
             turn.evidence = res.evidence || [];
+            // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
+            turn.contract = res.contract || {};
             turn.branches = res.branches || [];
             turn.cost = res.cost || 0;
             turn.pending = false;

@@ -47,7 +47,7 @@ Lancer 完全没有真实数据能力（它的数据只有自己的会话记录�
 | **统一订阅通道** | 单条 `state-changed` 广播全量快照 | 每端点独立轮询 | 缺 | P1 |
 | **外部派活通道** | Control API（Unix socket + token，`send`/`queue`/`steer`/`wait`/`tail`） | MCP 只读：外部能**读**墨溯，墨溯不能被外部**驱动** | 缺 | P1 |
 | **多模型目录** | 9 家族 + 自定义 + 可用/未启用/未配置三态 | ✅ 9 家族 + 多端点 + 三态（迭代 6，`core/model_catalog.py`） | 无缺口 | — |
-| **阶段流水线** | 1–8 阶段，各配 model/skills/goal/deliverables | 无 | 缺 | P2 |
+| **阶段流水线** | 1–8 阶段，各配 model/skills/goal/deliverables | ✅ 4 阶段契约（迭代 7）：status code 带 ok_to_proceed、每阶段 gate 产物、forbidden 清单、机械摘要 | 部分（缺每阶段不同 model） | — |
 | **分支可视化** | GitTree + 语义锚点光线 + 流动边框 | 5 视图平铺，无分支视图 | 缺 | P1 |
 | **验证纪律** | 6 级证据分级 + 明确列「哪些没跑」+ flake 当 bug | 660 测试 + E2E + 存量失败未分级 | 部分有 | P1 |
 
@@ -132,7 +132,18 @@ Lancer 的核心不等式，逐条抄：
 
 - ~~**多模型目录**~~ → **迭代 6 已做**（9 家族 + 多端点 + 三态）。
   没抄的部分：SVG 品牌图标（用文字徽标）、App 直连入口（墨溯没有这条通道）。
-- **阶段流水线**：墨溯的「分析流程模板」价值一般，等分支树跑通再考虑。
+- ~~**阶段流水线**~~ → **迭代 7 已做契约层**（`core/pipeline.py`）。
+  读 Lancer 的 `packages/video-learn-process/PROCESS.json` 才发现：
+  它的「阶段流水线」本质是**声明式流程契约**，不是视频功能。
+  抄了四样：status code 带 `ok_to_proceed`（机器可判的推进条件）、
+  每阶段一个 gate 产物、forbidden 清单、每阶段一行机械摘要。
+  **没抄固定管道**——迭代 2/3 的教训（模型被绑住手 → 用户批「ai 功能好差劲」）。
+  Lancer 自己的 `forbidden` 里写着 `prose_handoff_messages`、
+  `generic_prompt_compression_as_handoff`，它反对的正是用散文串阶段。
+  墨溯的做法是**顺序反了但标准一样严**：Lancer 先定流水线再跑，
+  墨溯先跑完再按流水线验收（契约层，不是编排层）。
+  没抄的部分：**每阶段绑定不同 model**（Lancer 的 `stage.model` +
+  handoff 的 `distinct_configured_model`），留给迭代 8。
 - **AgentMail / 订阅账号**：走 OpenAI 兼容端点已够。
 
 ---
@@ -147,6 +158,7 @@ Lancer 的核心不等式，逐条抄：
 | **4** | 分支可视化（树 → 语义锚点光线）；多模型目录 | 颜色按泳道继承；锚点缺失不乱飞 | ✅ 完成（commit `af8301a`，可视化部分） |
 | **5** | 验证文档升级为 6 级证据分级 | 每份报告明确列「哪些没跑」 | ✅ 完成（commit `78dd7cf`） |
 | **6** | 多模型目录（9 家族识别 + 多端点 + 三态 + 模型选择器 UI） | 模型名优先于 provider 归类；切换模型下游真的生效；旧配置继续可用 | ✅ 完成 |
+| **7** | 洞察阶段契约（`core/pipeline.py`）：4 阶段 + status code 带 ok_to_proceed + 每阶段 gate 产物 + forbidden 清单 + 机械摘要 | 契约随答案返回；判定用原始答案不自证；前端阶段带三态可区分 | ✅ 完成 |
 
 ### 迭代 1 实测记录（补充）
 
@@ -390,6 +402,92 @@ provider 叫 `openai`，模型是 `claude-sonnet-4`——家族必须判成 clau
 - 新增单元测试 **36 例** + 静态接线 **23 例** + 离线前端渲染 **15 例**（真 Playwright，14 秒跑完）
 - 端到端 **28/28 通过**（真起 GUI 服务、真发 HTTP、真点浏览器）
 - 全量回归 885 → **961 passed / 16 skipped / 0 failed**
+
+---
+
+## 六之二、迭代 7 详细记录：阶段契约
+
+### 读 Lancer 读出了什么
+
+`packages/video-learn-process/PROCESS.json`（484 行）才是「阶段流水线」的真身。
+它不是视频功能的实现细节，是一份**声明式流程契约**：
+
+| 机制 | Lancer 的做法 | 墨溯抄不抄 |
+|---|---|---|
+| `steps[]` | 每阶段带 actor / inputs / outputs / writes_gate / success_status / fail_statuses / rules | **抄结构，不抄固定管道** |
+| `status_codes` | 带 `ok_to_proceed`——状态不只是标签，是**机器可判的推进条件** | ✅ 抄（精华） |
+| `forbidden[]` | `prose_handoff_messages`、`generic_prompt_compression_as_handoff`… | ✅ 抄 |
+| gate 产物 | `_gates/<step>.<id>.json`，绑 sha256 防事后替换 | ✅ 抄结构 |
+| 每阶段机械摘要 | *"One short line of ids, paths, hashes, and status codes. No narrative."* | ✅ 抄 |
+| 每阶段不同 model | `stage.model` + handoff 要求 `distinct_configured_model` | ⏸ 迭代 8 |
+
+### 为什么墨溯不抄固定管道
+
+迭代 2/3 的教训：墨溯原来是固定管道（预塞 7 条事实 + 8 条语料 → 模型一次调用），
+用户批「ai 功能好差劲」——**根因不是模型，是模型被绑住了手**。
+
+而 Lancer 自己的 `forbidden` 里恰好写着 `prose_handoff_messages`、
+`generic_prompt_compression_as_handoff`——**它反对的正是用散文把阶段串起来**。
+
+所以墨溯的做法是**顺序反了，但标准一样严**：
+
+- Lancer：先定流水线 → 再跑
+- 墨溯：先跑完（ReAct 自主循环不变）→ **再按流水线验收**
+
+契约是**约束层**，不是**编排层**。模型照旧自主选工具、决定查几步；
+我们只对**已发生的事实**做机械判定。
+
+### 墨溯的四阶段与判定
+
+| 阶段 | actor | 关键？ | 判定依据 |
+|---|---|---|---|
+| `scope` 范围认定 | local | 否 | 有没有做过范围认定（resolve_time/find_contact/…） |
+| `probe` 数据探测 | local | **是** | 有没有取到统计类证据（kind=stat） |
+| `read` 原文取证 | local | 否 | 有没有取到原话证据（kind=quote） |
+| `verify` 答案核验 | local | **是** | 答案里的数字有没有出处 |
+
+状态码：`OK` / `SKIPPED`（不阻断）/ `EMPTY` / `MISSING` / `NO_QUOTE` / `UNSOURCED_NUMBER`。
+每个都带 `ok_to_proceed`——**Lancer 的核心机制**。
+
+forbidden 四条（每条都能程序化判定）：
+`no_number_without_source` / `no_stat_as_quote` /
+`no_answer_without_evidence` / `no_quote_without_read`。
+
+### 踩到的坑
+
+1. **判定必须用原始答案，不能用拼完审计提示的答案**
+   ——审计提示本身含数字（「2904」会被写进提醒里）。
+   先拼提示再判定 → 契约拿提示里的数字当答案的数字来自证 → **永远判成「有出处」**。
+   修法：把 `_unsourced_numbers()` 从 `_audit_numbers()` 里拆出来，判定走原始答案。
+   反向验证实测：把顺序换回去 → **1 例变红**。
+
+2. **渲染测试抓不到「后端没把 contract 传给前端」**
+   ——渲染测试用 mock 数据（contract 直接塞进 mock 返回），
+   前端忘了 `turn.contract = res.contract` 它照样全绿。
+   同理「后端忘了传」也抓不到。
+   这两条只有**真链路端到端**能暴露。补断言后，破坏实现 → 端到端立刻红。
+
+3. **`views-insight.js` 顶部就引用 `global.MosuV2.BranchTree`**
+   ——离线渲染探针页只加载洞察视图 → 注册子组件时抛错 → **整个视图挂不上**
+   （表现为 `__INSIGHT_READY__` 一直不置位，30 秒超时）。
+   探针页必须先加载 `views-branch.js`。
+
+4. **file:// 下 EventSource 必被 CORS 拦**
+   ——报的是 `Access to resource at 'file:///…' … blocked by CORS`。
+   这是**探针页的环境限制，不是组件 bug**（组件本就设计成 SSE 挂了自动降级轮询）。
+   处理：探针页把 EventSource 换成桩，只触发 error 事件，强制走轮询保底路径。
+
+### 实测记录
+
+- 新增单元测试 **38 例** + 静态接线 **27 例** + 离线前端渲染 **12 例**（真 Playwright）
+- 端到端 **27/27 通过**（真起 GUI 服务、真发 HTTP、真模型 + 真工具 + 真数据库、真点浏览器）
+- 全量回归 961 → **1038 passed / 16 skipped / 0 failed**
+- 反向验证 **8 条纪律逐条破坏，全部变红**（含 1 条只有端到端能抓的）
+- 验证报告 L5（`docs/verification/iter7-insight-contract.json`），9 条「哪些没跑」
+
+真机跑出来的真实判定（同一问题两次运行，模型行为不同）：
+`scope:OK | probe:MISSING | read:SKIPPED | verify:UNSOURCED_NUMBER`
+——契约**真的在拦**，不是摆设。
 
 ---
 

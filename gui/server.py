@@ -1667,6 +1667,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             out["model"] = ag.llm.model
             # 分支树（多代理）：给前端画「谁派的、谁查的、什么结论」
             out["branches"] = [b.to_dict() for b in run_obj.branches]
+            # 阶段契约（core/pipeline.py）：每个阶段的状态码 + gate 产物。
+            # 契约判定失败时是空 dict——不影响主链路，答案照样给。
+            out["contract"] = run_obj.contract or {}
             # 兼容旧字段：前端老组件读 facts/citations
             out["facts"] = []
             out["citations"] = []
@@ -1681,6 +1684,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     "steps": out.get("steps", []),
                     "evidence": out.get("evidence", []),
                     "branches": out.get("branches", []),
+                    # 阶段契约一起落盘：回看历史时能看到「当时哪些阶段过了、
+                    # 哪些没过、哪些禁止项被违反」——不是只有一段答案文本
+                    "contract": out.get("contract", {}),
                     "tokens": out.get("tokens", 0),
                     "cost": out.get("cost", 0),
                     "model": out.get("model"),

@@ -1,0 +1,45 @@
+{
+  "title": "迭代 7：洞察阶段契约（status code + gate 产物 + forbidden 清单 + 机械摘要）",
+  "level": "L5",
+  "date": "2026-11-02",
+  "commit": "PENDING",
+  "claims": [
+    { "text": "契约随答案一起返回：真实洞察跑完后 result.contract 含四个阶段（scope/probe/read/verify），非空非占位", "level": "L5" },
+    { "text": "status code 带机器可判的推进条件：每个阶段有 code/label/okToProceed，顶层有 okToProceed 布尔", "level": "L5" },
+    { "text": "每阶段一个 gate 产物：gates 数量与阶段数一致，含 stage/statusCode/summary/okToProceed", "level": "L5" },
+    { "text": "机械摘要无叙述：gate summary 格式为 stage=… status=… calls=/evidence=/quotes=/numbers=/unsourced=，不含中文叙述词", "level": "L5" },
+    { "text": "forbidden 四条全部程序化判定，每条有 id/text/violated，违规的必须带可复现 detail", "level": "L2" },
+    { "text": "落盘带契约：~/.mosu/runs/*.json 里的 record 含 contract，回看历史能看到当时的判定", "level": "L5" },
+    { "text": "前端真渲染：洞察页出现阶段带，四个阶段行各带 data-status-code 与 data-ok-to-proceed，机械摘要可见", "level": "L5" },
+    { "text": "三态用 class 区分（bad / skip），不只靠颜色；未通过时警告文案取自后端 hint，前端不自己编", "level": "L3" },
+    { "text": "契约判定顺序铁律：先判契约再拼审计提示——反了会让契约拿提示文本里的数字自证", "level": "L2" },
+    { "text": "契约判定失败不连带整轮失败（try/except 兜底成空契约，答案照样给）", "level": "L2" },
+    { "text": "契约判定是纯函数：不修改传入的 run，不碰数据库，只依据已发生的事实", "level": "L2" },
+    { "text": "core/pipeline.py 零外部依赖，不 import core.dataset（契约只判定，不查询）", "level": "L1" },
+    { "text": "既有 _audit_numbers 行为未变（提示仍拼在答案后，8 处既有测试引用全部通过）", "level": "L2" },
+    { "text": "反向验证：8 条纪律逐条破坏，破坏实现后测试真的会红（含 1 条单测抓不到、只有端到端能抓的）", "level": "L2" }
+  ],
+  "not_run": [
+    "每阶段绑定不同模型（Lancer 的 stage.model + handoff 的 distinct_configured_model）——本轮只抄契约层，模型分工留给迭代 8",
+    "CLI 侧（mosu insight 之类）输出阶段契约——本轮只做了 GUI 入口与 core 模块，CLI 未暴露契约",
+    "契约判定失败时的前端表现——已用 except 兜底，但未在真机里构造「pipeline.evaluate 抛异常」验证界面不白屏",
+    "阶段带在浅色主题下的配色对比度——本轮只在暗色主题下验过",
+    "Windows 显示缩放 150% 下的阶段带排版——只验了 100% 缩放",
+    "契约判定在 231k 条消息全量库上的耗时——本次真机跑的是单会话小范围，未做全量压测",
+    "多代理分支（delegate_tasks）场景下的阶段归类——子代理的工具调用会混进主轨迹，本轮未构造多分支真实场景",
+    "落盘历史回看界面上展示阶段契约——contract 已写进落盘文件，但历史详情面板还没渲染它",
+    "forbidden 第 4 条（引用具体话语但没读过原文）的召回率——判定逻辑有单测，但未在真实语料上评估误报率"
+  ],
+  "evidence": [
+    "core/pipeline.py",
+    "core/agent_engine.py",
+    "gui/server.py",
+    "gui/assets/v2/views-insight.js",
+    "gui/assets/v2/app.css",
+    "tests/test_pipeline.py",
+    "tests/test_pipeline_wiring.py",
+    "tests/test_contract_render.py",
+    "tests/e2e/lancer/e2e_iter7.py",
+    "docs/benchmark-lancer.md"
+  ]
+}
