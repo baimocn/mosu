@@ -1,0 +1,30 @@
+{
+  "title": "迭代 3：外部派活通道（mosu dispatch）",
+  "level": "L5",
+  "date": "2026-11-02",
+  "commit": "6001052",
+  "claims": [
+    { "text": "mosu dispatch send --wait 返回 841 字真答案，含 10 条证据表格，耗时 24 秒", "level": "L5" },
+    { "text": "忙时 send → 返回 BUSY 错误码 + 提示改用 queue/steer", "level": "L5" },
+    { "text": "忙时 queue → 排队位置 1，当前轮跑完自动接上并真跑完（24 秒）", "level": "L5" },
+    { "text": "忙时 steer → 引导指令真的进了 Agent 上下文（落盘 step 里查到 tool=steer），不是只存起来", "level": "L5" },
+    { "text": "无 token 时鉴权被拒，CLI 退出码非 0", "level": "L5" },
+    { "text": "真 socket 真 HTTP 的协议收发（8 个结构化错误码、常量时间 token 比较、1 MiB body 限流）", "level": "L3" },
+    { "text": "CLI 退出码契约：命令用返回值表达失败时必须转成进程退出码（排除 bool）", "level": "L2" },
+    { "text": "历史列表按内容里的 createdAt 排序（不是按文件名约定）", "level": "L2" }
+  ],
+  "not_run": [
+    "并发多客户端同时派活——只验了单客户端串行派活，没验 10 个客户端同时打通道",
+    "派活通道的跨机器访问——设计上只绑 127.0.0.1，没在局域网场景测过",
+    "令牌轮换机制——令牌是启动时生成后固定，没实现也没测轮换",
+    "派活任务的取消/中止——协议里有 wait/send/queue/steer，没有 cancel 语义，未验",
+    "长队列（积压 100 条）的排队顺序公平性——只验过排队位置 1",
+    "Windows 上非 localhost 网卡地址的绑定拒绝——未构造"
+  ],
+  "evidence": [
+    "tests/e2e/lancer/e2e_iter3.py",
+    "core/dispatch.py",
+    "core/dispatch_server.py",
+    "tests/test_dispatch.py"
+  ]
+}

@@ -144,7 +144,7 @@ Lancer 的核心不等式，逐条抄：
 | **2** | 洞察事件流 SSE 通道，替代 900ms 轮询；分支树落盘 `~/.mosu/runs/`；洞察历史可回看 | 前端实时看到子代理进度；重启后分支树可重建 | ✅ 完成（commit `a461c14`） |
 | **3** | 外部派活通道（本地 socket + token，`queue`/`steer`）；`mosu dispatch` CLI | 外部 CLI 能派活给运行中的墨溯 GUI，并等结果 | ✅ 完成 |
 | **4** | 分支可视化（树 → 语义锚点光线）；多模型目录 | 颜色按泳道继承；锚点缺失不乱飞 | 🔄 进行中（可视化 ✅ 完成；多模型目录未开始） |
-| **5** | 验证文档升级为 6 级证据分级 | 每份报告明确列「哪些没跑」 | ⬜ 未开始 |
+| **5** | 验证文档升级为 6 级证据分级 | 每份报告明确列「哪些没跑」 | ✅ 完成 |
 
 ### 迭代 1 实测记录（补充）
 
@@ -250,9 +250,82 @@ Lancer 用 React + SVG 库，墨溯零构建原生 JS，所以曲线用原生 SV
 - 把 rAF 持续重算改成空函数 → 3 例变红
 - 恢复后 33 例全绿
 
-**新增的离线前端渲染测试** `tests/test_branch_tree_render.py`（10 例）：
+**新增的离线前端渲染测试** `tests/test_branch_tree_render.py`（11 例）：
 用**固定数据**挂载真实组件（真浏览器），不跑模型、不依赖 GUI 服务，14 秒跑完。
 这样以后改前端能秒级回归，而不是每次都等一次真机提问。
+
+---
+
+## 迭代 5 实测记录（验证纪律：6 级证据分级）
+
+**研读来源**：Lancer 的 `.agents/skills/verify-pi-gui/SKILL.md`（92 行）、
+`features/README.md`（验证特性地图）、`docs/ci-baseline.md`、
+`docs/release-readiness.md`、`docs/platform-validation.md`、根 `AGENTS.md`。
+
+Lancer 的核心资产不是代码，是**一整套关于「什么才算验证过了」的纪律**。
+抄过来的 4 条：
+
+1. **桌面活儿没在真 Electron 面上验过，就不算做完**
+   （原话：Desktop work is not done until it is verified on the real Electron
+   surface, not only by unit tests）
+2. **一次设置页 smoke 不等于对话能用**
+   （原话：A settings smoke does not establish a working conversation）
+3. **平台验证要写明「这一轮没验什么」**——
+   `platform-validation.md` 的 Windows 一栏原文：
+   「Build/test configuration is present. ｜ **No native Windows acceptance in this round.**」
+4. **每个 feature 的覆盖状态由实际跑过的 checkpoint 决定，不由 map 决定**
+   （原话：A map is coverage intent, not a list of passed tests）
+
+墨溯版落地：
+
+- `docs/verification.md` —— 6 级证据分级（L1 静态 → L6 真机全链路）+
+  每级「能证明什么 / 不能证明什么」+ 硬规则
+- `core/verify_report.py` —— **机器可检查**的报告校验器（纯标准库）
+- `docs/verification/*.json` —— 前四轮的结构化验证报告（4 份）
+- `tests/e2e/lancer/` —— 4 个迭代验证脚本**入库** + 索引 README
+
+**核心规则（用代码锁死，不靠自觉）**：
+1. `not_run` 字段**必须存在**——字段缺失 = 报告不合格（沉默 = 假装全验了）
+2. `level` **不得高于** claims 能支撑的强度（防虚报证据等级）
+3. `not_run` 不能是空话（「其他场景未验证」这种范围无法界定的必须拒）
+4. `evidence` 里的入库路径必须真的存在
+
+**用新纪律反过来审计前四轮，抓出一个真缺口**：
+迭代 1 交付的「多代理并行」当时只在**真实数据 + 脚本**层面验过（L4），
+从没在真机上独立验过这个功能本身（L5）。
+迭代 4 的端到端覆盖的是「分支树这个视图」，不是「多代理并行这个能力」——
+两码事。按「L4 不能替代 L5」，这是实打实的缺口。
+
+**补测结果**（真机、真模型、真数据）：
+- 3 条泳道 / 3 个子代理 / 3 份互相独立的结论（各查各的对象）
+- 洞察页明示「它派了 3 个子代理去查」
+- **并行收益实测**：子代理耗时合计 162s，实际墙钟 36.1s（**4.5x**）
+- console 0 错误 → **10/10 通过**，迭代 1 报告升到 L5
+
+**测试抓出 1 个真 bug（关于测试本身）**：
+反向验证时发现「去掉 `not_run` 必填检查 → 测试仍全绿」。
+根因：`not_run` 的**类型检查**（不是数组就拒）把「缺字段」也拦下了，
+两条检查互相掩盖 → **必填检查坏掉时测不出来**。
+修法：① 缺字段与类型错报**不同的原因**（`缺必填字段` vs `必须是数组`）；
+② 测试断言的是**具体那条原因**，不只断言「被拒了」。
+
+这个坑和迭代 4 那个「连线数为 0 时断言空跑通过」是同一类：
+**断言必须在正确的层面失败，否则它一直在假装工作。**
+
+**反向验证**（4 条规则逐条破坏）：
+- 去掉 `not_run` 必填检查 → **2 例变红**
+- 去掉虚报等级检查 → **2 例变红**
+- 去掉空话检查 → **2 例变红**
+- 去掉 evidence 存在性检查 → **1 例变红**
+
+**验证**：
+- 校验器测试 **38 例全绿**（含 4 条反向验证）
+- 仓库里 4 份报告全部通过校验器
+  （`test_all_committed_reports_pass` 把这条接进回归）
+- 全量回归 831 → **885 passed / 16 skipped / 0 failed**
+
+**副作用**：把验证脚本从 `.cache/audit/`（gitignored）搬进 `tests/e2e/lancer/`，
+换人接手能复现验证；报告的 `evidence` 指向入库路径，读者可核对。
 
 ---
 

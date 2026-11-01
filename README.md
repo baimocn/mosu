@@ -103,6 +103,9 @@ python cli/mosu.py sessions
   `queue` 排队等当前这轮跑完、`steer` 把补充指令递进正在跑的那轮；
   token 鉴权 + 常量时间比较，通道只监听 127.0.0.1
 - **离线情感分析**：内置中文情感词典 + 否定/程度规则，不调任何外部 API
+- **验证纪律**：6 级证据分级（L1 静态 → L6 真机全链路），每份验证报告**必须**
+  列出「哪些没跑」——`docs/verification.md` 有完整规则，
+  `python -m core.verify_report --dir docs/verification/` 机器校验，缺字段直接拒
 
 ## 安装
 
@@ -117,7 +120,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，847 例）：
+测试（全离线，885 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -367,7 +370,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（847 例）
+tests/                 离线测试（885 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -380,7 +383,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（847 例）
+- [x] 离线测试套件（885 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -474,7 +477,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (847 cases)
+tests/          offline test suite (885 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

@@ -1,0 +1,27 @@
+{
+  "title": "迭代 2：SSE 实时进度流 + 洞察历史落盘回看",
+  "level": "L5",
+  "date": "2026-11-02",
+  "commit": "a461c14",
+  "claims": [
+    { "text": "SSE 首事件延迟 0.00s，step 增量陆续到达（2.38s → 6.99s），done 在 11.02s", "level": "L5" },
+    { "text": "落盘答案与 SSE 推送结果逐字一致", "level": "L4" },
+    { "text": "Playwright 真机点提问 2.0 秒就看到实时轨迹，console 0 错误", "level": "L5" },
+    { "text": "历史面板列出 17 条记录，展开详情正常", "level": "L5" },
+    { "text": "SSE 不可用时自动降级轮询，结果一样完整", "level": "L3" },
+    { "text": "事件流状态机与心跳机制（离线可测部分）", "level": "L2" }
+  ],
+  "not_run": [
+    "SSE 断线重连（网络抖动/代理切断）——只测了「SSE 不可用→降级轮询」，没测中途断开后重连续传",
+    "同时开多个浏览器标签页看同一条洞察流——未测多客户端订阅同一 run",
+    "历史记录超过 100 条时的裁剪行为——_trim 有上限但未实测到上限",
+    "历史回看里点开证据原文的滚动定位——只验了展开详情能渲染",
+    "落盘目录被外部程序改动（文件被删/写坏）时的容错——list_runs 会跳过读不出 JSON 的文件，但未实测"
+  ],
+  "evidence": [
+    "tests/e2e/lancer/e2e_iter2.py",
+    ".cache/audit/probe_iter2_ui.py",
+    "core/runs.py",
+    "tests/test_gui_iter2_routes.py"
+  ]
+}

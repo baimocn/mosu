@@ -1,0 +1,34 @@
+{
+  "title": "迭代 4：分支树可视化（泳道 + 语义锚点光线）",
+  "level": "L5",
+  "date": "2026-11-02",
+  "commit": "af8301a",
+  "claims": [
+    { "text": "3 个顶层子代理各占一条泳道，颜色互不相同（#3b82f6 / #a855f7 / #06b6d4）", "level": "L5" },
+    { "text": "泳道颜色继承到节点边框，孙节点继承父泳道色（rgb(59,130,246) 等）", "level": "L5" },
+    { "text": "隐藏一个节点 → 只有连到它的线消失，其他线原封不动（4 条 → 3 条）", "level": "L5" },
+    { "text": "全部节点隐藏 → 一条线都不剩（4 条 → 0 条）", "level": "L5" },
+    { "text": "布局变化（节点文案拉长）后曲线端点跟着移动", "level": "L5" },
+    { "text": "虚拟根水平居中（中心偏移 < 2px）", "level": "L5" },
+    { "text": "模板编译通过、组件注册接线正确、纪律代码存在（静态检查）", "level": "L1" },
+    { "text": "3 泳道 / 4 节点 / 4 条边的渲染结果（固定数据 + 真浏览器，离线不依赖 GUI 服务）", "level": "L3" },
+    { "text": "后端 lane/laneColor 下发正确、parent 优先继承泳道", "level": "L2" }
+  ],
+  "not_run": [
+    "多模型目录（Lancer 9 家族）——迭代 4 的另一半，本轮未开始",
+    "分支树在浅色主题下的配色对比度——本轮只验了暗色主题",
+    "Windows 显示缩放 150% 下的曲线端点精度——本轮只验了 100% 缩放",
+    "超过 8 条泳道时的调色板循环行为——调色板是 8 色取模，兄弟分支超过 8 个时会撞色，未实测",
+    "分支树在「子代理的子代理」跑失败时的视觉表现——孙分支失败态的连线未构造过",
+    "跨会话回看历史时分支树能否重建——迭代 2 验过历史落盘，但没验历史里的分支树渲染"
+  ],
+  "evidence": [
+    "tests/e2e/lancer/e2e_iter4.py",
+    ".cache/audit/v2/iter4-tree.png",
+    ".cache/audit/probe_bt3.py",
+    ".cache/audit/probe_bt3.html",
+    ".cache/audit/v2/probe-bt3-final.png",
+    "tests/test_branch_tree.py",
+    "tests/test_branch_tree_render.py"
+  ]
+}
