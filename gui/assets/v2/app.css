@@ -290,6 +290,39 @@
 .v2-note.danger { border-left-color: var(--danger); background: var(--danger-soft); }
 .v2-note.ok { border-left-color: var(--success); background: var(--success-soft); }
 
+/* 阶段模型配置（迭代 8）
+   —— 取证 / 成文两个角色，各选一个模型。 */
+.v2-sm-row {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3);
+}
+.v2-sm-card {
+  flex: 1 1 260px; min-width: 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+}
+.v2-sm-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  margin-bottom: 2px;
+}
+.v2-sm-label {
+  font-size: var(--fs-13); font-weight: 600; color: var(--text-1);
+}
+.v2-sm-model {
+  font-family: var(--font-mono); font-size: var(--fs-11); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.v2-sm-meta {
+  font-size: var(--fs-11); color: var(--text-4); margin-bottom: var(--sp-2);
+}
+.v2-sm-ops {
+  display: flex; gap: var(--sp-2); align-items: center;
+}
+.v2-sm-select {
+  flex: 1 1 auto; min-width: 0;
+}
+
 /* 骨架屏 */
 .v2-skel {
   background: var(--skeleton);
@@ -1070,6 +1103,30 @@
   font-weight: 600; margin-bottom: 2px;
 }
 .v2-ia-contract-forbid-row { line-height: 1.7; }
+
+/* 交叉核验（对标 Lancer handoff 边的 distinct_configured_model 谓词）
+   —— 答案由谁写的、跟查数据的是不是同一个模型。
+   放在契约块下面：它是契约的一部分，但讲的是「模型」不是「环节」。 */
+.v2-ia-crossmodel {
+  margin-top: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  border-left: 2px solid var(--text-4);
+}
+.v2-ia-crossmodel.on { border-left-color: var(--success); }
+.v2-ia-crossmodel-body {
+  display: flex; flex-wrap: wrap; gap: var(--sp-4);
+  font-size: var(--fs-12); color: var(--text-2);
+}
+.v2-ia-crossmodel-item b {
+  font-family: var(--font-mono); font-weight: 600; color: var(--text-1);
+}
+.v2-ia-crossmodel-note {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-12); color: var(--warn);
+  line-height: 1.7;
+}
 
 /* 工具调用轨迹 —— Agentic 的可信度来源 */
 .v2-ia-steps {

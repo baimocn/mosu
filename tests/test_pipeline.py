@@ -26,9 +26,10 @@ def _run(**kw):
 
 
 class TestStageDefinitions(unittest.TestCase):
-    def test_four_stages_with_required_flags(self):
+    def test_five_stages_with_required_flags(self):
+        """迭代 8 加了 compose（成文）阶段 —— 4 个工具阶段 + 1 个模型阶段。"""
         ids = [s["id"] for s in pipeline.STAGES]
-        self.assertEqual(ids, ["scope", "probe", "read", "verify"])
+        self.assertEqual(ids, ["scope", "probe", "read", "verify", "compose"])
 
     def test_probe_and_verify_are_required(self):
         """关键阶段：probe（取数）与 verify（核验）必须有值。"""
@@ -226,12 +227,13 @@ class TestGates(unittest.TestCase):
 
 
 class TestForbidden(unittest.TestCase):
-    def test_all_four_rules_present(self):
+    def test_all_five_rules_present(self):
         ids = [f["id"] for f in pipeline.FORBIDDEN]
         self.assertEqual(ids, ["no_number_without_source",
                                 "no_stat_as_quote",
                                 "no_answer_without_evidence",
-                                "no_quote_without_read"])
+                                "no_quote_without_read",
+                                "no_self_review"])
 
     def test_unsourced_number_violates(self):
         r = pipeline.evaluate(_run(

@@ -196,6 +196,48 @@
                 </p>
                 <model-picker mode="full"></model-picker>
               </div>
+
+              <!-- 阶段模型：取证 / 成文可绑不同模型（迭代 8） -->
+              <div class="v2-card">
+                <h2 class="v2-card-title">阶段模型</h2>
+                <p class="v2-card-desc" style="margin-bottom:14px">
+                  洞察问答分两步：<b>取证</b>（跑工具查数据）和<b>成文</b>（把证据写成答案）。
+                  默认两个都用当前模型。想让答案经过<b>第二个模型独立判断</b>，
+                  就给「成文模型」换一个不同的模型。
+                  两者相同等于没换——墨溯会明确告诉你，不会假装成交叉核验。
+                </p>
+
+                <div v-if="stageRoles && stageRoles.length" class="v2-sm-row">
+                  <div v-for="r in stageRoles" :key="r.role"
+                       class="v2-sm-card" :data-stage-role="r.role">
+                    <div class="v2-sm-head">
+                      <span class="v2-sm-label">{{ r.label }}</span>
+                      <span class="v2-sm-model">{{ r.model || '跟随当前模型' }}</span>
+                    </div>
+                    <div class="v2-sm-meta" v-if="r.endpointLabel">
+                      端点：{{ r.endpointLabel }}
+                    </div>
+                    <div class="v2-sm-ops">
+                      <select class="v2-input v2-sm-select"
+                              v-model="stageDraft[r.role]"
+                              :data-stage-select="r.role">
+                        <option value="">跟随当前模型</option>
+                        <option v-for="m in r.available" :key="m" :value="m">{{ m }}</option>
+                      </select>
+                      <button class="v2-btn sm" :disabled="stageBusy"
+                              @click="saveStage(r.role)">保存</button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="v2-hint">正在读取阶段模型配置…</div>
+
+                <div v-if="stageMsg" class="v2-note" style="margin-top:12px"
+                     :class="stageOk ? 'ok' : 'danger'">{{ stageMsg }}</div>
+                <div v-if="stageSame" class="v2-note warn" style="margin-top:12px">
+                  取证模型与成文模型是同一个 —— 这不构成交叉核验，
+                  等于同一个模型自己查自己确认。换个不同的模型才有效。
+                </div>
+              </div>
             </template>
           </div>
         </div>
@@ -230,6 +272,53 @@
       const wx = computed(() => (M.store.status && M.store.status.wechat) || {});
       const svc = computed(() => (M.store.status && M.store.status.service) || {});
       const llm = ref({ baseUrl: "", apiKey: "", model: "" });
+
+      // ---- 阶段模型（迭代 8）
+      const stageRoles = ref([]);
+      const stageDraft = ref({});
+      const stageMsg = ref("");
+      const stageOk = ref(false);
+      const stageBusy = ref(false);
+      // 取证与成文配成同一个模型 → 明确提示「这不算交叉核验」
+      const stageSame = computed(() => {
+        const c = (stageDraft.value || {}).collect || "";
+        const w = (stageDraft.value || {}).write || "";
+        return !!(c && w && c === w);
+      });
+      async function loadStage() {
+        try {
+          const d = await M.api.get("/api/stage-models");
+          stageRoles.value = (d && d.roles) || [];
+          const draft = {};
+          for (const r of stageRoles.value) {
+            draft[r.role] = r.model || "";
+          }
+          stageDraft.value = draft;
+        } catch (e) {
+          stageMsg.value = "读取失败：" + (e && e.message ? e.message : e);
+          stageOk.value = false;
+        }
+      }
+      async function saveStage(role) {
+        stageBusy.value = true;
+        stageMsg.value = "";
+        try {
+          const model = (stageDraft.value || {})[role] || "";
+          await M.api.post("/api/stage-models", {
+            models: { [role]: { model } },
+          });
+          await loadStage();
+          stageOk.value = true;
+          stageMsg.value = model
+            ? "已保存。下次洞察问答会用这个模型跑该阶段。"
+            : "已取消绑定，该阶段回到跟随当前模型。";
+        } catch (e) {
+          stageOk.value = false;
+          stageMsg.value = "保存失败：" + (e && e.message ? e.message : e);
+        } finally {
+          stageBusy.value = false;
+        }
+      }
 
       const mcpSnippet = computed(() => {
         const cfg = (M.store.mcpConfig) || {};
@@ -466,6 +555,9 @@
         }
         await loadMcp();
         if (tab.value === "channel") loadLogs();
+        // 阶段模型配置：模型 tab 用得上，但别的 tab 也先读一次
+        // （用户可能在任意 tab 进来，切到模型 tab 时数据已经在）
+        loadStage();
       });
 
       return {
@@ -475,6 +567,9 @@
         saveKeys, selftest, useAccount, removeAccount, addAccount,
         startLogin, pollOnce, wxAction, loadLogs, loadMcp, mcpSelftest,
         copySnippet, saveLlm, M,
+        // 阶段模型（迭代 8）——模板里用到的都必须 return，否则 xxx is not a function
+        stageRoles, stageDraft, stageMsg, stageOk, stageBusy, stageSame,
+        loadStage, saveStage,
         fmtTime: M.fmtTime,
       };
     },

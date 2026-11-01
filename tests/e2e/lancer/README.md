@@ -25,6 +25,12 @@ python cli/mosu.py gui --port 8788 --no-browser
 | `e2e_iter4.py` | 迭代 4 分支树 | **L5** | 3 泳道 3 根连线、颜色继承、**锚点缺失不乱飞**、console 0 错误 |
 | `e2e_iter6.py` | 迭代 6 模型目录 | **L5** | **模型名优先于 provider** 归类、三态真实存在、切换模型下游真的生效、旧配置继续可用、前端家族条真渲染 |
 | `e2e_iter7.py` | 迭代 7 阶段契约 | **L5** | 契约随答案返回、status code 带 okToProceed、每阶段一个 gate、机械摘要无叙述、forbidden 逐条判定、落盘带契约、前端阶段带三态可区分 |
+| `e2e_iter8.py` | 迭代 8 阶段模型路由 | **L5** | 不配置时行为一字不变、**真跑两个不同模型**成文生效、`distinct_configured_model` 谓词成立、同名时明确点破、成文答案带「依据」标记、落盘带 modelRouting、前端交叉核验块与设置页真渲染 |
+
+> 迭代 8 的脚本有个特别要求：网关的模型列表里必须同时有
+> `deepseek-v4.1-flash` 与 `glm-5.3`（两个不同家族）。
+> 缺了就明确跳过（退出码 2），**不伪装通过**——
+> mock 造出工具结果就能让判定过，但那不叫交叉核验。
 
 ## 跑法
 
@@ -35,6 +41,7 @@ python tests/e2e/lancer/e2e_iter3.py
 python tests/e2e/lancer/e2e_iter4.py
 python tests/e2e/lancer/e2e_iter6.py
 python tests/e2e/lancer/e2e_iter7.py
+python tests/e2e/lancer/e2e_iter8.py
 ```
 
 退出码：`0` 全通过；`1` 有断言失败。

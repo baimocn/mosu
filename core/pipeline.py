@@ -71,6 +71,9 @@ STAGES: tuple[dict[str, Any], ...] = (
         "goal": "确认这次问的是谁、哪段时间",
         # 没有这一步的阶段状态只能是 skipped（不阻断）
         "required": False,
+        # source=tool：这个阶段由工具调用产生
+        # source=model：这个阶段由模型产生（成文）
+        "source": "tool",
     },
     {
         "id": "probe",
@@ -78,6 +81,7 @@ STAGES: tuple[dict[str, Any], ...] = (
         "actor": "local",
         "goal": "取到统计与检索结果",
         "required": True,
+        "source": "tool",
     },
     {
         "id": "read",
@@ -85,6 +89,7 @@ STAGES: tuple[dict[str, Any], ...] = (
         "actor": "local",
         "goal": "读到消息原文，供引语落地",
         "required": False,
+        "source": "tool",
     },
     {
         "id": "verify",
@@ -92,6 +97,22 @@ STAGES: tuple[dict[str, Any], ...] = (
         "actor": "local",
         "goal": "核对答案里的数字有没有出处",
         "required": True,
+        "source": "tool",
+    },
+    {
+        # 成文阶段：唯一一个 source=model 的阶段。
+        #
+        # 为什么加它：Lancer 的 handoff 边谓词 `distinct_configured_model`
+        # 要求**交付阶段用与上游不同的模型**。墨溯没多步流水线，
+        # 但有同一个盲区——取证和下结论是一个模型，它自己查的数据
+        # 自己确认，自己没法质疑自己。这个阶段把「成文」拆出来，
+        # 让成文模型只看证据（不看取证者的自述）独立下结论。
+        "id": "compose",
+        "label": "答案成文",
+        "actor": "local",
+        "goal": "由成文模型基于证据独立写出答案",
+        "required": False,
+        "source": "model",
     },
 )
 
@@ -171,7 +192,31 @@ STATUS_CODES: dict[str, dict[str, Any]] = {
         "ok_to_proceed": True,
         "hint": "并行子任务没跑成，主代理改用自己查——不影响结论。",
     },
+    # 成文模型调用失败（已退回取证模型自己写的答案）
+    "COMPOSE_FAILED": {
+        "label": "成文失败",
+        "ok_to_proceed": True,
+        "hint": "成文模型没跑通，已退回取证模型自己写的答案——交叉核验这一轮没做成。",
+    },
 }
+
+
+# ------------------------------------------------------------------ 边谓词
+
+# Lancer 的 `hard_edges` / `optional_edges` 里每条边都带**谓词**，
+# 比如 handoff 那条：`verified_spec_sha256 && verified_frame_references &&
+# distinct_configured_model`。
+#
+# 墨溯对应的那条谓词就是 `distinct_configured_model`：
+# **成文用的模型必须与取证用的模型不同**——否则等于自己审自己的卷。
+# 谓词不满足时，optional edge 不触发（跟 Lancer 一样：默认跳过，不阻断）。
+PREDICATES: tuple[dict[str, str], ...] = (
+    {
+        "id": "distinct_configured_model",
+        "text": "成文模型必须与取证模型不同",
+        "why": "同一个模型查的数据自己确认、自己写结论，等于自己给自己签字。",
+    },
+)
 
 
 # ------------------------------------------------------------------ 禁止清单
@@ -201,6 +246,12 @@ FORBIDDEN: tuple[dict[str, str], ...] = (
         "text": "引用具体话语前必须读过原文",
         "why": "只拿到统计就脑补「他当时说」，检索只给线索，不给定论。",
     },
+    {
+        "id": "no_self_review",
+        "text": "成文模型不能与取证模型是同一个",
+        "why": "自己查的数据自己确认、自己写结论，等于自己给自己签字——"
+               "这正是 Lancer 的 distinct_configured_model 谓词要防的事。",
+    },
 )
 
 
@@ -228,11 +279,12 @@ def _mechanical_summary(stage_id: str, status: str, facts: dict[str, Any]) -> st
     抄 Lancer 的原注释：*"One short line of ids, paths, hashes, and
     status codes. No narrative and no media bytes."*
 
-    只放标识、数量、状态码——**不放叙述**。
+    只放标识、数量、状态码、模型名——**不放叙述**。
     叙述由模型的 summary 字段负责，这里不重复。
     """
     bits = [f"stage={stage_id}", f"status={status}"]
-    for key in ("calls", "evidence", "quotes", "numbers", "unsourced"):
+    for key in ("calls", "evidence", "quotes", "numbers", "unsourced",
+                "collectModel", "writeModel", "model", "distinct"):
         if key in facts:
             bits.append(f"{key}={facts[key]}")
     return " ".join(bits)
@@ -338,6 +390,43 @@ def evaluate(run: dict) -> dict[str, Any]:
         "facts": {"numbers": numbers, "unsourced": len(unsourced)},
     }
 
+    # compose：成文阶段（唯一的 source=model 阶段）。
+    #
+    # 判定依据是「这一轮实际用了哪些模型」——
+    # 入参里有一个 modelRouting 键，内容形如：
+    #   {"collectModel": "glm-5",         # 取证（跑 ReAct 循环）的模型
+    #    "writeModel":   "deepseek-chat", # 成文的模型（没配就是空串）
+    #    "distinct":     true,            # 两个模型是否真的不同
+    #    "applied":      true}            # 成文是否真的执行了
+    #
+    # 没配成文模型 → SKIPPED（不阻断，回到迭代 7 的行为）。
+    # 配了但与取证模型相同 → 也 SKIPPED，但**要挂 forbidden**：
+    #   这是 Lancer 的 distinct_configured_model 谓词要拦的事。
+    routing = run.get("modelRouting") or {}
+    collect_model = str(routing.get("collectModel") or "")
+    write_model = str(routing.get("writeModel") or "")
+    distinct = bool(routing.get("distinct"))
+    applied = bool(routing.get("applied"))
+    if not write_model:
+        compose_state = _status("SKIPPED")
+        compose_facts = {"collectModel": collect_model or "(未记录)"}
+    elif not distinct:
+        compose_state = _status("SKIPPED")
+        compose_facts = {"collectModel": collect_model or "(未记录)",
+                         "writeModel": write_model}
+    elif not applied:
+        compose_state = _status("COMPOSE_FAILED")
+        compose_facts = {"collectModel": collect_model or "(未记录)",
+                         "writeModel": write_model, "distinct": distinct}
+    else:
+        compose_state = _status("OK")
+        compose_facts = {"collectModel": collect_model or "(未记录)",
+                         "writeModel": write_model, "distinct": distinct}
+    stage_states["compose"] = {
+        "status": compose_state,
+        "facts": compose_facts,
+    }
+
     # ---- 组装阶段列表 + gate 产物 ----------------------------------
     stages_out: list[dict[str, Any]] = []
     gates: list[dict[str, Any]] = []
@@ -380,12 +469,29 @@ def evaluate(run: dict) -> dict[str, Any]:
 
     ok = all(s["status"]["okToProceed"] for s in stages_out)
 
+    # 模型路由：取证模型 / 成文模型 / 是否不同 / 边谓词是否成立。
+    # 前端要显示「这轮答案是谁写的、跟查数据的是不是同一个模型」。
+    routing = run.get("modelRouting") or {}
+    cross_model = {
+        "collectModel": routing.get("collectModel") or "",
+        "writeModel": routing.get("writeModel") or "",
+        "distinct": bool(routing.get("distinct")),
+        "applied": bool(routing.get("applied")),
+        "composeError": routing.get("composeError") or "",
+        # 边谓词：distinct_configured_model（对标 Lancer handoff 边）
+        "predicate": "distinct_configured_model",
+        "predicateSatisfied": bool(routing.get("distinct")
+                                   and routing.get("applied")),
+    }
+
     return {
         "stages": stages_out,
         "gates": gates,
         "forbidden": forbidden,
         "checks": checks,
         "okToProceed": ok,
+        # 模型路由 / 交叉核验
+        "crossModel": cross_model,
         # 供 GUI 一行渲染用
         "summary": " | ".join(
             f"{s['id']}:{s['status']['code']}" for s in stages_out),
@@ -436,6 +542,22 @@ def _check_forbidden(run: dict, steps: list[dict], evidence: list[dict],
         mentions_quote and not has_quote,
         ("答案提到具体话语但没有原文证据" if (mentions_quote and not has_quote)
          else ""))
+
+    # ⑤ 自审（成文模型 == 取证模型）
+    #    对应 Lancer handoff 边的谓词 `distinct_configured_model`。
+    #
+    #    判据只有一种：**配了成文模型，且它与取证模型同名**。
+    #    「没配成文模型」不算违规——那是用户选择单模型模式，
+    #    不是「配置错了」。但「配了却和取证模型一样」是白配：
+    #    以为自己开了交叉核验，其实没有。必须点破。
+    routing = run.get("modelRouting") or {}
+    wm = str(routing.get("writeModel") or "")
+    cm = str(routing.get("collectModel") or "")
+    if wm and cm and wm == cm:
+        _mk(specs["no_self_review"], True,
+            f"成文模型与取证模型都是 {wm}，不构成交叉核验")
+    else:
+        _mk(specs["no_self_review"], False, "")
 
     return checks
 

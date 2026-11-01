@@ -203,6 +203,37 @@
             </div>
           </div>
 
+          <!-- 交叉核验：答案由谁写的、跟查数据的是不是同一个模型 -->
+          <div v-if="t.contract && t.contract.crossModel
+                    && t.contract.crossModel.collectModel"
+               class="v2-ia-crossmodel"
+               :class="{on: t.contract.crossModel.predicateSatisfied}"
+               :data-predicate="t.contract.crossModel.predicate"
+               :data-predicate-satisfied="String(t.contract.crossModel.predicateSatisfied)">
+            <div class="v2-ia-steps-head">
+              <span class="v2-ia-steps-title">交叉核验</span>
+              <span class="v2-ia-steps-count">
+                {{ t.contract.crossModel.predicateSatisfied ? '已生效' : '未生效' }}
+              </span>
+            </div>
+            <div class="v2-ia-crossmodel-body">
+              <span class="v2-ia-crossmodel-item">
+                取证：<b>{{ t.contract.crossModel.collectModel }}</b>
+              </span>
+              <span class="v2-ia-crossmodel-item">
+                成文：<b>{{ t.contract.crossModel.writeModel || '（未配置）' }}</b>
+              </span>
+            </div>
+            <div v-if="t.contract.crossModel.composeError"
+                 class="v2-ia-crossmodel-note">
+              {{ t.contract.crossModel.composeError }}
+            </div>
+            <div v-else-if="!t.contract.crossModel.distinct"
+                     class="v2-ia-crossmodel-note">
+              取证与成文是同一个模型 —— 相当于自己查自己确认，不构成交叉核验。
+            </div>
+          </div>
+
           <!-- 工具轨迹（完成后仍展示，这是可信度的来源） -->
           <div v-if="t.steps && t.steps.length" class="v2-ia-steps done">
             <div class="v2-ia-steps-head">

@@ -230,6 +230,209 @@ def load_model_catalog() -> dict:
     return build_catalog(eps, patterns, active_ep, active_model)
 
 
+# --------------------------------------------------------------------------
+# 阶段模型（迭代 8）
+# --------------------------------------------------------------------------
+#
+# Lancer 的 `LancerWorkflowStep.model?: {provider, modelId}`：
+# 阶段模型是**步骤上可选的绑定**，不是流水线内置的。
+# 切换靠 `setSessionModel(provider, modelId)`，
+# 而 handoff 边的谓词 `distinct_configured_model` 要求
+# **交付阶段必须用与上游不同的模型**——防单一模型偏见。
+#
+# 墨溯没有多步流水线（ReAct 是自主循环），但有一处正对的盲区：
+# **取证和下结论是同一个模型**。它自己查的数据自己确认，
+# 自己没法质疑自己。Lancer 那条谓词正是治这个的。
+#
+# 所以墨溯只开两个角色（不是四个阶段各配一个模型——
+# 那样会变成固定管道，把自主性又绑回去）：
+#   collect —— 跑 ReAct 循环、查工具、收证据
+#   write   —— 基于已收集的证据写最终答案（**独立于采集者的自述**）
+#
+# 配置形态（~/.mosu/config.json 的 llm 段）：
+#     "stageModels": {
+#       "collect": {"model": "glm-5"},
+#       "write":   {"model": "deepseek-chat"},
+#       "write":   {"endpointId": "ep_x", "model": "deepseek-chat"}
+#     }
+#
+# **不配置 = 现在的行为，一字不差**（向后兼容是硬要求）。
+#
+# 端点优先级铁律：`MOSU_BOT_BASE_URL` 环境变量仍然压过一切。
+# 指定了 endpointId 但 env 也在 → **env 全赢**（baseUrl + apiKey 都用 env），
+# 只保留模型名。绝不出现「一半 env 一半文件」的混合配置——
+# 那种混合是最难排查的坑。
+
+STAGE_MODEL_ROLES = ("collect", "write")
+
+STAGE_ROLE_LABELS = {
+    "collect": "取证模型",
+    "write": "成文模型",
+}
+
+
+def load_stage_models() -> dict:
+    """读阶段模型配置。返回 {"collect": {...}, "write": {...}}（可能缺键）。"""
+    from core.dataset import load_keyvault
+    file_cfg = load_keyvault().get("llm") or {}
+    raw = file_cfg.get("stageModels")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for role in STAGE_MODEL_ROLES:
+        item = raw.get(role)
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("model") or "").strip()
+        eid = str(item.get("endpointId") or "").strip()
+        if not mid:
+            continue
+        out[role] = {"model": mid, "endpointId": eid}
+    return out
+
+
+def save_stage_models(models: dict) -> dict:
+    """写入阶段模型配置。空值 = 取消该角色的绑定。
+
+    **只写角色相关字段**，不动 endpoints / activeEndpoint 等其他键。
+    """
+    from core.dataset import load_keyvault, save_keyvault
+    data = load_keyvault()
+    cfg = dict(data.get("llm") or {})
+    cur = dict(cfg.get("stageModels") or {})
+    for role in STAGE_MODEL_ROLES:
+        item = (models or {}).get(role)
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("model") or "").strip()
+        eid = str(item.get("endpointId") or "").strip()
+        if not mid:
+            cur.pop(role, None)
+            continue
+        cur[role] = {"model": mid}
+        if eid:
+            cur[role]["endpointId"] = eid
+    cfg["stageModels"] = cur
+    cfg["savedAt"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    data["llm"] = cfg
+    save_keyvault(data)
+    return load_stage_models()
+
+
+def resolve_stage_model(role: str, include_key: bool = False) -> dict | None:
+    """解析某角色该用哪个模型。返回 None = 未配置（用活跃模型）。
+
+    返回 {"role","model","endpointId","label","baseUrl","apiKey"}。
+    include_key=False 时 apiKey 返回掩码（给前端展示用）。
+
+    优先级铁律：**env > 显式 endpointId > 活跃端点**。
+    env 存在时 baseUrl 与 apiKey **都**用 env，不做混合。
+    """
+    role = (role or "").strip()
+    if role not in STAGE_MODEL_ROLES:
+        return None
+    spec = load_stage_models().get(role)
+    if not spec:
+        return None
+
+    from core.dataset import load_keyvault
+    file_cfg = load_keyvault().get("llm") or {}
+
+    env_base = (os.environ.get("MOSU_BOT_BASE_URL") or "").strip()
+    env_key = (os.environ.get("MOSU_BOT_API_KEY") or "").strip()
+
+    if env_base or env_key:
+        # env 全赢（baseUrl + key 一起），只保留模型名
+        base = (env_base or DEFAULT_BASE_URL).rstrip("/")
+        key = env_key
+        eid = ""
+        label = "环境变量"
+    elif spec.get("endpointId"):
+        eps = load_endpoints()
+        target = next((e for e in eps if e["id"] == spec["endpointId"]), None)
+        if target is None:
+            # 端点不存在 → 不猜、不 fallback 到别的端点
+            # （落到别的端点 = 用错 Key 调错服务，报错还难看）
+            return None
+        base = target["baseUrl"]
+        key = target["apiKey"]
+        eid = target["id"]
+        label = target["label"] or target["id"]
+    else:
+        active = _active_flat(file_cfg)
+        # 活跃端点没有 → 回落到旧扁平字段（向后兼容硬要求）
+        base = active.get("baseUrl") or file_cfg.get("baseUrl") or DEFAULT_BASE_URL
+        key = active.get("apiKey") or file_cfg.get("apiKey") or ""
+        eid = str(file_cfg.get("activeEndpoint") or "").strip()
+        label = "默认端点"
+
+    return {
+        "role": role,
+        "model": spec["model"],
+        "endpointId": eid,
+        "label": label,
+        "baseUrl": base.rstrip("/"),
+        "apiKey": key if include_key else ("***" if key else ""),
+    }
+
+
+def stage_models_view() -> dict:
+    """给前端看的阶段模型视图（含每个角色的解析结果与可用模型列表）。
+
+    available 的来源（**必须包含该角色当前已保存的模型**）：
+      1. 所有 enabled 端点里的模型（并集，不只第一个端点）
+      2. 该角色已保存的模型本身
+
+    为什么第 2 条必须有：端点模型表通常是探测出来的，可能没覆盖用户
+    手工填的模型名；下拉里没有这一项 → `<option>` 缺失 →
+    v-model 绑定的值在 select 里显示不出来（用户以为没保存）。
+    """
+    from core.dataset import load_keyvault
+    eps = load_endpoints()
+    file_cfg = load_keyvault().get("llm") or {}
+    active_ep = str(file_cfg.get("activeEndpoint") or "").strip()
+    saved = load_stage_models()
+
+    # 所有 enabled 端点的模型并集
+    pool: list[str] = []
+    for e in eps:
+        if not e.get("enabled", True):
+            continue
+        for m in (e.get("models") or []):
+            if m and m not in pool:
+                pool.append(m)
+
+    out = {"roles": [], "configured": saved}
+    for role in STAGE_MODEL_ROLES:
+        resolved = resolve_stage_model(role)
+        models: list[str] = []
+        eid = (resolved or {}).get("endpointId") or ""
+        if eid:
+            target = next((e for e in eps if e["id"] == eid), None)
+            models = [m for m in (target or {}).get("models") or [] if m]
+        else:
+            models = list(pool)
+        # 端点没绑定时，也把活跃端点的模型补进来（扁平配置下 active_ep 为空，
+        # 但 legacy 合成端点的 models 里就有当前模型）
+        if not models and active_ep:
+            target = next((e for e in eps if e["id"] == active_ep), None)
+            models = [m for m in (target or {}).get("models") or [] if m]
+        # 该角色已保存的模型必须在列表里（否则 select 显示不出来）
+        cur = (resolved or {}).get("model") or ""
+        if cur and cur not in models:
+            models.insert(0, cur)
+        out["roles"].append({
+            "role": role,
+            "label": STAGE_ROLE_LABELS.get(role, role),
+            "model": cur,
+            "endpointId": eid,
+            "endpointLabel": (resolved or {}).get("label") or "",
+            "baseUrl": (resolved or {}).get("baseUrl") or "",
+            "available": models,
+        })
+    return out
+
+
 def load_llm_config(include_key: bool = False) -> dict:
     """读取生效配置。include_key=False 时不返回 apiKey 明文（给前端展示用）。
 

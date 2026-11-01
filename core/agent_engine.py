@@ -104,6 +104,55 @@ FINAL_HINT = """现在给出最终答案。
 - 不要再调工具，直接写答案。"""
 
 
+# 成文环节的指令。发给**成文模型**。
+#
+# 为什么成文模型看不到取证模型的自述
+# ----------------------------------
+# Lancer 的 handoff 边谓词是
+# `verified_spec_sha256 && verified_frame_references && distinct_configured_model`
+# —— 交付阶段读的是**上游的产物**（spec + manifest），
+# 不是上游模型的散文自述。
+#
+# 墨溯同理：成文模型拿到的是「取证过程留下的证据与工具返回」，
+# 不是取证模型写好的那段结论。少了这一步，
+# 就变成同一个模型自己查、自己确认、自己写——自己给自己签字。
+#
+# 所以下面的指令里明确写：**上面出现过的才算数，没出现过的不要采信**。
+COMPOSE_HINT = """【成文环节】
+
+上面是取证模型跑完工具调用后留下的**完整证据**（工具查了什么、返回了什么）。
+现在换你来写最终答案。
+
+要求：
+- **只用上面出现过的信息**。上面没有的数字、话语、结论，一律不许出现。
+  特别地：不要采信取证模型自己写的分析文字里那些没被工具返回支持的数字。
+- 每个结论后面标「（依据：<上面出现过的原话或数字>）」，照抄不要改写。
+- 说清你查了哪段时间、哪些会话、用的什么口径。
+- 开头一句话给结论，中文，口语化，不要报告腔、不要「综上所述」。
+- 某一部分上面没有证据，就直接说「没查到」，不要编一个像样的答案。
+- 不要调工具，直接写答案。"""
+
+
+# 成文模型看到的东西长什么样。
+#
+# 只有**工具返回**，没有取证模型的自述。
+# 这是 Lancer handoff 的做法（读上游产物，不读上游的散文），
+# 也是「不同模型交叉核验」的前提：
+# 让成文模型看到取证模型写好的结论，它就只会照抄，交叉核验就白搭了。
+COMPOSE_SYSTEM = """你是一位成文助手，负责把「取证助手」查到的证据写成最终答案。
+
+取证助手已经把该查的都查完了，证据在下面。**你看不到它自己写的分析**——
+这是故意的：你的价值在于独立判断，不是转述。
+
+规矩：
+1. **只用证据里有的**。证据里没有的数字、话语、结论，一律不许写。
+2. 数字**照抄**证据里的，不要自己算、不要改精度、不要四舍五入成另一个数。
+3. 引用话语必须来自证据里的原文，照抄原文，标上时间和说话人。
+4. 证据不足以支撑某个判断时，明说「这点证据不足」，不要补一个像样的说法。
+5. 说清查了哪段时间、哪些会话、用的什么口径。
+6. 中文，口语化，结论先行。不要「综上所述」「建议如下」这种报告腔。"""
+
+
 # 子代理专用提示词。父代理的提示词里有一大段「怎么跟用户说话」，
 # 子代理不需要（它不面向用户），但需要额外的两条：
 #   1. 只查这一个子任务，别顺手多查
@@ -153,6 +202,10 @@ class AgentRun:
         # 阶段契约判定结果（core/pipeline.py）。
         # 没有它就只是一段文本答案；有了它，每个阶段的状态码可机械核验。
         self.contract: dict = {}
+        # 模型路由记录（迭代 8）：这一轮实际用了哪些模型。
+        # collectModel = 跑 ReAct 循环的模型；writeModel = 写最终答案的模型。
+        # distinct = 两者是否真的不同（Lancer 的 distinct_configured_model 谓词）。
+        self.model_routing: dict = {}
 
     def to_dict(self) -> dict:
         return {
@@ -165,6 +218,8 @@ class AgentRun:
             "cost": round(time.time() - self.t0, 2),
             # 阶段契约：stages / gates / forbidden / okToProceed
             "contract": self.contract,
+            # 模型路由：取证模型 / 成文模型 / 是否不同
+            "modelRouting": self.model_routing,
         }
 
 
@@ -198,6 +253,92 @@ class InsightAgent:
         self._pending_steer: list[str] = []
         # 最近一次注入的引导原文（供落盘时记录「引导了什么」）
         self.last_steer: list[str] = []
+        # 阶段模型客户端（迭代 8）。取证与成文可以绑不同模型。
+        self._collect_llm = None
+        self._write_llm = None
+        self._model_routing: dict = {}
+
+    # ------------------------------------------------------ 模型路由（迭代 8）
+    def _resolve_models(self) -> dict:
+        """解析本次运行该用哪些模型。
+
+        返回 {collect, write, collectModel, writeModel, distinct, applied, ...}。
+
+        语义（对标 Lancer 的 `distinct_configured_model` 谓词）：
+        - **取证模型**：跑 ReAct 循环、查工具、收证据。默认 = 活跃模型。
+        - **成文模型**：基于证据写最终答案。**没配 = 空串**（表示「未配置」）。
+        - **distinct**：两者是否真的不同。**不同才有交叉核验的意义**。
+
+        配了成文模型但跟取证模型是同一个 → 明确报「同模型」，
+        不假装成交叉核验。这是这条机制的诚实底线。
+
+        注意两个坑：
+        1. **writeModel 未配置时是空串**，不是回落到取证模型。回落了就分不清
+           「用户选单模型模式」（不该报违规）与「用户配错了同名」（必须报违规）。
+        2. 返回里必须带 `collect` / `write` 两个**完整 spec 子键**——造客户端要用
+           baseUrl/apiKey，只有扁平的模型名是造不出客户端的。
+        """
+        from core.llmconfig import resolve_stage_model
+        collect = resolve_stage_model("collect", include_key=True) or {}
+        write = resolve_stage_model("write", include_key=True) or {}
+        base_model = getattr(self.llm, "model", "") or ""
+        collect_model = collect.get("model") or base_model
+        # 成文模型没配 → 空串（表示「未配置」，不是「与取证相同」）。
+        # 回落成取证模型会让单模型模式被误判成「配了同名」→ 误报 no_self_review。
+        write_model = write.get("model") or ""
+        # distinct 的判据是**模型名不同**，不是端点不同。
+        # 同一个模型挂在两个端点上（网关转发）还是同一个脑子，
+        # 交叉核验不了——Lancer 的谓词也是比 model，不是比 provider。
+        distinct = bool(write_model) and write_model != collect_model
+        return {
+            # 完整 spec（造客户端要用 baseUrl/apiKey）
+            "collect": collect,
+            "write": write,
+            # 扁平字段（契约判定与前端显示要用）
+            "collectModel": collect_model,
+            "writeModel": write_model,
+            "collectEndpoint": collect.get("label") or "",
+            "writeEndpoint": write.get("label") or "",
+            "distinct": distinct,
+            "applied": False,      # 实际跑没跑（run 结束时回填）
+            "composeError": "",
+        }
+
+    def _client_for(self, spec: dict):
+        """按解析结果造一个 LlmClient。失败返回 None。
+
+        造不出来**不能炸整轮**——成文失败就退回取证模型自己写的答案，
+        契约里记 COMPOSE_FAILED。
+        """
+        if not spec:
+            return None
+        try:
+            from core.bot.llm import LlmClient
+            return LlmClient(base_url=spec.get("baseUrl") or None,
+                             api_key=spec.get("apiKey") or None,
+                             model=spec.get("model") or None,
+                             timeout=180)
+        except BaseException:
+            # **必须 catch BaseException**：LlmClient 在没有 api_key 时
+            # raise SystemExit（不是 Exception），`except Exception` 抓不到，
+            # 会直接掀翻整轮洞察。造不出客户端 = 成文失败，不是整轮失败。
+            return None
+
+    def _collect_client(self):
+        """取证阶段的客户端。取不到就用默认 self.llm。"""
+        if self._collect_llm is None:
+            spec = self._model_routing.get("collect") or {}
+            self._collect_llm = self._client_for(spec) or self.llm
+        return self._collect_llm
+
+    def _write_client(self):
+        """成文阶段的客户端。没配成文模型 → None（不跑成文）。"""
+        if self._write_llm is None:
+            spec = self._model_routing.get("write") or {}
+            if not spec.get("model"):
+                return None
+            self._write_llm = self._client_for(spec)
+        return self._write_llm
 
     def steer(self, message: str) -> None:
         """插入一条引导，下一轮模型调用前会被送进上下文。
@@ -273,11 +414,21 @@ class InsightAgent:
                 messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": question})
 
+        # ---- 模型路由（迭代 8）
+        # 取证与成文可以绑不同模型。配了成文模型但与取证模型相同 →
+        # 不跑成文（distinct=False），契约里如实记。
+        self._model_routing = self._resolve_models()
+        run.model_routing = dict(self._model_routing)
+
         tools = ToolBox.schemas()
         # 有编排团队时才给「派子代理」这个工具。
         # 没有 team 时模型压根不知道自己能派活，避免它喊一个不存在的工具。
         if self.team is not None:
             tools = tools + [DELEGATE_SCHEMA]
+        # 取证阶段的工具返回，攒成「证据包」喂给成文模型。
+        # 只存**工具返回**，不存取证模型自己的分析文字——
+        # 让成文模型看到取证者的自述，它就只会照抄，交叉核验就白搭了。
+        evidence_pack: list[dict] = []
         for step_i in range(self.MAX_STEPS):
             # 外部引导（steer）：在每轮模型调用**之前**注入。
             # 放这里而不是循环外，是因为引导可能随时到达——
@@ -299,8 +450,9 @@ class InsightAgent:
                         on_step(run.steps[-1])
                     except Exception:
                         pass
-            resp = self.llm.chat_tools(messages, tools, temperature=0.3,
-                                       max_tokens=1500)
+            resp = self._collect_client().chat_tools(messages, tools,
+                                                    temperature=0.3,
+                                                    max_tokens=1500)
             run.tokens += int((resp.get("usage") or {}).get("total_tokens") or 0)
             calls = resp.get("tool_calls") or []
             content = resp.get("content") or ""
@@ -390,6 +542,13 @@ class InsightAgent:
                     if not any((e.get("sessionId"), e.get("localId")) == key
                                for e in run.evidence):
                         run.evidence.append(ev)
+                # 证据包（成文模型看的就是它，不是取证模型的自述）
+                evidence_pack.append({
+                    "tool": name,
+                    "label": step["label"],
+                    "summary": res.get("summary") or "",
+                    "data": res.get("data") or {},
+                })
                 # 回喂给模型
                 messages.append({
                     "role": "tool",
@@ -399,8 +558,29 @@ class InsightAgent:
         else:
             # 步数用尽 → 强制收尾
             messages.append({"role": "user", "content": FINAL_HINT})
-            resp = self.llm.chat_tools(messages, [], temperature=0.3, max_tokens=1500)
+            resp = self._collect_client().chat_tools(messages, [], temperature=0.3,
+                                                     max_tokens=1500)
             run.answer = (resp.get("content") or "").strip() or "（未能在步数限制内给出答案）"
+
+        # ---- 成文阶段（迭代 8）
+        #
+        # 只有当「成文模型配了 且 与取证模型不同」时才跑。
+        # 同一模型跑一遍等于白跑一遍（还多花一次 token），
+        # 还不如让取证模型自己写——那样至少上下文是连贯的。
+        run.model_routing = dict(self._model_routing)
+        if self._model_routing.get("distinct"):
+            composed = self._compose(question, evidence_pack)
+            if composed:
+                run.answer = composed
+                run.model_routing["applied"] = True
+            else:
+                run.model_routing["composeError"] = "成文模型调用失败，已保留取证模型的答案"
+        else:
+            # 没配成文模型，或配了但跟取证模型同名
+            if self._model_routing.get("writeModel") and not self._model_routing.get("distinct"):
+                run.model_routing["composeError"] = (
+                    "成文模型与取证模型相同（" + self._model_routing["writeModel"]
+                    + "），不构成交叉核验，已跳过成文环节")
 
         # ---- 阶段契约判定
         #
@@ -420,6 +600,7 @@ class InsightAgent:
                 "toolNumbers": run.tool_numbers,
                 "branches": run.branches,
                 "unsourcedNumbers": _unsourced_numbers(run),
+                "modelRouting": run.model_routing,
             })
         except Exception:
             # 契约判定失败**不能连带整轮失败**——答案已经算出来了。
@@ -428,6 +609,42 @@ class InsightAgent:
 
         run.answer = _audit_numbers(run)
         return run
+
+    # ------------------------------------------------------------ 成文
+    def _compose(self, question: str, evidence_pack: list[dict]) -> str:
+        """用成文模型基于证据包写最终答案。失败返回空串。
+
+        成文模型**看不到取证模型的自述**——它只看到：
+          - 原始问题
+          - 每个工具查了什么、返回了什么（工具返回原文）
+          - 出处清单（证据池，带时间与说话人）
+
+        这是交叉核验能成立的前提：让成文模型看到取证者的结论，
+        它就只会照抄，两个模型等于一个。
+        """
+        client = self._write_client()
+        if client is None:
+            return ""
+        pack = _format_evidence_pack(evidence_pack)
+        if not pack.strip():
+            # 一步都没查到东西 → 没有成文的基础。
+            # 这时候让成文模型自己编 = 白给一个幻觉，不如保留原答案。
+            return ""
+        msgs = [
+            {"role": "system", "content": COMPOSE_SYSTEM},
+            {"role": "user", "content": (
+                f"用户的问题：{question}\n\n"
+                f"取证助手查到的证据：\n{pack}\n\n"
+                f"{COMPOSE_HINT}")},
+        ]
+        try:
+            # 用 chat() 而不是 chat_tools(msgs, [], ...)：
+            # 成文阶段不该有工具，而且**部分 OpenAI 兼容网关会拒绝空 tools 数组**
+            # （报 400 tools 至少要一个），那样成文永远失败。
+            text = client.chat(msgs, temperature=0.3, max_tokens=2000)
+        except Exception:
+            return ""
+        return (text or "").strip()
 
     # ------------------------------------------------------------ 委派
     def _run_delegate(self, args: dict, on_step=None) -> tuple[str, list]:
@@ -572,6 +789,45 @@ def _branch_evidence(branches: list) -> list[dict]:
             item["branchId"] = br.id
             out.append(item)
     return out
+
+
+def _format_evidence_pack(pack: list[dict]) -> str:
+    """把工具返回整理成给成文模型看的证据文本。
+
+    为什么不让成文模型直接看取证模型的 messages：
+    那样它会连取证者的分析结论一起看到，然后照抄——
+    两个模型等于一个，交叉核验就白做了。
+
+    这里的取舍：
+      - **原文给全**（消息内容不截到 200 字）——引语要能核对
+      - **总量有上限**——证据太多会把上下文撑爆，
+        所以按条数上限截断，并**明说截断了**
+        （不说的话模型会以为数据就这么多，得出「就这些」的错结论）
+    """
+    if not pack:
+        return ""
+    lines: list[str] = []
+    for i, item in enumerate(pack, 1):
+        tool = item.get("tool") or ""
+        label = item.get("label") or tool
+        summary = item.get("summary") or ""
+        data = item.get("data") or {}
+        lines.append(f"【第 {i} 步 · {label}】")
+        if summary:
+            lines.append(f"摘要：{summary}")
+        try:
+            body = json.dumps(data, ensure_ascii=False, default=str)
+        except Exception:
+            body = str(data)
+        # 单步上限 2500 字符，总上限 12000
+        if len(body) > 2500:
+            body = body[:2400] + "…（本步数据过长已截断）"
+        lines.append(f"数据：{body}")
+        lines.append("")
+    text = "\n".join(lines)
+    if len(text) > 12000:
+        text = text[:11900] + "\n…（证据过多已截断）"
+    return text
 
 
 def _tool_label(name: str, args: dict) -> str:

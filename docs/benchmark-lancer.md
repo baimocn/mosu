@@ -47,7 +47,7 @@ Lancer 完全没有真实数据能力（它的数据只有自己的会话记录�
 | **统一订阅通道** | 单条 `state-changed` 广播全量快照 | 每端点独立轮询 | 缺 | P1 |
 | **外部派活通道** | Control API（Unix socket + token，`send`/`queue`/`steer`/`wait`/`tail`） | MCP 只读：外部能**读**墨溯，墨溯不能被外部**驱动** | 缺 | P1 |
 | **多模型目录** | 9 家族 + 自定义 + 可用/未启用/未配置三态 | ✅ 9 家族 + 多端点 + 三态（迭代 6，`core/model_catalog.py`） | 无缺口 | — |
-| **阶段流水线** | 1–8 阶段，各配 model/skills/goal/deliverables | ✅ 4 阶段契约（迭代 7）：status code 带 ok_to_proceed、每阶段 gate 产物、forbidden 清单、机械摘要 | 部分（缺每阶段不同 model） | — |
+| **阶段流水线** | 1–8 阶段，各配 model/skills/goal/deliverables | ✅ 5 阶段契约（迭代 7）+ **阶段模型路由（迭代 8）**：取证 / 成文双角色，谓词 `distinct_configured_model` | 无缺口（只抄「角色分工」，不抄固定管道） | — |
 | **分支可视化** | GitTree + 语义锚点光线 + 流动边框 | 5 视图平铺，无分支视图 | 缺 | P1 |
 | **验证纪律** | 6 级证据分级 + 明确列「哪些没跑」+ flake 当 bug | 660 测试 + E2E + 存量失败未分级 | 部分有 | P1 |
 
@@ -143,7 +143,9 @@ Lancer 的核心不等式，逐条抄：
   墨溯的做法是**顺序反了但标准一样严**：Lancer 先定流水线再跑，
   墨溯先跑完再按流水线验收（契约层，不是编排层）。
   没抄的部分：**每阶段绑定不同 model**（Lancer 的 `stage.model` +
-  handoff 的 `distinct_configured_model`），留给迭代 8。
+  handoff 的 `distinct_configured_model`）——**迭代 8 已做**，
+  但落点不同：不抄固定管道，只抄**角色分工**（取证 / 成文双角色），
+  谓词名与判定口径照抄 `distinct_configured_model`。
 - **AgentMail / 订阅账号**：走 OpenAI 兼容端点已够。
 
 ---
@@ -158,7 +160,8 @@ Lancer 的核心不等式，逐条抄：
 | **4** | 分支可视化（树 → 语义锚点光线）；多模型目录 | 颜色按泳道继承；锚点缺失不乱飞 | ✅ 完成（commit `af8301a`，可视化部分） |
 | **5** | 验证文档升级为 6 级证据分级 | 每份报告明确列「哪些没跑」 | ✅ 完成（commit `78dd7cf`） |
 | **6** | 多模型目录（9 家族识别 + 多端点 + 三态 + 模型选择器 UI） | 模型名优先于 provider 归类；切换模型下游真的生效；旧配置继续可用 | ✅ 完成 |
-| **7** | 洞察阶段契约（`core/pipeline.py`）：4 阶段 + status code 带 ok_to_proceed + 每阶段 gate 产物 + forbidden 清单 + 机械摘要 | 契约随答案返回；判定用原始答案不自证；前端阶段带三态可区分 | ✅ 完成 |
+| **7** | 洞察阶段契约（`core/pipeline.py`）：5 阶段 + status code 带 ok_to_proceed + 每阶段 gate 产物 + forbidden 清单 + 机械摘要 | 契约随答案返回；判定用原始答案不自证；前端阶段带三态可区分 | ✅ 完成 |
+| **8** | 阶段模型路由（`core/llmconfig.py` + `core/agent_engine.py`）：取证 / 成文双角色 + `distinct_configured_model` 谓词 | 配了不同模型 → 成文真跑且谓词成立；配同名 → 明确点破不假装；不配置 → 行为一字不变 | ✅ 完成 |
 
 ### 迭代 1 实测记录（补充）
 
@@ -449,9 +452,10 @@ provider 叫 `openai`，模型是 `claude-sonnet-4`——家族必须判成 clau
 状态码：`OK` / `SKIPPED`（不阻断）/ `EMPTY` / `MISSING` / `NO_QUOTE` / `UNSOURCED_NUMBER`。
 每个都带 `ok_to_proceed`——**Lancer 的核心机制**。
 
-forbidden 四条（每条都能程序化判定）：
+forbidden 四条（迭代 7 时是四条，**迭代 8 加到五条**）：
 `no_number_without_source` / `no_stat_as_quote` /
-`no_answer_without_evidence` / `no_quote_without_read`。
+`no_answer_without_evidence` / `no_quote_without_read` /
+`no_self_review`（成文模型与取证模型同名）。
 
 ### 踩到的坑
 
@@ -491,7 +495,110 @@ forbidden 四条（每条都能程序化判定）：
 
 ---
 
-## 七、墨溯相对 Lancer 的独有优势（不可被 Lancer 追上）
+## 六之三、迭代 8 详细记录：阶段模型路由（取证 / 成文双角色）
+
+### 读 Lancer 读出了什么
+
+Lancer 的阶段模型机制在四个地方：
+
+1. `apps/desktop/contracts/lancer-workflows.ts` —— 步骤上**可选**的模型绑定
+   ```ts
+   export interface LancerWorkflowStep {
+     readonly title: string;
+     readonly model?: { readonly provider: string; readonly modelId: string };
+     readonly skills?: readonly string[];
+     readonly goal?: string;
+     readonly deliverables?: string;
+   }
+   ```
+   阶段模型不是流水线内置的，是**步骤自己挂的**。校验规则：steps 1–8 个、`title` ≤40 字、
+   `model.provider/modelId` ≤512 字。
+
+2. `apps/desktop/electron/application/app-store.ts:1289` —— 切模型靠
+   `setSessionModel(stage.model.provider, stage.model.modelId)`。
+
+3. `packages/video-learn-process/PROCESS.json:234` —— **handoff 边的谓词**（本轮最关键的一行）：
+   ```json
+   {"from": "analysis.ok", "to": "handoff",
+    "predicate": "verified_spec_sha256 && verified_frame_references && distinct_configured_model"}
+   ```
+   **交付阶段必须用与上游不同的模型**——防单一模型偏见。
+
+4. `apps/desktop/src/features/conversation/video-learn-stages.ts:46` —— UI 显示
+   `stage.model ?? stage.actor`，并用 `modelFamily("", stage.model)?.id` 显示模型家族。
+
+另外一条容易忽略的细节：**handoff 读的是上游产物**（spec + manifest），
+不是上游模型的散文自述。这正是交叉核验能成立的前提。
+
+### 为什么墨溯不抄固定管道
+
+Lancer 的阶段模型是「1–8 个流水线阶段，每阶段一个模型」。墨溯的 ReAct 是**自主循环**——
+迭代 3 的教训已经很明确：固定管道会把模型绑死（「某人上个月聊了什么」它看不到记录）。
+
+所以墨溯只抄**角色分工**，不抄**阶段切分**：
+
+| 角色 | 职责 | 默认 |
+|---|---|---|
+| `collect` | 跑 ReAct 循环、查工具、收证据 | 活跃模型 |
+| `write` | 基于**证据包**（不含取证者自述）写最终答案 | 未配置 = 空串 |
+
+对应 Lancer 的 `stage.model` + `distinct_configured_model` 谓词，
+但落点是「取证 vs 下结论」而不是「阶段 1 vs 阶段 2」。
+
+### 墨溯要治的盲区
+
+**取证和下结论是同一个模型**——它自己查的数据自己确认，自己没法质疑自己。
+这正是 Lancer 那条谓词要防的事，只是 Lancer 防在阶段之间，墨溯要防在同一次问答内部。
+
+### 四条设计判断
+
+1. **distinct 判据是模型名不同，不是端点不同。**
+   同一模型挂两个端点（网关转发）还是同一个脑子，交叉核验不了——
+   Lancer 的谓词也是比 model，不是比 provider。
+
+2. **`writeModel` 未配置时是空串，不回落取证模型。**
+   回落了就分不清「用户选单模型模式」（不该报违规）与「用户配错了」（必须报违规）。
+
+3. **成文模型看不到取证模型的自述。**
+   只给工具返回的证据包。给了自述它就只会照抄，两个模型等于一个。
+
+4. **不配置 = 现在的行为，一字不差。**
+   向后兼容是硬要求。
+
+### 踩到的坑（都是端到端抓到的，单测抓不到）
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `applied=False`，composeError=「成文模型调用失败」 | `_resolve_models` 返回值**缺 `collect`/`write` spec 子键**——`_write_client()` 读的是 `spec.get("write")`，永远拿到 `{}` → 造不出客户端 | 返回里补完整 spec 子键 |
+| 2 | 未配置成文模型却报 `no_self_review` 违规 | `write_model = write.get("model") or base_model`——未配置时回落到取证模型，`wm == cm` 成立 | 改成 `or ""`（空串 = 未配置） |
+| 3 | 设置页下拉不显示已保存的模型 | `stage_models_view()` 的 `available` 只从端点模型表取；扁平配置下端点表是空的 | `available` 必须包含该角色**当前已保存的模型** |
+| 4 | 落盘断言拿到的是错误那条记录 | 端到端用 `files[-1]`（文件名序）取最新——文件名序 ≠ 时间序 | 按 `createdAt` 排；且要找 `writeModel == WRITE_MODEL` 的那条（场景 C 后最新的是同名那条） |
+| 5 | 成文永远失败 | `chat_tools(msgs, [], ...)` 传**空 tools 数组**，部分 OpenAI 兼容网关报 400 | 改用普通 `chat()`——成文阶段本来就不需要工具 |
+| 6 | 成文客户端造不出会掀翻整轮 | `LlmClient` 无 key 时 `raise SystemExit`（BaseException），`except Exception` 抓不到 | `_client_for` catch `BaseException` |
+
+**教训重申**：坑 1/2/5 只有**真跑两个不同的模型**才会暴露——
+mock 造出 tool_numbers 就能让判定通过，但那不叫交叉核验。
+
+### 实测记录
+
+- 新增单元测试 **37 例** + 静态接线 **33 例**（`test_stage_models.py` / `test_stage_models_wiring.py`）
+- 端到端 **49/49 通过**（真起 GUI、真发 HTTP、真模型 ×2、真点浏览器）
+  - 取证模型 `deepseek-v4.1-flash`、成文模型 `glm-5.3`（**两个不同家族**）
+- 全量回归 1038 → **1092 passed / 16 skipped / 0 failed**
+- 验证报告 L5（`docs/verification/iter8-stage-models.json`），10 条「哪些没跑」
+
+真机跑出来的真实判定（同一问题三次运行，三种配置）：
+
+| 配置 | distinct | applied | compose | no_self_review |
+|---|---|---|---|---|
+| 不配置 | False | False | SKIPPED | 不报（单模型模式不算违规） |
+| 配不同模型 | **True** | **True** | **OK** | 不报 |
+| 配成同名 | False | False | SKIPPED | **报**（带 detail：「都是 deepseek-v4.1-flash，不构成交叉核验」） |
+
+成文答案正文里真的带上了「（依据：…）」引用标记——
+这是「第二个模型确实参与了」的硬证据，不是字段名对得上而已。
+
+---
 
 1. **真实数据内核**：SQLCipher4 自研解密、跨分片去重、图片 V2 私有容器解密、SILK 语音转写——
    Lancer 完全没有这一层。

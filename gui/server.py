@@ -1670,6 +1670,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             # 阶段契约（core/pipeline.py）：每个阶段的状态码 + gate 产物。
             # 契约判定失败时是空 dict——不影响主链路，答案照样给。
             out["contract"] = run_obj.contract or {}
+            # 模型路由（迭代 8）：取证模型 / 成文模型 / 是否构成交叉核验。
+            out["modelRouting"] = run_obj.model_routing or {}
             # 兼容旧字段：前端老组件读 facts/citations
             out["facts"] = []
             out["citations"] = []
@@ -1687,6 +1689,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     # 阶段契约一起落盘：回看历史时能看到「当时哪些阶段过了、
                     # 哪些没过、哪些禁止项被违反」——不是只有一段答案文本
                     "contract": out.get("contract", {}),
+                    # 模型路由一起落盘：回看时要知道「这答案是谁写的」
+                    "modelRouting": out.get("modelRouting", {}),
                     "tokens": out.get("tokens", 0),
                     "cost": out.get("cost", 0),
                     "model": out.get("model"),
@@ -2153,6 +2157,25 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         pats = set_enabled_models(payload.get("patterns") or [])
         return {"patterns": pats, "catalog": load_model_catalog()}
 
+    # ------------------------------------------------------ 阶段模型（迭代 8）
+    def api_stage_models() -> dict:
+        """阶段模型配置：取证模型 / 成文模型。
+
+        对标 Lancer 的 `LancerWorkflowStep.model`（阶段上可选的模型绑定）
+        与 handoff 边的 `distinct_configured_model` 谓词。
+        """
+        from core.llmconfig import stage_models_view
+        return stage_models_view()
+
+    def api_stage_models_set(payload: dict) -> dict:
+        """设置阶段模型绑定。model 传空串 = 取消该角色的绑定。"""
+        from core.llmconfig import save_stage_models, stage_models_view
+        models = payload.get("models")
+        if not isinstance(models, dict):
+            raise ValueError("models 必须是对象")
+        save_stage_models(models)
+        return {"saved": True, **stage_models_view()}
+
     def api_config() -> dict:
         from core.dataset import (KEYVAULT, LEGACY_VAULT, load_accounts,
                                   load_keyvault, find_user_dir, load_key_hex)
@@ -2213,6 +2236,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/key/selftest": (api_key_selftest, False),
         "/api/llm": (api_llm_get, False),
         "/api/models": (api_models, False),
+        "/api/stage-models": (api_stage_models, False),
         "/api/personas": (api_personas, False),
         "/api/moments": (api_moments, True),
         "/api/moments/probe": (api_moments_probe, True),
@@ -2567,6 +2591,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/models/enabled":
                 self._guard(api_models_enabled, payload)
+                return
+            if path == "/api/stage-models":
+                self._guard(api_stage_models_set, payload)
                 return
             if path == "/api/export":
                 self._guard(api_export, payload)
