@@ -102,7 +102,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，612 例）：
+测试（全离线，628 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -248,6 +248,51 @@ $ pi
 这三个坑的报错都**不指向真正原因**（看着像账号或权限问题），所以
 `tests/test_pi_mcp.py` 把正确值锁死了。
 
+### 已知限制
+
+**1. 客户端超时必须放开。** Pi 的 MCP 默认超时 60 秒，但墨溯有几个重工具远超：
+
+| 工具 | 实测耗时（23 万消息库） |
+|---|---|
+| `mosu_profile` 全库 | ~19 s |
+| `mosu_export` html，几千条的会话 | ~5 s |
+| `mosu_export` html，15 万条的大群 | **~491 s** |
+
+安装脚本已把 `timeout` 设成 900 秒。如果你用的不是 Pi（Claude Desktop / Cursor 等），
+记得自己在配置里加 `timeout`。
+
+**2. 大群导出要限量。** 十万级的群直接导 html 会跑好几分钟，用 `max_messages` 限住：
+
+```jsonc
+{ "session": "某个大群", "format": "html", "max_messages": 500 }
+```
+
+限量是**下推到 SQL**的（`ORDER BY sort_seq DESC LIMIT n`），不是读完再切——
+实测大群限量 300 条从 321 秒降到 1 秒。返回里的 `truncatedFrom` 会告诉你原本有多少条。
+
+**3. 在管道/重定向环境里跑 `pi --print` 会挂死。**
+Pi 的 `main.ts` 里：stdin 不是 TTY 时会一直读 stdin 直到 EOF。所以在脚本、CI、
+管道里调用必须显式给 stdin 一个结尾：
+
+```bash
+pi --print "问题" < /dev/null        # Linux/macOS/Git Bash
+echo "问题" | pi --print             # 或者这样
+```
+
+在真终端里直接跑 `pi`（交互 TUI）不受影响。
+
+### 自测
+
+```bash
+# 契约测试（不依赖真实数据，可进 CI）
+python -m pytest tests/test_mcp_schema.py tests/test_pi_mcp.py -q
+
+# 端到端（需要真实微信数据，走真实 stdio MCP 通道）
+python .cache/audit/matrix_mcp.py     # 58 个参数组合
+python .cache/audit/e2e_mcp_all.py    # 12 个工具 + 错误信息可读性
+```
+
+
 ## 隐私与合规
 
 - **只读**：从不写入、修改、删除微信的任何文件；解密产物落在项目 `.cache/`，可随时清
@@ -282,7 +327,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（612 例）
+tests/                 离线测试（628 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -295,7 +340,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（612 例）
+- [x] 离线测试套件（628 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -389,7 +434,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (612 cases)
+tests/          offline test suite (628 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

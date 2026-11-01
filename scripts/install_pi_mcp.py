@@ -51,6 +51,12 @@ def mcp_entry() -> dict:
         "env": {"PYTHONIOENCODING": "utf-8"},
         # direct = 工具直接出现在模型面前（默认 codemode 会让模型看不见列表）
         "exposure": "direct",
+        # Pi 的 MCP 默认 timeout 是 60 秒，但墨溯有几个重操作远超这个数：
+        #   - mosu_export html：15.8 万条消息的群要 490+ 秒（渲染 + 拷媒体）
+        #   - mosu_profile 全库：约 18 秒
+        #   - mosu_report：约 7 秒
+        # 60 秒会让 export 必然超时，用户看到的就是「用不了」。
+        "timeout": 900,
         "description": "墨溯：本地微信聊天记录只读查询。列会话、读消息、搜关键词、"
                        "看统计、读朋友圈、生成报告、导出记录。分析自己的微信数据时用这个。",
     }

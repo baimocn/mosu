@@ -136,12 +136,13 @@ TOOLS: list[dict] = [
                        "session 单人统计 / keywords 关键词 / group 群成员榜。",
         "inputSchema": _schema({
             "kind": {"type": "string",
-                     "enum": ["global", "contacts", "time", "session", "keywords", "group"]},
+                     "enum": ["global", "contacts", "time", "session", "keywords", "group"],
+                     "description": "默认 global"},
             "session": {"type": "string", "description": "kind=session/keywords/group 时的目标（名字或wxid）"},
             "by": {"type": "string", "enum": ["hour", "weekday", "day", "month", "year"],
                    "description": "kind=time 的维度，默认 month"},
             "top": {"type": "integer", "description": "榜单条数，默认 20"},
-        }, ["kind"]),
+        }, []),
     },
     {
         "name": "mosu_moments",
@@ -175,6 +176,9 @@ TOOLS: list[dict] = [
             "with_media": {"type": "boolean", "description": "顺带把语音转成 mp3（慢），默认 false"},
             "all": {"type": "boolean", "description": "导出全部会话（慎用，很慢），默认 false"},
             "max_sessions": {"type": "integer", "description": "配合 all 限制会话数"},
+            "max_messages": {"type": "integer",
+                             "description": "只导出最近 N 条消息。超大群（十万级）必设，"
+                                            "否则 html 要渲染好几分钟，容易把 MCP 的超时撑爆"},
             "incremental": {"type": "boolean",
                             "description": "增量导出：只处理上次导出后的新消息（txt/csv 追加、"
                                            "json 合并、HTML 全量重渲染但媒体走磁盘缓存，大幅提速）"},
@@ -262,7 +266,52 @@ class McpServer:
         fn = getattr(self, "t_" + name, None)
         if fn is None:
             raise ValueError(f"未知工具 {name}")
+        self._validate(name, args)
         return fn(args)
+
+    @staticmethod
+    def _validate(name: str, args: dict) -> None:
+        """按 schema 校验入参，把参数问题变成**模型看得懂**的话。
+
+        为什么不靠实现里的 `a["name"]` 自己抛：
+            那样模型看到的是 `KeyError: 'name'`——它既不知道这是「缺参数」，
+            也不知道该补什么、补什么格式。MCP 层有 schema 就该在这里拦。
+
+        校验三件事：必填项、类型、枚举值。都是模型最容易踩的坑。
+        """
+        spec = next((t for t in TOOLS if t["name"] == name), None)
+        if not spec:
+            return
+        schema = spec.get("inputSchema") or {}
+        props = schema.get("properties") or {}
+        required = schema.get("required") or []
+
+        missing = [k for k in required if args.get(k) in (None, "")]
+        if missing:
+            hints = []
+            for k in missing:
+                desc = (props.get(k) or {}).get("description") or ""
+                hints.append(f"{k}（{desc}）" if desc else k)
+            raise ValueError(f"缺少必填参数：{'、'.join(hints)}")
+
+        for k, v in args.items():
+            if v is None or k not in props:
+                continue
+            p = props[k] or {}
+            want = p.get("type")
+            if want == "integer" and not isinstance(v, bool):
+                try:
+                    int(v)
+                except (TypeError, ValueError):
+                    raise ValueError(f"参数 {k} 要整数，收到 {v!r}") from None
+            elif want == "boolean" and not isinstance(v, bool):
+                # 模型常把布尔写成字符串 "true" / "false"
+                if str(v).lower() not in ("true", "false", "1", "0"):
+                    raise ValueError(f"参数 {k} 要 true/false，收到 {v!r}")
+            enum = p.get("enum")
+            if enum and v not in enum:
+                raise ValueError(f"参数 {k} 只能是 {'/'.join(map(str, enum))}，"
+                                 f"收到 {v!r}")
 
     @staticmethod
     def _lim(args, default: int = 20) -> int:
@@ -316,7 +365,7 @@ class McpServer:
     def t_mosu_messages(self, a):
         ds = self.ds
         r = ds.messages(
-            a["session"],
+            a.get("session"),
             limit=self._lim(a, 20),
             offset=int(a.get("offset") or 0),
             from_ts=parse_time(a.get("from")),
@@ -356,7 +405,7 @@ class McpServer:
 
     def t_mosu_contact_info(self, a):
         ds = self.ds
-        name = a["name"]
+        name = a.get("name") or ""
         cs = ds.contacts()
         c = cs.get(name)
         if c is None:
@@ -378,14 +427,15 @@ class McpServer:
     # ---- search
     def t_mosu_search(self, a):
         ds = self.ds
-        r = ds.search(a["keyword"], session=a.get("session"), limit=self._lim(a, 20))
-        return {"keyword": a["keyword"], "total": r["total"], "count": len(r["messages"]),
+        kw = a.get("keyword") or ""
+        r = ds.search(kw, session=a.get("session"), limit=self._lim(a, 20))
+        return {"keyword": kw, "total": r["total"], "count": len(r["messages"]),
                 "messages": [_slim_message(m) for m in r["messages"]]}
 
     # ---- stats
     def t_mosu_stats(self, a):
         an = self.analytics()
-        kind = a["kind"]
+        kind = (a.get("kind") or "global").lower()
         if kind == "global":
             return {"kind": kind, **an.global_stats()}
         if kind == "contacts":
@@ -394,11 +444,11 @@ class McpServer:
             return {"kind": kind, "by": a.get("by") or "month",
                     **an.time_stats(a.get("by") or "month", session=a.get("session"))}
         if kind == "session":
-            return {"kind": kind, **an.session_stats(a["session"])}
+            return {"kind": kind, **an.session_stats(a.get("session"))}
         if kind == "keywords":
             return {"kind": kind, **an.keyword_stats(a.get("session"), int(a.get("top") or 30))}
         if kind == "group":
-            return {"kind": kind, **an.group_stats(a["session"])}
+            return {"kind": kind, **an.group_stats(a.get("session"))}
         raise ValueError(f"未知 stats kind: {kind}")
 
     # ---- moments
@@ -432,12 +482,12 @@ class McpServer:
     def t_mosu_export(self, a):
         fmt = (a.get("format") or "html").lower()
         inc = bool(a.get("incremental"))
-        out_root = Path(a["output"]) if a.get("output") else ROOT / "export"
+        out_root = Path(a.get("output")) if a.get("output") else ROOT / "export"
         ds = self.ds
         if a.get("all"):
             targets = ds.sessions()
             if a.get("max_sessions"):
-                targets = targets[:int(a["max_sessions"])]
+                targets = targets[:int(a.get("max_sessions") or 0)]
         else:
             s = ds.find_session(a.get("session") or "")
             if not s:
@@ -458,10 +508,13 @@ class McpServer:
                                         "count": 0, "added": 0, "skipped": True})
                         continue
                 results.append(self._export_html(sess, out_root, bool(a.get("with_media")),
-                                                 multi=len(targets) > 1))
+                                                 multi=len(targets) > 1,
+                                                 max_messages=(int(a.get("max_messages") or 0)
+                                                               or None)))
             else:
-                results.append(self._export_textual(sess, out_root, fmt,
-                                                    multi=len(targets) > 1, incremental=inc))
+                results.append(self._export_textual(
+                    sess, out_root, fmt, multi=len(targets) > 1, incremental=inc,
+                    max_messages=(int(a.get("max_messages") or 0) or None)))
         return {"format": fmt, "outputDir": str(out_root), "count": len(results),
                 "messages": sum(r.get("count", 0) for r in results),
                 "cost": round(time.time() - t0, 1), "results": results}
@@ -470,7 +523,8 @@ class McpServer:
         bad = '<>:"/\\|?*'
         return "".join(c for c in s if c not in bad).strip() or "chat"
 
-    def _export_html(self, sess, out_root: Path, with_media: bool, multi: bool):
+    def _export_html(self, sess, out_root: Path, with_media: bool, multi: bool,
+                     max_messages: int | None = None):
         from core.media import MediaStore
         from core.exporter import ChatExporter
         from core.voice import VoiceStore
@@ -481,7 +535,11 @@ class McpServer:
         # 跨分片收集
         base_of = {sh["shard"]: (i + 1) * 10_000_000 for i, sh in enumerate(ds._shard_list(sess))}
         rows, names_map = [], {}
-        for shard, r in ds.iter_session_rows(sess):
+        # 限量时**必须在 SQL 层限**：先全量读 15.8 万条再切片，
+        # 光是读+排序就要 5 分钟（实测 321s），MCP 那边早超时了。
+        # desc=True 让 SQL 走 ORDER BY sort_seq DESC LIMIT n，只读最近的那批。
+        want = int(max_messages or 0)
+        for shard, r in ds.iter_session_rows(sess, desc=want > 0, limit=want):
             d = dict(r)
             sid = d.get("real_sender_id")
             if sid == ds.self_id(shard):
@@ -493,6 +551,12 @@ class McpServer:
             d["real_sender_id"] = gid
             rows.append(d)
         rows.sort(key=lambda d: (d.get("create_time") or 0, d.get("sort_seq") or 0))
+        # 只导出最近 N 条（跨分片 limit 是「每分片 N」，合并后这里再截一次才准）
+        total_all = int(sess.get("messageCount") or 0) or len(rows)
+        if want > 0 and len(rows) > want:
+            rows = rows[-want:]
+        elif want > 0:
+            total_all = max(total_all, len(rows))
         voice_map = {}
         if with_media:
             try:
@@ -505,15 +569,22 @@ class McpServer:
         path = exp.export(rows, sender_names=names_map, self_id=0, title=sess["displayName"],
                           subtitle=f"{sess['sessionId']} · 共 {len(rows)} 条 · {ds.user_dir.name}")
         return {"session": sess["displayName"], "path": str(path), "count": len(rows),
+                "truncatedFrom": (total_all if len(rows) < total_all else None),
                 "media": dict(exp.stats)}
 
     def _export_textual(self, sess, out_root: Path, fmt: str, multi: bool,
-                        incremental: bool = False):
+                        incremental: bool = False, max_messages: int | None = None):
         from core import export_state as es
         ds = self.ds
         st = es.load_state(out_root) if incremental else None
         frm = (st.get("lastExportTime") or 0) + 1 if st else None
-        r = ds.messages(sess, limit=10 ** 9, order="asc", from_ts=frm)
+        # 限量时用倒序取最近 N 条再翻转，避免把十万级会话全读进内存
+        want = int(max_messages or 0)
+        if want > 0:
+            r = ds.messages(sess, limit=want, order="desc", from_ts=frm)
+            r["messages"] = list(reversed(r.get("messages") or []))
+        else:
+            r = ds.messages(sess, limit=10 ** 9, order="asc", from_ts=frm)
         if incremental and st and not r["messages"]:
             return {"session": sess["displayName"], "path": str(out_root), "count": 0,
                     "added": 0, "skipped": True}
@@ -575,7 +646,7 @@ class McpServer:
         pd = ProfileDistiller(self.ds)
         frm, to = parse_time(a.get("from")), parse_time(a.get("to"))
         if a.get("session"):
-            d = pd.contact_profile(a["session"], from_ts=frm, to_ts=to,
+            d = pd.contact_profile(a.get("session"), from_ts=frm, to_ts=to,
                                    top=int(a.get("top") or 10))
         else:
             d = pd.self_profile(from_ts=frm, to_ts=to,
