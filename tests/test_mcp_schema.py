@@ -247,3 +247,29 @@ class TestPiTimeoutBudget(unittest.TestCase):
         self.assertIsNotNone(t, "mcp_entry 没设 timeout，Pi 会用默认 60 秒")
         self.assertGreaterEqual(t, 300,
                                 f"timeout={t}s 覆盖不了 export 全量导出（实测 491s）")
+
+
+class TestExportNoOverwrite(unittest.TestCase):
+    """单会话导 html 不能写同一个 index.html。
+
+    ChatExporter 里路径是写死的 `out_dir / "index.html"`。
+    如果单会话也直接用 export/ 根目录，导完 A 再导 B，
+    A 的 index.html 就被 B 覆盖了 —— 这是无声的数据丢失。
+    修法是按会话名分目录（export/<会话名>/index.html）。
+    """
+
+    def test_html_out_dir_is_per_session(self):
+        src = SERVER.read_text(encoding="utf-8")
+        # 不能再有「multi 才分目录」的分支
+        self.assertNotIn("out_root / name if multi else out_root", src,
+                         "html 导出又回到「单会话写根目录」了，会互相覆盖")
+        self.assertIn("out_dir = out_root / name", src,
+                      "html 导出没按会话名分目录")
+
+    def test_exporter_still_writes_index_html(self):
+        """确认上游契约没变：ChatExporter 依旧是写 index.html。
+
+        如果哪天它改成可传文件名，这条会红，提醒同步改注释与测试。
+        """
+        exp = (ROOT / "core" / "exporter.py").read_text(encoding="utf-8")
+        self.assertIn('out = self.out_dir / "index.html"', exp)

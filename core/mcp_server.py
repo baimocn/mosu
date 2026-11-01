@@ -172,7 +172,10 @@ TOOLS: list[dict] = [
         "inputSchema": _schema({
             "session": {"type": "string", "description": "会话名或 wxid"},
             "format": {"type": "string", "enum": ["html", "json", "csv", "txt"], "description": "默认 html"},
-            "output": {"type": "string", "description": "输出目录或文件路径；默认 <墨溯>/export"},
+            "output": {"type": "string",
+                       "description": "输出**目录**，默认 <墨溯>/export。"
+                                      "html 会在此目录下按会话名建子目录（export/<会话名>/index.html）；"
+                                      "txt/json/csv 直接写成 目录/<会话名>.<格式>"},
             "with_media": {"type": "boolean", "description": "顺带把语音转成 mp3（慢），默认 false"},
             "all": {"type": "boolean", "description": "导出全部会话（慎用，很慢），默认 false"},
             "max_sessions": {"type": "integer", "description": "配合 all 限制会话数"},
@@ -530,7 +533,10 @@ class McpServer:
         from core.voice import VoiceStore
         ds = self.ds
         name = self._safe_dirname(sess["displayName"])
-        out_dir = out_root / name if multi else out_root
+        # html 是「目录 + index.html + media/」的结构，ChatExporter 写死 index.html。
+        # 若单会话也直接写 out_root，导完 A 再导 B 会把 A 的 index.html 覆盖掉
+        # （媒体目录也跟着混在一起）——这是数据丢失，必须按会话名分目录。
+        out_dir = out_root / name
         out_dir.mkdir(parents=True, exist_ok=True)
         # 跨分片收集
         base_of = {sh["shard"]: (i + 1) * 10_000_000 for i, sh in enumerate(ds._shard_list(sess))}
