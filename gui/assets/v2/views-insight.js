@@ -36,6 +36,37 @@
         <div v-if="model" class="v2-ia-model">
           <span class="v2-ia-model-dot"></span>{{ model }}
         </div>
+        <button class="v2-ia-hist-btn" @click="toggleHistory">
+          <span class="v2-ia-hist-caret" :class="{open: histOpen}">›</span>
+          历史分析<span v-if="history.length" class="v2-ia-hist-n">{{ history.length }}</span>
+        </button>
+      </div>
+
+      <!-- ============ 历史分析（落盘在 ~/.mosu/runs/，重启不丢） ============ -->
+      <div v-if="histOpen" class="v2-ia-hist" v-cloak>
+        <div class="v2-ia-hist-head">
+          <span class="v2-ia-hist-title">历史分析</span>
+          <span class="v2-ia-hist-desc">每轮完整落盘，关页面、重启都还在</span>
+          <button class="v2-ia-hist-refresh" @click="loadHistory">刷新</button>
+        </div>
+        <div v-if="histLoading" class="v2-note">正在读历史…</div>
+        <div v-else-if="!history.length" class="v2-note">还没有历史记录。问第一个问题吧。</div>
+        <div v-else class="v2-ia-hist-list">
+          <div v-for="h in history" :key="h.id" class="v2-ia-hist-item"
+               :class="{open: histOpenId === h.id}" @click="openHistory(h)">
+            <div class="v2-ia-hist-q">{{ h.question || '（无标题）' }}</div>
+            <div class="v2-ia-hist-meta">
+              <span>{{ fmtTime(h.createdAt) }}</span>
+              <span v-if="h.steps">{{ h.steps }} 步</span>
+              <span v-if="h.branches">{{ h.branches }} 分支</span>
+              <span v-if="h.cost">{{ h.cost }}s</span>
+              <button class="v2-ia-hist-del" @click.stop="delHistory(h)">删</button>
+            </div>
+            <div v-if="histOpenId === h.id && histDetail" class="v2-ia-hist-detail">
+              <article class="v2-ia-answer small" v-html="rendered(histDetail)"></article>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ============ 提问区 ============ -->
@@ -273,6 +304,13 @@
       const evShown = ref({});     // 每轮默认显示几条证据
       const evOpenMap = ref({});   // 哪几条被展开了（ti:ei → true）
 
+      // 历史分析（落盘 ~/.mosu/runs/）
+      const histOpen = ref(false);
+      const histLoading = ref(false);
+      const history = ref([]);
+      const histOpenId = ref("");
+      const histDetail = ref(null);
+
       // 原始统计
       const rawOpen = ref(false);
       const rawLoading = ref(false);
@@ -346,7 +384,7 @@
             { role: "assistant", content: t.answer || "" },
           ]);
           const r = await M.api.post("/api/insight/ask", { question: q, history });
-          await pollTask(r.taskId, ti);
+          await streamTask(r.taskId, ti);
         } catch (e) {
           turn.pending = false;
           turn.error = (e && e.message) || String(e);
@@ -406,6 +444,168 @@
             }
           };
           tick();
+        });
+      }
+
+      /* ---------------------------------------------------------------- 历史 */
+      async function toggleHistory() {
+        histOpen.value = !histOpen.value;
+        if (histOpen.value) await loadHistory();
+      }
+
+      async function loadHistory() {
+        histLoading.value = true;
+        try {
+          const r = await M.api.get("/api/runs", { limit: 30 });
+          history.value = (r && r.runs) || [];
+        } catch (e) {
+          history.value = [];
+        }
+        histLoading.value = false;
+      }
+
+      async function openHistory(h) {
+        if (histOpenId.value === h.id) {
+          // 再点一次收起
+          histOpenId.value = "";
+          histDetail.value = null;
+          return;
+        }
+        histOpenId.value = h.id;
+        histDetail.value = null;
+        try {
+          const d = await M.api.get("/api/runs/detail", { id: h.id });
+          histDetail.value = d;
+        } catch (e) {
+          histDetail.value = { answer: "读取失败：" + ((e && e.message) || e) };
+        }
+      }
+
+      async function delHistory(h) {
+        try {
+          await M.api.get("/api/runs/delete", { id: h.id });
+        } catch (e) { /* 删不掉就当没删，列表刷新后自然消失 */ }
+        if (histOpenId.value === h.id) {
+          histOpenId.value = "";
+          histDetail.value = null;
+        }
+        await loadHistory();
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "";
+        const d = new Date(ts * 1000);
+        if (isNaN(d.getTime())) return "";
+        const p = (n) => String(n).padStart(2, "0");
+        return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate())
+          + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+      }
+
+      /* ---------------------------------------------------------------- SSE
+       * 订阅式进度推送（迭代 2）。轮询保底，SSE 不可用时自动退回。
+       *
+       * 为什么要两条路并存：SSE 走长连接，遇到反向代理不缓冲、浏览器
+       * 自动重连等边界情况时可能收不到事件。轮询虽然慢 0.9 秒但一定能
+       * 拿到最终结果——**SSE 只影响实时性，不影响正确性**。
+       * 所以：SSE 挂了就降级轮询，轮询拿到的结果一样完整。
+       */
+      function streamTask(tid, ti) {
+        return new Promise((resolve, reject) => {
+          const turn = turns.value[ti];
+          if (!turn) return;
+          let settled = false;
+          let es = null;
+          let fallbackTimer = null;
+
+          const finishOk = (res) => {
+            if (settled) return;
+            settled = true;
+            if (es) { try { es.close(); } catch (_) {} }
+            if (fallbackTimer) clearTimeout(fallbackTimer);
+            turn.answer = res.answer || "";
+            turn.steps = res.steps || turn.steps;
+            turn.evidence = res.evidence || [];
+            turn.branches = res.branches || [];
+            turn.cost = res.cost || 0;
+            turn.pending = false;
+            if (res.model) model.value = res.model;
+            busy.value = false;
+            resolve();
+          };
+          const finishErr = (msg) => {
+            if (settled) return;
+            settled = true;
+            if (es) { try { es.close(); } catch (_) {} }
+            if (fallbackTimer) clearTimeout(fallbackTimer);
+            turn.pending = false;
+            turn.error = msg || "任务失败";
+            busy.value = false;
+            reject(new Error(turn.error));
+          };
+          // SSE 一直没动静 → 降级轮询
+          const armFallback = () => {
+            if (settled) return;
+            fallbackTimer = setTimeout(() => {
+              if (settled) return;
+              if (es) { try { es.close(); } catch (_) {} }
+              es = null;
+              pollTask(tid, ti).then(finishOk).catch(finishErr);
+            }, 4000);
+          };
+
+          try {
+            es = new EventSource("/api/insight/stream?id=" + encodeURIComponent(tid));
+          } catch (e) {
+            pollTask(tid, ti).then(finishOk).catch(finishErr);
+            return;
+          }
+          armFallback();
+
+          es.addEventListener("snapshot", (e) => {
+            let d = {};
+            try { d = JSON.parse(e.data); } catch (_) { return; }
+            const live = d.live || {};
+            if (live.steps && live.steps.length) {
+              turn.steps = live.steps;
+              const last = live.steps[live.steps.length - 1];
+              turn.stage = "正在「" + (last.label || "查数据") + "」…";
+            }
+            if (live.branches && live.branches.length) turn.branches = live.branches;
+          });
+
+          es.addEventListener("delta", (e) => {
+            let d = {};
+            try { d = JSON.parse(e.data); } catch (_) { return; }
+            if (d.kind === "step") {
+              const st = d.step || {};
+              turn.steps = (turn.steps || []).concat([st]);
+              turn.stage = "正在「" + (st.label || "查数据") + "」…";
+              if (d.branches && d.branches.length) turn.branches = d.branches;
+            } else if (d.kind === "start") {
+              if (d.runId) turn.runId = d.runId;
+            }
+          });
+
+          es.addEventListener("done", (e) => {
+            let d = {};
+            try { d = JSON.parse(e.data); } catch (_) {}
+            finishOk(Object.assign({}, d.result || {}, { cost: d.cost }));
+          });
+
+          es.addEventListener("error", (e) => {
+            // 事件流里的 error 事件（任务真失败）vs 连接错误（onerror 无 data）
+            let d = null;
+            try { d = JSON.parse(e.data); } catch (_) { d = null; }
+            if (d && d.error) {
+              finishErr(d.error);
+              return;
+            }
+            // 连接层错误：降级轮询
+            if (settled) return;
+            if (es) { try { es.close(); } catch (_) {} }
+            es = null;
+            pollTask(tid, ti).then(finishOk).catch(finishErr);
+          });
         });
       }
 
@@ -588,6 +788,9 @@
         submit, usePreset, askFollow, followUps, toggleEv, evOpen, autoGrow,
         quotes, stats,
         rendered, calendar, heatMonths, hourlyRows, topics, heatColor,
+        // 历史分析
+        histOpen, histLoading, history, histOpenId, histDetail,
+        toggleHistory, loadHistory, openHistory, delHistory, fmtTime,
         M,
       };
     },

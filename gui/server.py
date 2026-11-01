@@ -254,34 +254,54 @@ def _export_index_read(limit: int = 50) -> list[dict]:
 
 
 class _TaskHub:
-    """异步任务注册表（关键词统计 / HTML 导出共用）。
+    """异步任务注册表（关键词统计 / HTML 导出 / 洞察问答共用）。
 
     - 单 worker 串行执行：重操作不并发互相踩（它们都要抢 _ds_lock，
       并发只会排队，不如显式串行 + UI 显示排队/耗时）
     - 锁与 _ds_lock 分开：worker 内部要取 _ds_lock，不能拿同一把锁等待
     - 产物目录 EXPORT_ROOT/<task_id>/，历史上限 keep 条，超限淘汰最旧已完成
+
+    事件流（迭代 2 新增）
+    --------------------
+    原来只有 `live` 一个**全量快照**字典，前端只能 900ms 轮询整个拉一遍再覆盖。
+    现在分成两层：
+      - `live`   —— 全量快照，保留给轮询降级路径（老前端/网络差的场景）
+      - `_events` —— 追加式事件序列，SSE 按 seq 增量推送
+    SSE 订阅时**先发一份快照再发增量**：订阅建立前发生的事件已经在快照里了，
+    不会丢；增量只推变化，token/带宽都省。
+
+    这是对标 Lancer 的「单一广播通道推全量 state + 客户端按 revision 去抖」：
+    我们没有它那个桌面端复杂度，但「先快照后增量」这条是通用的——
+    没有它，SSE 订阅稍晚就会漏掉开头几步，用户看到轨迹凭空少一段。
     """
 
     def __init__(self, artifact_root: Path, keep: int = 20):
         self.root = artifact_root
         self.keep = keep
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
         self._tasks: dict[str, dict] = {}
+        self._events: dict[str, list[dict]] = {}
+        self._seq: dict[str, int] = {}
         self._queue: queue.SimpleQueue = queue.SimpleQueue()
         self._worker = threading.Thread(target=self._loop, daemon=True,
                                         name="mosu-gui-task")
         self._worker.start()
 
-    def submit(self, kind: str, fn) -> str:
+    def submit(self, kind: str, fn, meta: dict | None = None) -> str:
         tid = uuid.uuid4().hex[:12]
         with self._lock:
             self._tasks[tid] = {"id": tid, "kind": kind, "status": "queued",
                                 "cost": None, "result": None, "error": None,
-                                "live": {}}
+                                "live": {}, "meta": meta or {}}
+            self._events[tid] = []
+            self._seq[tid] = 0
             done = [t for t in self._tasks.values()
                     if t["status"] in ("done", "error")]
             for t in done[:max(0, len(done) - self.keep + 1)]:
                 self._tasks.pop(t["id"], None)
+                self._events.pop(t["id"], None)
+                self._seq.pop(t["id"], None)
         self._queue.put((tid, fn))
         return tid
 
@@ -291,32 +311,92 @@ class _TaskHub:
         Agent 洞察要 20–60 秒，工具调用轨迹是这个过程的**唯一可见反馈**——
         没有它用户只看到一行「正在分析」，体验上跟旧版黑盒没区别。
         """
-        with self._lock:
+        with self._cond:
             t = self._tasks.get(tid)
             if t:
                 t.setdefault("live", {}).update(fields)
+            self._cond.notify_all()
+
+    def emit(self, tid: str, kind: str, **data) -> None:
+        """追加一条事件（SSE 增量推送用）。
+
+        kind 是事件类型：step / branch / stage / result / error 等。
+        每条事件自带 seq（该任务内单调递增），客户端拿 seq 续订。
+        """
+        with self._cond:
+            if tid not in self._tasks:
+                return
+            self._seq[tid] = self._seq.get(tid, 0) + 1
+            ev = {"seq": self._seq[tid], "kind": kind, "at": time.time()}
+            ev.update(data)
+            self._events.setdefault(tid, []).append(ev)
+            self._cond.notify_all()
+
+    def wait_events(self, tid: str, after_seq: int, timeout: float = 1.0):
+        """等 after_seq 之后的新事件。返回 (events, 当前 seq, 任务快照)。
+
+        timeout 到点返回空列表 —— 这是**轮询兜底**：SSE 订阅者长时间没新事件时
+        也要周期性醒来看看任务是不是已经结束了（结束事件可能刚好错过）。
+
+        为什么必须先查再等
+        ------------------
+        早先写成「直接 wait(timeout) 再取」，结果每个事件都可能被延迟整整一个
+        timeout（实测 start 事件迟了 1.00s）。原因是**丢失唤醒**：
+        事件如果在「调用方取完快照」和「订阅方进入 wait」之间到达，
+        notify 发出去时根本没有人在等，订阅方随后白等满一个 timeout。
+        正确写法是「先检查条件，不满足才等；醒来后重新检查」——
+        这就是 Condition 的标准用法。
+        """
+        deadline = time.time() + timeout
+        with self._cond:
+            while True:
+                evs = [e for e in self._events.get(tid, []) if e["seq"] > after_seq]
+                t = self._tasks.get(tid)
+                snap = dict(t) if t else None
+                if evs:
+                    return evs, self._seq.get(tid, 0), snap
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return [], self._seq.get(tid, 0), snap
+                self._cond.wait(remaining)
+
+    def snapshot(self, tid: str) -> dict | None:
+        """取任务当前快照（SSE 握手时先发这个）。"""
+        with self._lock:
+            t = self._tasks.get(tid)
+            return dict(t) if t else None
 
     def _loop(self):
         while True:
             tid, fn = self._queue.get()
-            with self._lock:
+            with self._cond:
                 t = self._tasks.get(tid)
                 if not t:
                     continue
                 t["status"] = "running"
+                self._cond.notify_all()
             t0 = time.time()
             try:
                 result = fn(tid)
-                with self._lock:
-                    t["status"] = "done"
-                    t["result"] = result
+                with self._cond:
+                    t = self._tasks.get(tid)
+                    if t:
+                        t["status"] = "done"
+                        t["result"] = result
+                    self._cond.notify_all()
             except Exception as e:  # noqa: BLE001 —— 任务失败必须落状态，不能崩 worker
-                with self._lock:
-                    t["status"] = "error"
-                    t["error"] = f"{type(e).__name__}: {e}"
+                with self._cond:
+                    t = self._tasks.get(tid)
+                    if t:
+                        t["status"] = "error"
+                        t["error"] = f"{type(e).__name__}: {e}"
+                    self._cond.notify_all()
             finally:
-                with self._lock:
-                    t["cost"] = round(time.time() - t0, 2)
+                with self._cond:
+                    t = self._tasks.get(tid)
+                    if t:
+                        t["cost"] = round(time.time() - t0, 2)
+                    self._cond.notify_all()
 
     def fetch(self, tid: str) -> dict | None:
         with self._lock:
@@ -1523,8 +1603,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         只能答「数据里没有这一项」。现在模型有工具，能自己去找。
 
         全链路 30–90 秒（工具调用 + 多轮推理），必须异步：
-        任务走 TaskHub，前端轮询 /api/task?id=<tid>，
-        工具调用轨迹通过 tasks.report() 实时回传（前端能看到「它在查什么」）。
+        任务走 TaskHub，前端用 SSE 订阅 /api/insight/stream?id=<tid>
+        （老前端/网络异常时回退 900ms 轮询 /api/task），
+        工具调用轨迹通过 tasks.emit() 实时回传（前端能看到「它在查什么」）。
+
+        运行结束后整轮落盘到 ~/.mosu/runs/（core/runs.py）：
+        GUI 重启、用户关页面，这次分析都还在，可以回看。
         """
         question = (payload.get("question") or "").strip()
         if not question:
@@ -1535,6 +1619,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         def run(tid):
             from core.agent_engine import InsightAgent
             from core.agent_team import AgentTeam, BranchBudget
+            from core import runs as runs_mod
             with _ds_lock:
                 ds_obj = get_ds()
             # 多代理编排：主代理可派子代理并行查不同的人/时间段。
@@ -1546,6 +1631,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             # steps 要跨回调累积：tasks.report 是「覆盖式更新」，
             # 多步时必须自己拼一份再整体覆盖。
             steps_box = _agent_steps.setdefault(tid, [])
+            run_id = runs_mod.make_run_id(question)
+            tasks.emit(tid, "start", question=question, runId=run_id)
 
             def on_step(step):
                 steps_box.append(step)
@@ -1554,9 +1641,28 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 if team.branches:
                     live["branches"] = [b.to_dict() for b in team.branches]
                 tasks.report(tid, **live)
+                # 增量事件：SSE 只推这一步 + 最新的分支快照，
+                # 不用像轮询那样每次把整份 steps 重传一遍
+                tasks.emit(tid, "step", step=step,
+                           branches=[b.to_dict() for b in team.branches])
 
             tasks.report(tid, steps=[])
-            run_obj = ag.run(question, history=history, on_step=on_step)
+            try:
+                run_obj = ag.run(question, history=history, on_step=on_step)
+            except Exception as e:
+                # 落盘失败的轮次也要留痕——用户至少能看到「问过什么、报了什么错」
+                try:
+                    runs_mod.save_run({
+                        "id": run_id, "question": question, "answer": "",
+                        "steps": list(steps_box), "evidence": [],
+                        "branches": [b.to_dict() for b in team.branches],
+                        "error": f"{type(e).__name__}: {e}",
+                        "createdAt": time.time(),
+                        "status": "error",
+                    })
+                except Exception:
+                    pass
+                raise
             out = run_obj.to_dict()
             out["model"] = ag.llm.model
             # 分支树（多代理）：给前端画「谁派的、谁查的、什么结论」
@@ -1564,9 +1670,30 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             # 兼容旧字段：前端老组件读 facts/citations
             out["facts"] = []
             out["citations"] = []
+            # 落盘：整轮记录（含证据原文与分支树），供历史回看
+            try:
+                # 用**返回值**而不是自己生成的 run_id：save_run 遇到同名会加后缀
+                # （不覆盖旧数据），返回的才是真正写进去的那个 id
+                actual_id = runs_mod.save_run({
+                    "id": run_id,
+                    "question": question,
+                    "answer": out.get("answer", ""),
+                    "steps": out.get("steps", []),
+                    "evidence": out.get("evidence", []),
+                    "branches": out.get("branches", []),
+                    "tokens": out.get("tokens", 0),
+                    "cost": out.get("cost", 0),
+                    "model": out.get("model"),
+                    "createdAt": time.time(),
+                    "status": "done",
+                })
+                out["runId"] = actual_id
+            except Exception:
+                # 落盘失败不能连带整轮失败——答案已经算出来了
+                pass
             return out
 
-        tid = tasks.submit("insight-agent", run)
+        tid = tasks.submit("insight-agent", run, meta={"question": question})
         _agent_steps[tid] = []
         return {"taskId": tid, "status": "running"}
 
@@ -1763,6 +1890,82 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         except Exception:
             pass
         return out
+
+    def api_insight_stream(params: dict, wfile, finish) -> None:
+        """SSE：订阅一个洞察任务的实时事件流。
+
+        协议
+        ----
+        1. 先发一条 `snapshot` 事件：任务当前全量状态（status + live.steps
+           + live.branches）。**必须先快照**——订阅建立前已经发生的步骤只在
+           live 里，不在增量事件流里（增量事件只在订阅期间产生）。
+           不先发快照，客户端看到的轨迹会凭空少开头几步。
+        2. 再逐条发 `delta` 事件：{seq, kind, ...}，客户端按 seq 续订。
+        3. 任务结束发 `done`（带 result）或 `error`，然后 `end` 收尾。
+
+        为什么用 SSE 而不是继续轮询
+        --------------------------
+        轮询 900ms 一次，意味着用户最长要等 0.9 秒才看到「它查了第 3 步」，
+        而且每次轮询都要把整份 steps 数组重传一遍（几十步时每次几 KB）。
+        SSE 是服务端推送：事件产生即到达，传输量只有增量。
+
+        兼容性
+        ------
+        SSE 不可用（代理不支持、老浏览器）时前端回退到 /api/task 轮询，
+        两条路都能拿到完整结果——SSE 只影响「实时性」，不影响正确性。
+        """
+        tid = (params.get("id") or "").strip()
+        if not tid:
+            raise ValueError("缺少 id")
+
+        def emit(event: str, data: dict):
+            wfile.write(f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                        .encode("utf-8"))
+            wfile.flush()
+
+        snap = tasks.snapshot(tid)
+        if snap is None:
+            emit("error", {"error": "任务不存在或已过期"})
+            finish()
+            return
+
+        emit("snapshot", {"status": snap.get("status"),
+                          "live": snap.get("live") or {},
+                          "meta": snap.get("meta") or {}})
+
+        last_seq = 0
+        # 心跳：SSE 空闲久了中间层会掐断连接，定期发个注释行保活
+        idle_rounds = 0
+        while True:
+            evs, cur_seq, snap = tasks.wait_events(tid, last_seq, timeout=1.0)
+            if snap is None:
+                emit("error", {"error": "任务已消失"})
+                break
+            for ev in evs:
+                last_seq = ev["seq"]
+                emit("delta", ev)
+            status = snap.get("status")
+            if status in ("done", "error"):
+                # 终态：把最终结果一次性给全（增量里没有完整答案）
+                if status == "done":
+                    emit("done", {"result": snap.get("result") or {},
+                                  "cost": snap.get("cost"),
+                                  "seq": cur_seq})
+                else:
+                    emit("error", {"error": snap.get("error") or "任务失败",
+                                   "seq": cur_seq})
+                break
+            if not evs:
+                idle_rounds += 1
+                # 每 15 秒发一次心跳注释（EventSource 会忽略注释行）
+                if idle_rounds >= 15:
+                    idle_rounds = 0
+                    try:
+                        wfile.write(b": keep-alive\n\n")
+                        wfile.flush()
+                    except Exception:
+                        break
+        finish()
 
     def api_key_find_stream(self, params: dict, wfile, finish) -> None:
         """SSE：边扫边推送进度。事件 stage=process/mask/scan/deref/verify/done/error。
@@ -2039,6 +2242,76 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             if path == "/api/status":
                 try:
                     self._json(build_status())
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/insight/stream":
+                # SSE 长连接：订阅洞察任务的实时事件流。
+                # 自己管 header（不能用 _json，那会带 Content-Length）。
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                self.close_connection = False
+
+                def _finish():
+                    try:
+                        self.wfile.write(b"event: end\ndata: {}\n\n")
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    self.close_connection = True
+
+                try:
+                    api_insight_stream(self._params(), self.wfile, _finish)
+                except Exception as e:  # noqa: BLE001
+                    try:
+                        self.wfile.write(
+                            f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                            .encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                    _finish()
+                return
+            if path == "/api/runs":
+                # 洞察历史列表（摘要）。只读，不写。
+                try:
+                    from core import runs as runs_mod
+                    limit = 30
+                    q = self._params()
+                    if "limit" in q:
+                        limit = max(1, min(int(q["limit"]), 100))
+                    self._json({"runs": runs_mod.list_runs(limit)})
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/runs/detail":
+                # 单条运行记录全文（回看用）
+                try:
+                    from core import runs as runs_mod
+                    rid = (self._params().get("id") or "").strip()
+                    if not rid:
+                        raise ValueError("缺少 id")
+                    rec = runs_mod.load_run(rid)
+                    if rec is None:
+                        raise LookupError("运行记录不存在（可能已被清理）")
+                    self._json(rec)
+                except LookupError as e:
+                    self._json({"error": str(e)}, 404)
+                except ValueError as e:
+                    self._json({"error": str(e)}, 400)
+                except Exception as e:  # noqa: BLE001
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return
+            if path == "/api/runs/delete":
+                try:
+                    from core import runs as runs_mod
+                    rid = (self._params().get("id") or "").strip()
+                    ok = runs_mod.delete_run(rid)
+                    self._json({"deleted": ok})
                 except Exception as e:  # noqa: BLE001
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return

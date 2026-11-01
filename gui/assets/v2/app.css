@@ -1085,6 +1085,75 @@
   font-size: var(--fs-12); color: var(--text-3);
 }
 
+/* ------------------------------------------- 历史分析（落盘回看） */
+.v2-ia-hist-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; border-radius: var(--r-full);
+  background: var(--bg-inset); color: var(--text-2);
+  border: 1px solid var(--border);
+  font-size: var(--fs-12); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.v2-ia-hist-btn:hover { background: var(--brand-soft); color: var(--brand); }
+.v2-ia-hist-caret {
+  display: inline-block; transition: transform var(--dur) var(--ease);
+  font-size: 14px; line-height: 1;
+}
+.v2-ia-hist-caret.open { transform: rotate(90deg); }
+.v2-ia-hist-n {
+  padding: 0 5px; border-radius: var(--r-full);
+  background: var(--brand); color: var(--brand-text);
+  font-size: var(--fs-10, 10px); font-weight: 600;
+}
+.v2-ia-hist {
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+}
+.v2-ia-hist-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.v2-ia-hist-title { font-weight: 600; color: var(--text-1); font-size: var(--fs-13); }
+.v2-ia-hist-desc { flex: 1 1 auto; font-size: var(--fs-11); color: var(--text-4); }
+.v2-ia-hist-refresh {
+  flex: 0 0 auto; padding: 3px 10px; border-radius: var(--r-md);
+  background: var(--bg-1); border: 1px solid var(--border);
+  color: var(--text-2); font-size: var(--fs-11); cursor: pointer;
+}
+.v2-ia-hist-refresh:hover { border-color: var(--brand); color: var(--brand); }
+.v2-ia-hist-list { max-height: 320px; overflow-y: auto; }
+.v2-ia-hist-item {
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+.v2-ia-hist-item:first-child { border-top: none; }
+.v2-ia-hist-item:hover .v2-ia-hist-q { color: var(--brand); }
+.v2-ia-hist-item.open .v2-ia-hist-q { color: var(--brand); }
+.v2-ia-hist-q {
+  font-size: var(--fs-13); color: var(--text-1); line-height: 1.55;
+  word-break: break-word;
+}
+.v2-ia-hist-meta {
+  display: flex; align-items: center; gap: var(--sp-3);
+  margin-top: 3px; font-size: var(--fs-11); color: var(--text-4);
+}
+.v2-ia-hist-del {
+  margin-left: auto; padding: 1px 7px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-4); font-size: var(--fs-11); cursor: pointer;
+}
+.v2-ia-hist-del:hover { border-color: var(--danger); color: var(--danger); }
+.v2-ia-hist-detail {
+  margin-top: var(--sp-2); padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-1); border: 1px solid var(--border);
+}
+.v2-ia-answer.small { font-size: var(--fs-13); margin: 0; }
+
 /* 证据出处 */
 .v2-ia-cites { margin-top: var(--sp-4); }
 .v2-ia-ev-row {
