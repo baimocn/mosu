@@ -128,6 +128,13 @@ mosu dispatch status                         # 现在在跑什么 / 排了几个
 mosu dispatch wait --timeout 120             # 等当前这轮出结果
 mosu dispatch wait --run-id <id> --timeout 120  # 等指定的一轮
 mosu dispatch runs --limit 10                # 历史
+mosu dispatch stream                         # 订阅实时事件（NDJSON 逐行推）
+mosu dispatch stream --since 42              # 游标：先补 seq>42 的历史再接实时
+mosu dispatch stream --run-id <id>           # 只看某一轮的事件
+mosu dispatch stream --idle-timeout 60       # 空闲 60 秒后收尾（默认 30）
+mosu dispatch tail --run-id <id> --n 20      # 取末 20 条回复 + 最后一条助手回复
+mosu dispatch stop --run-id <id>             # 取消正在跑的那轮（协作式）
+mosu dispatch stop --reason "算错了"         # 带原因
 mosu dispatch <子命令> --json                 # 机器可读输出
 ```
 
@@ -141,8 +148,33 @@ mosu dispatch <子命令> --json                 # 机器可读输出
 - 通道由 `mosu gui` 自动拉起（127.0.0.1:8790），只监听本地回环
 - token 落 `~/.mosu/dispatch/control.token`，请求带 `Authorization: Bearer <token>`
 - 错误码：`BUSY` / `UNAUTHORIZED` / `NOT_FOUND` / `INVALID_REQUEST` / `TOO_LARGE` / `INVALID_JSON`
+  / `CANCELLED` / `NOT_CANCELLABLE`
 - 失败时 CLI **退出码非 0**，可直接用于脚本判断
 - 派活产出的分析同样落盘 `~/.mosu/runs/`，在 GUI 历史面板里能回看
+
+### 实时事件流（`stream`）
+
+NDJSON 逐行推，响应头 `Content-Type: application/x-ndjson`、**没有 Content-Length**
+（长度未知边跑边写）。每行一个事件：
+
+```json
+{"seq": 12, "ts": 1762150800.0, "kind": "toolFinished", "runId": "20261103-...",
+ "text": "tool_numbers {...}", "tool": "tool_numbers", "label": "查消息数"}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `seq` | **全局单调**序号（不是每会话独立）——`--since` 游标用它 |
+| `kind` | `runStarted` / `toolStarted` / `toolFinished` / `assistantDelta` / `status` / `steer` / `runCompleted` / `runFailed` / `runCancelled` |
+| `runId` | 属于哪一轮 |
+| `text` | 摘要（**已脱敏**，凭证变成 `[REDACTED]`） |
+
+- `--since N`：只收 `seq > N` 的事件。断线重连时带上次的 seq，
+  服务端**先补齐历史再接实时**（订阅先于回放，中间不漏事件）
+- 空闲超过 `--idle-timeout` 秒（默认 30）后服务端收尾；
+  指定 `--run-id` 时不过期（等那一轮结束）
+- **GUI 里问的问题也进同一条流**——GUI 侧洞察与派活通道共用一本事件日志
+- 事件日志有界保留 500 条（墨溯是长驻服务，不截断内存会一直涨）
 
 ## MCP Server
 

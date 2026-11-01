@@ -44,8 +44,8 @@ Lancer 完全没有真实数据能力（它的数据只有自己的会话记录�
 | **子树结算** | 孙分支须先被直接父消费，才向上一级回传 | 无 | 缺 | P1 |
 | **证据账本** | 8 种 kind + severity + git 快照 | `evidence` 有 `quote` / `stat` 两类 | 部分有 | P1 |
 | **流式反馈** | 事件溯源 + callId upsert + 50ms 节流 | 900ms 轮询 `/api/task` | 差距明显 | P1 |
-| **统一订阅通道** | 单条 `state-changed` 广播全量快照 | 每端点独立轮询 | 缺 | P1 |
-| **外部派活通道** | Control API（Unix socket + token，`send`/`queue`/`steer`/`wait`/`tail`） | MCP 只读：外部能**读**墨溯，墨溯不能被外部**驱动** | 缺 | P1 |
+| **统一订阅通道** | 单条 `state-changed` 广播全量快照 | ✅ 派活通道 NDJSON 事件流（迭代 9：全局单调 seq + `since` 游标 + 凭证脱敏），GUI 侧洞察共用同一本日志 | 部分有（前端未接入实时渲染） | P1 |
+| **外部派活通道** | Control API（Unix socket + token，`send`/`queue`/`steer`/`wait`/`tail`/`stream`/`stop`） | ✅ 本地 TCP + token，`send`/`queue`/`steer`/`status`/`runs`/`wait`/`tail`/`stream`/`stop`（迭代 9 补齐流式与取消） | 无缺口 | — |
 | **多模型目录** | 9 家族 + 自定义 + 可用/未启用/未配置三态 | ✅ 9 家族 + 多端点 + 三态（迭代 6，`core/model_catalog.py`） | 无缺口 | — |
 | **阶段流水线** | 1–8 阶段，各配 model/skills/goal/deliverables | ✅ 5 阶段契约（迭代 7）+ **阶段模型路由（迭代 8）**：取证 / 成文双角色，谓词 `distinct_configured_model` | 无缺口（只抄「角色分工」，不抄固定管道） | — |
 | **分支可视化** | GitTree + 语义锚点光线 + 流动边框 | 5 视图平铺，无分支视图 | 缺 | P1 |
@@ -162,6 +162,7 @@ Lancer 的核心不等式，逐条抄：
 | **6** | 多模型目录（9 家族识别 + 多端点 + 三态 + 模型选择器 UI） | 模型名优先于 provider 归类；切换模型下游真的生效；旧配置继续可用 | ✅ 完成 |
 | **7** | 洞察阶段契约（`core/pipeline.py`）：5 阶段 + status code 带 ok_to_proceed + 每阶段 gate 产物 + forbidden 清单 + 机械摘要 | 契约随答案返回；判定用原始答案不自证；前端阶段带三态可区分 | ✅ 完成 |
 | **8** | 阶段模型路由（`core/llmconfig.py` + `core/agent_engine.py`）：取证 / 成文双角色 + `distinct_configured_model` 谓词 | 配了不同模型 → 成文真跑且谓词成立；配同名 → 明确点破不假装；不配置 → 行为一字不变 | ✅ 完成 |
+| **9** | 派活通道补齐 Lancer Control API 的三样：`stream`（NDJSON 事件流 + `since` 游标 + 凭证脱敏）/ `tail` / `stop`（协作式取消） | 订阅端实时看到工具轨迹；`stop` 真打断且 `wait` 看到 `cancelled`；空闲时明确报 `NOT_CANCELLABLE` | ✅ 完成 |
 
 ### 迭代 1 实测记录（补充）
 
@@ -597,6 +598,113 @@ mock 造出 tool_numbers 就能让判定通过，但那不叫交叉核验。
 
 成文答案正文里真的带上了「（依据：…）」引用标记——
 这是「第二个模型确实参与了」的硬证据，不是字段名对得上而已。
+
+---
+
+## 六之四、迭代 9 详细记录：派活通道的 stream / tail / stop
+
+### 读 Lancer 读出了什么
+
+`apps/desktop/electron/control/` 四个文件，1468 行。关键三处：
+
+**① 服务端流式响应**（`control-server.ts`）：
+
+```ts
+if (!(result instanceof ControlStream)) { respond(200, {ok:true,result}); return; }
+response.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
+response.flushHeaders();
+for await (const event of result) { response.write(`${JSON.stringify(event)}\n`); }
+```
+
+**② 订阅先于回放**（`control-stream.ts` 的注释，一字不差）：
+
+> A subscription is installed before replay so a cursor never races live publication.
+
+**③ 游标语义**（`control-service.ts:482`）：`since` 必须是非负安全整数，
+`journal.logs(ref, since)` 回放 **`seq > since`** 的事件。
+
+Lancer 的 `ControlStream` 是**常驻**的——`control-stream.ts` 里只有 `close()`，
+没有任何「空闲就结束」的判定。
+
+### 墨溯抄了什么
+
+| Lancer | 墨溯 | 差异原因 |
+|---|---|---|
+| `stream` → NDJSON 逐行推 | ✅ `core/dispatch_journal.py` + `core/dispatch_server.py` | — |
+| 全局单调 `seq` | ✅ 全局（不是每会话独立） | seq 只是游标，单调就够 |
+| 订阅先于回放 | ✅ 同口径 | — |
+| `since` 游标 | ✅ `require_cursor` 严格校验（拒 bool / 负数 / 小数） | — |
+| `tail` → 末 N 条 + lastAssistant | ✅ 同口径（n 上限 1000） | — |
+| `stop` → 取消当前轮 | ✅ **协作式**取消 | Lancer 是杀进程，墨溯不能崩 GUI |
+| `runtime-journal` 的凭证脱敏 | ✅ 采集 + 替换两步 | — |
+| Unix socket（明确拒绝 Windows） | ✅ localhost TCP + token | Windows 是主战场 |
+| journal 不截断 | ✅ **有界保留 500 条** | 墨溯是长驻服务，不截断内存会一直涨 |
+
+### 三个设计判断
+
+**① seq 是全局的，不是每会话独立。**
+分会话编号会让人以为 seq 在会话之间可比，然后写出错误的过滤条件。
+
+**② 凭证脱敏必须两步。**
+只做替换会漏掉「字段名叫 `notes`、值其实是 key」的情况；
+只做采集不替换则文本里仍有明文。所以：先从
+`key|token|secret|password|authorization` 命中的字段**采集**，
+再把采集到的字面量从所有文本里替换成 `[REDACTED]`。
+
+**③ 取消是协作式的，不打断进行中的工具调用。**
+打断会留下半截状态（工具写了一半、事务开着）。
+做法是在 ReAct 循环的**下一步**检查取消标志——所以 `stop` 会等一小会儿确认它真停了。
+等不到就返回 `stopped=false` + note 说明「已请求但还没停下」——
+**撒谎说停了比说没停更糟**。
+
+### 端到端抓到的 2 个真 bug
+
+**Bug 1：`stream` 一空闲就断开 → 「先订阅、后派活」整条能力作废。**
+
+原实现：没新事件且当前没任务在跑 → 立刻 `break` 收尾。
+问题：外部程序最自然的用法是**先开一条订阅等着，再派活**——
+可它一连上就发现「当前没任务在跑」→ 立刻断开 → 派活时已经没人接了。
+真机上就是「订阅端收到 0 条事件」。
+
+修法：引入 `idleTimeout`（默认 30 秒），空闲要**连续一段时间**才算真空闲。
+不是照抄 Lancer 的常驻语义——墨溯是长驻服务，不能让每条订阅连接无限期挂着。
+
+**反向验证**（不能只看测试绿）：把服务端改回旧逻辑 →
+新增的两条单测**双双失败**；恢复修复后双双通过。
+
+**Bug 2：GUI 侧的洞察事件进不了 journal → 订阅端看不到用户在 GUI 里问的问题。**
+
+根因：GUI 的 `/api/insight/ask` 走 GUI 自己的 TaskHub，
+派活通道走 `InsightRunner._start`——两条路各写各的，
+`EventJournal` 只被后者碰过。
+
+而 **GUI 才是墨溯的主入口**。不补这条，`stream` 就只在边角场景可用。
+
+修法：`InsightRunner` 开三个公共方法（`note_run_started` / `note_step` /
+`note_run_finished`），两条路**共用一本日志**；
+GUI 侧额外用 `mark_done` / `alias_run` / `rename_done`
+让 GUI 那一轮的轮次也能被 `wait` / `tail` 按 runId 查到
+（落盘给 id 加后缀时，事件归属与状态要一起改名）。
+
+### 实测记录
+
+- 新增单元测试 **68 例**（`tests/test_dispatch_stream.py`）+ 既有 `test_dispatch.py` 46 例
+- 端到端 **38/38 通过**（真起 GUI、真发 HTTP、真模型、真收字节）
+- 全量回归 1092 → **1160 passed / 16 skipped / 0 failed**
+- 验证报告 L5（`docs/verification/iter9-dispatch-stream.json`），10 条「哪些没跑」
+
+真机跑出来的关键事实：
+
+| 场景 | 实际结果 |
+|---|---|
+| 先订阅后派活 | 收到 6 条事件，seq=[1..6] 严格递增 |
+| `since` 游标 | since=4 只收到 [5,6]，不重复旧事件 |
+| `tail` | lastAssistant 233 字，含「没有张三这个人」的诚实回答与依据引用 |
+| `stop` 真打断 | busy=True → stopped=true → `wait` 看到 `cancelled`（不是干等到超时） |
+| 空闲时 `stop` | 明确报 `NOT_CANCELLABLE`，不谎报 |
+| 鉴权 | token 不对 → HTTP 401 |
+| 脱敏 | 事件流全文扫不出真 API Key 明文 |
+| GUI 侧洞察 | 订阅端收到 25 条事件（11 条 toolFinished），`wait`/`tail` 都能按 runId 查到 |
 
 ---
 

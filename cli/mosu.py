@@ -1067,6 +1067,15 @@ def cmd_dispatch(args, ds: Dataset):
         # --limit 来自 common 父解析器（SUPPRESS 默认，没给就不存在）
         req = dp.make_request("runs",
                               limit=getattr(args, "limit", None) or 30)
+    elif cmd == "tail":
+        req = dp.make_request("tail", run_id=args.run_id,
+                              n=getattr(args, "n", None) or 20)
+    elif cmd == "stop":
+        req = dp.make_request("stop", run_id=args.run_id,
+                              reason=getattr(args, "reason", "") or None)
+    elif cmd == "stream":
+        # stream 走**独立的流式通道**，不走下面的 call()
+        return _dispatch_stream(args)
     else:
         req = dp.make_request("status")
 
@@ -1150,10 +1159,91 @@ def cmd_dispatch(args, ds: Dataset):
         if st == "error":
             print(f"[x] 任务失败：{result.get('error')}")
             return 1
+        if st == "cancelled":
+            res = result.get("result") or {}
+            print(f"[已取消] {res.get('cancelReason') or '外部取消'}")
+            if res.get("answer"):
+                print(f"（取消前已查到的内容：{res['answer'][:200]}）")
+            return 0
         print(f"[{st}] {result.get('note') or ''}")
         return 0
 
+    if cmd == "tail":
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        msgs = result.get("messages") or []
+        if not msgs:
+            print("（还没有消息）")
+        for m in msgs:
+            kind = m.get("kind")
+            if kind == "message":
+                print(f"[{m.get('role')}] {m.get('text')}")
+            else:
+                print(f"[工具] {m.get('tool')}：{m.get('text')}")
+        la = result.get("lastAssistant")
+        if la:
+            print("\n—— 最后一条助手回复 ——")
+            print(la)
+        return 0
+
+    if cmd == "stop":
+        if result.get("stopped"):
+            print(f"[已停止] runId={result.get('runId')}")
+        else:
+            print(f"[已请求取消] {result.get('note')} "
+                  f"（runId={result.get('runId')}）")
+        return 0
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _dispatch_stream(args) -> int:
+    """流式看运行时事件（迭代 9）。
+
+    走 NDJSON 通道：服务端边跑边推，这里逐行读并打印。
+
+    `--since` 是游标：断线重连时带上上次收到的 seq，
+    服务端会先补齐 seq > since 的历史，再接实时。
+    """
+    from core import dispatch as dp
+    req = dp.make_request("stream",
+                          run_id=getattr(args, "run_id", None),
+                          since=int(getattr(args, "since", 0) or 0),
+                          timeout=float(getattr(args, "timeout", 300) or 300))
+    idle_to = float(getattr(args, "idle_timeout", 0) or 0)
+    if idle_to > 0:
+        req["idleTimeout"] = idle_to
+    as_json = bool(getattr(args, "json", False))
+
+    def _on_event(ev: dict) -> None:
+        if as_json:
+            print(json.dumps(ev, ensure_ascii=False))
+        else:
+            kind = ev.get("kind") or ""
+            text = (ev.get("text") or "").replace("\n", " ")
+            label = ev.get("label") or ev.get("tool") or ""
+            prefix = {
+                "runStarted": "▶",
+                "toolFinished": "·",
+                "toolStarted": "·",
+                "steer": "↪",
+                "status": "◆",
+                "runCompleted": "✔",
+                "runFailed": "✘",
+                "runCancelled": "⊘",
+            }.get(kind, "·")
+            tail = f" {text[:160]}" if text else ""
+            print(f"{prefix} [{kind}] {label}{tail}", flush=True)
+
+    res = dp.stream(req, on_event=_on_event,
+                    timeout=float(getattr(args, "timeout", 300) or 300) + 30)
+    if not res.get("ok"):
+        err = res.get("error") or {}
+        print(f"[x] {err.get('code')}：{err.get('message')}")
+        return 1
+    print(f"\n（收到 {res.get('count')} 条事件，末序号 {res.get('lastSeq')}）")
     return 0
 
 
@@ -1186,6 +1276,12 @@ def _dispatch_wait(run_id: str | None, args) -> int:
     if st == "error":
         print(f"[x] 任务失败：{result.get('error')}")
         return 1
+    if st == "cancelled":
+        res = result.get("result") or {}
+        print(f"[已取消] {res.get('cancelReason') or '外部取消'}")
+        if res.get("answer"):
+            print(f"（取消前已查到的内容：{res['answer'][:200]}）")
+        return 0
     print(f"[{st}] {result.get('note') or ''}")
     return 0
 
@@ -1402,15 +1498,24 @@ def build_parser():
                        parents=[common])
     p.add_argument("dispatch_cmd", nargs="?", default="status",
                    choices=["send", "queue", "steer", "status", "runs", "wait",
-                            "endpoint"],
+                            "endpoint", "stream", "tail", "stop"],
                    help="send=立刻开跑 queue=排队 steer=引导当前这轮 "
                         "status=看状态 runs=列历史 wait=等结果 "
-                        "endpoint=打印接入信息")
+                        "endpoint=打印接入信息 "
+                        "stream=流式看运行时事件 tail=取末几条回复 "
+                        "stop=取消正在跑的那轮")
     p.add_argument("--question", help="要问的问题（send/queue 用）")
     p.add_argument("--message", help="引导内容（steer 用）")
-    p.add_argument("--run-id", help="等哪一轮（wait 用）")
+    p.add_argument("--run-id", help="等哪一轮（wait/tail/stop/stream 用）")
     p.add_argument("--timeout", type=float, default=300,
-                   help="wait 最多等多少秒（默认 300）")
+                   help="wait/stream 最多等多少秒（默认 300）")
+    p.add_argument("--since", type=int, default=0,
+                   help="stream 的游标：只要 seq 大于它的（断线重连用）")
+    p.add_argument("--idle-timeout", type=float, default=0,
+                   help="stream 空闲多少秒后收尾（默认 30；指定轮次时不过期）")
+    p.add_argument("--n", type=int, default=20,
+                   help="tail 取末几条（默认 20）")
+    p.add_argument("--reason", default="", help="stop 的取消原因")
     # --limit 已在 common 父解析器里（argparse.SUPPRESS 默认），
     # 这里不能重复定义，否则 argparse 直接报 conflict。
     p.add_argument("--wait", action="store_true",

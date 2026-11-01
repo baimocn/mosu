@@ -206,6 +206,11 @@ class AgentRun:
         # collectModel = 跑 ReAct 循环的模型；writeModel = 写最终答案的模型。
         # distinct = 两者是否真的不同（Lancer 的 distinct_configured_model 谓词）。
         self.model_routing: dict = {}
+        # 取消状态（迭代 9）。cancelled=True 表示这一轮被外部打断，
+        # 不是正常跑完——下游（派活 wait / GUI）必须区分这两种情况，
+        # 否则用户看到半截答案还以为跑完了。
+        self.cancelled = False
+        self.cancelReason = ""
 
     def to_dict(self) -> dict:
         return {
@@ -220,6 +225,9 @@ class AgentRun:
             "contract": self.contract,
             # 模型路由：取证模型 / 成文模型 / 是否不同
             "modelRouting": self.model_routing,
+            # 取消状态：True = 被外部打断（不是正常跑完）
+            "cancelled": self.cancelled,
+            "cancelReason": self.cancelReason,
         }
 
 
@@ -257,6 +265,14 @@ class InsightAgent:
         self._collect_llm = None
         self._write_llm = None
         self._model_routing: dict = {}
+        # 取消标志（迭代 9）。派活通道的 stop 操作靠它打断正在跑的那轮。
+        #
+        # 为什么用 Event 而不是 bool：取消方（另一个线程）要能**等**到
+        # 主循环真的停了（"已取消" ≠ "正在取消"）。
+        # 为什么不用 bool：bool 没有等待语义，取消方只能 sleep 猜。
+        self._cancel_event = threading.Event()
+        # 取消原因。被 cancel(reason) 传进来，回看历史时能知道为什么停。
+        self._cancel_reason = ""
 
     # ------------------------------------------------------ 模型路由（迭代 8）
     def _resolve_models(self) -> dict:
@@ -383,6 +399,44 @@ class InsightAgent:
         })
         return True
 
+    # ------------------------------------------------------------ 取消（迭代 9）
+    def cancel(self, reason: str = "") -> bool:
+        """请求取消这一轮。返回是否**新发起**了一次取消。
+
+        语义要点：
+        - **幂等**：重复取消返回 False（第一次已经取消过了）。
+        - **不抛异常**：取消是「请停下」，不是「出错」。
+        - **不打断正在进行的单次工具调用**：工具调用是原子的，
+          取消在**下一步**生效。这样工具不会留下半截状态
+          （比如数据库事务开了没关）。
+
+        为什么不能硬中断线程：Python 没有安全的线程 kill，
+        强行中断会在任意字节处停下，可能损坏 ToolBox 的缓存结构。
+        """
+        with self._steer_lock:      # 复用同一把锁：取消与引导都是「外部干预」
+            if self._cancel_event.is_set():
+                return False
+            self._cancel_reason = (reason or "").strip()
+            self._cancel_event.set()
+            return True
+
+    @property
+    def cancelled(self) -> bool:
+        """是否已被请求取消。"""
+        return self._cancel_event.is_set()
+
+    @property
+    def cancel_reason(self) -> str:
+        return self._cancel_reason
+
+    def wait_cancelled(self, timeout: float = 30.0) -> bool:
+        """等主循环真的停下。返回是否在超时前停了。
+
+        「已请求取消」≠「已停下」——主循环可能正卡在一次 45 秒的工具调用里。
+        派活的 stop 操作要回「已停止」就得真的等到。
+        """
+        return self._cancel_event.wait(timeout)
+
     @property
     def llm(self):
         if self._llm is None:
@@ -430,6 +484,26 @@ class InsightAgent:
         # 让成文模型看到取证者的自述，它就只会照抄，交叉核验就白搭了。
         evidence_pack: list[dict] = []
         for step_i in range(self.MAX_STEPS):
+            # ---- 取消检查点（迭代 9）
+            # 放在循环**最开头**：上一轮的工具结果已经拿到了，
+            # 现在停手是安全的（工具调用是原子的）。
+            # 不打断正在进行的单次工具调用——那会留下半截状态。
+            if self._cancel_event.is_set():
+                run.cancelled = True
+                run.cancelReason = self._cancel_reason
+                run.steps.append({
+                    "index": len(run.steps) + 1,
+                    "tool": "cancel",
+                    "label": "已取消",
+                    "summary": (self._cancel_reason or "外部请求取消")[:80],
+                    "ok": False,
+                })
+                if on_step:
+                    try:
+                        on_step(run.steps[-1])
+                    except Exception:
+                        pass
+                break
             # 外部引导（steer）：在每轮模型调用**之前**注入。
             # 放这里而不是循环外，是因为引导可能随时到达——
             # 循环外只注一次的话，运行中途来的引导就丢了。
@@ -568,7 +642,13 @@ class InsightAgent:
         # 同一模型跑一遍等于白跑一遍（还多花一次 token），
         # 还不如让取证模型自己写——那样至少上下文是连贯的。
         run.model_routing = dict(self._model_routing)
-        if self._model_routing.get("distinct"):
+        if run.cancelled:
+            # 已被取消 → **不再跑成文**。
+            # 理由：取消的语义是「别再花我的钱和时间了」。
+            # 都已经决定停了，还再调一次模型（成文是第二次调用），
+            # 既违背意图又白花钱。
+            run.model_routing["composeError"] = "已取消，跳过成文环节"
+        elif self._model_routing.get("distinct"):
             composed = self._compose(question, evidence_pack)
             if composed:
                 run.answer = composed

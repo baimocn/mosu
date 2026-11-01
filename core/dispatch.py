@@ -35,6 +35,8 @@ Unix socket 在 Windows 上要靠额外依赖（pywin32 之外还得装 msyswin�
   UNSUPPORTED      该 operation 在当前后端不可用
   INTERNAL_ERROR   服务端内部错误
   TOO_LARGE        请求体超限
+  CANCELLED        目标已被取消（迭代 9）
+  NOT_CANCELLABLE  目标不在运行中，没法取消（迭代 9）
 
 操作集
 ------
@@ -44,6 +46,23 @@ Unix socket 在 Windows 上要靠额外依赖（pywin32 之外还得装 msyswin�
   status  查某轮/全局状态
   runs    列历史运行（复用 core/runs.py）
   wait    等某轮跑完并取结果
+  stream  **流式订阅**。NDJSON 逐行推运行时事件（迭代 9）
+  tail    取末 N 条消息 + 最后一条助手回复（迭代 9）
+  stop    取消正在跑的那一轮（迭代 9）
+
+迭代 9 补的三样（对标 Lancer 的 control-service.ts）
+--------------------------------------------------
+  stream —— Lancer 的 `operation === "stream"` 返回 ControlStream，
+    服务端转成 `Content-Type: application/x-ndjson` 逐行推。
+    关键语义：**带 since 游标**——先回放 `seq > since` 的历史，
+    再接上实时流。断线重连只要带上最后收到的 seq 就行。
+    订阅**先于**回放安装，否则回放与实时之间会漏事件。
+
+  tail —— Lancer 的 `operation === "tail"`：返回末 N 条消息
+    外加 lastAssistant（最后一条助手回复）。这是「只想要结果，
+    不要过程」的轻量出口——stream 是给要跟着看的，tail 是给只要结论的。
+
+  stop —— Lancer 的 `operation === "stop"`：取消正在跑的那轮。
 """
 
 from __future__ import annotations
@@ -70,9 +89,17 @@ ERR_NOT_FOUND = "NOT_FOUND"
 ERR_UNSUPPORTED = "UNSUPPORTED"
 ERR_INTERNAL = "INTERNAL_ERROR"
 ERR_TOO_LARGE = "TOO_LARGE"
+ERR_CANCELLED = "CANCELLED"
+ERR_NOT_CANCELLABLE = "NOT_CANCELLABLE"
 
 # 全部合法 operation
-OPS = ("send", "queue", "steer", "status", "runs", "wait")
+OPS = ("send", "queue", "steer", "status", "runs", "wait",
+       "stream", "tail", "stop")
+
+# 需要**流式响应**的 operation（迭代 9）。
+# 这几个不能走普通的一问一答信封——响应体是 NDJSON 流，
+# 要边跑边推，不是等全部完成才给一个 JSON。
+STREAM_OPS = ("stream",)
 
 
 class DispatchError(Exception):
@@ -247,6 +274,39 @@ def require_str(data: dict, key: str, maxlen: int = 20000) -> str:
     return v
 
 
+def require_cursor(data: dict, key: str = "since") -> int:
+    """取游标参数。必须是**非负安全整数**。
+
+    与 Lancer 的 cursor() 同口径：`since` 是 seq 游标，
+    负数 / 小数 / 非数字都是参数不合法。
+
+    为什么必须是整数而不是能转就转：游标是「我收到第几条了」的序号，
+    传 1.5 没有意义（没有第 1.5 条），传 -1 会让服务端从头推，
+    而客户端以为是要「最后 1 条」——静默推错比报错难查得多。
+    """
+    v = data.get(key)
+    if v is None:
+        return 0
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise DispatchError(ERR_INVALID_REQUEST,
+                            f"{key} 必须是非负整数（收到 {v!r}）")
+    return v
+
+
+def require_int(data: dict, key: str, lo: int, hi: int, default: int) -> int:
+    """取有界整数参数。"""
+    v = data.get(key)
+    if v is None:
+        return default
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise DispatchError(ERR_INVALID_REQUEST,
+                            f"{key} 必须是整数（收到 {v!r}）")
+    if v < lo or v > hi:
+        raise DispatchError(ERR_INVALID_REQUEST,
+                            f"{key} 必须在 {lo}..{hi} 之间（收到 {v}）")
+    return v
+
+
 # ---------------------------------------------------------------------------
 # 客户端
 # ---------------------------------------------------------------------------
@@ -328,3 +388,105 @@ def call_or_raise(req: dict, **kw) -> dict:
         raise DispatchError(e.get("code") or ERR_INTERNAL,
                             e.get("message") or "未知错误")
     return r.get("result") or {}
+
+
+# ---------------------------------------------------------------------------
+# NDJSON 流式客户端（迭代 9）
+# ---------------------------------------------------------------------------
+def stream(req: dict, host: str | None = None, port: int | None = None,
+           token: str | None = None, timeout: float = 300.0,
+           on_event=None, stop_check=None):
+    """发一个流式请求，逐行读 NDJSON 事件。
+
+    返回 {"ok": True, "count": N, "lastSeq": S} 或 {"ok": False, "error": {...}}。
+
+    与 call() 的区别：
+    - call() 等一个完整 JSON 应答；stream() 边跑边收。
+    - 响应头是 `Content-Type: application/x-ndjson`，
+      **没有 Content-Length**（长度未知，边跑边写）。
+      所以不能靠 Content-Length 判断结束，只能靠连接关闭。
+
+    `on_event(event)` 每收到一行调一次。返回 False 可以提前中断。
+    `stop_check()` 每行之前调一次，返回 True 就中断连接。
+    两者都可选。
+
+    为什么不用 requests / httpx：零外部依赖铁律（标准库足够）。
+
+    错误处理：**连接断了不等于失败**——服务端可能正常跑完就关了连接。
+    只有「一行都没收到且连接异常」才算错误。
+    中途断开但已经收到过事件 → 返回 ok=True，并把已收到的告诉调用方。
+    """
+    import socket as _socket
+
+    if host is None or port is None:
+        h, p = _resolve_endpoint()
+        host = host or h
+        port = port or p
+    tok = token if token is not None else read_token()
+    if not tok:
+        return err(ERR_UNAUTHORIZED,
+                   "找不到控制 token（墨溯 GUI 没在跑，或 ~/.mosu/dispatch/ 不存在）")
+
+    body = json.dumps(req, ensure_ascii=False).encode("utf-8")
+    head = (
+        f"POST /v1 HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Authorization: Bearer {tok}\r\n"
+        f"Content-Type: application/json; charset=utf-8\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Accept: application/x-ndjson\r\n"
+        f"Connection: close\r\n\r\n"
+    ).encode("ascii")
+
+    buf = b""
+    count = 0
+    last_seq = 0
+    try:
+        with _socket.create_connection((host, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(head + body)
+            while True:
+                if stop_check is not None:
+                    try:
+                        if stop_check():
+                            break
+                    except Exception:
+                        pass
+                try:
+                    d = s.recv(65536)
+                except (_socket.timeout, OSError):
+                    # 超时/断开：收到过事件就当正常收尾，没收到才算失败
+                    break
+                if not d:
+                    break
+                buf += d
+                # NDJSON：按 \n 切
+                while b"\n" in buf:
+                    line, _, buf = buf.partition(b"\n")
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        # 不是 JSON 的行：跳过，不让一行脏数据毁掉整条流
+                        continue
+                    count += 1
+                    try:
+                        last_seq = int(ev.get("seq") or last_seq)
+                    except (TypeError, ValueError):
+                        pass
+                    if on_event is not None:
+                        try:
+                            if on_event(ev) is False:
+                                return {"ok": True, "count": count,
+                                        "lastSeq": last_seq}
+                        except Exception:
+                            pass
+    except OSError as e:
+        if count:
+            return {"ok": True, "count": count, "lastSeq": last_seq}
+        return err(ERR_NOT_FOUND,
+                   f"连不上派活服务 {host}:{port}（{e}）。"
+                   f"确认墨溯 GUI 在跑：mosu gui")
+    return {"ok": True, "count": count, "lastSeq": last_seq}

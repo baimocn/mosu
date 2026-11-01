@@ -116,6 +116,12 @@ python cli/mosu.py sessions
   外部脚本 / 定时任务 / 别的 agent 都能用；三种投递语义——`send` 忙时明确拒绝、
   `queue` 排队等当前这轮跑完、`steer` 把补充指令递进正在跑的那轮；
   token 鉴权 + 常量时间比较，通道只监听 127.0.0.1
+- **派活通道的实时事件流**：`mosu dispatch stream` 订阅运行时事件（NDJSON 逐行推，
+  全局单调 seq + `since` 游标断线重连能补历史），能实时看到「它正在查哪个工具、
+  查到第几步」；`tail` 取末几条回复只要结论；`stop` 取消正在跑的那轮
+  （**协作式**取消——不打断进行中的工具调用，在下一步才停）
+  - 事件里的凭证自动脱敏（API key 不会广播出去）
+  - **GUI 里问的问题也进同一条流**——GUI 才是主入口，订阅端不会只看到边角场景
 - **离线情感分析**：内置中文情感词典 + 否定/程度规则，不调任何外部 API
 - **验证纪律**：6 级证据分级（L1 静态 → L6 真机全链路），每份验证报告**必须**
   列出「哪些没跑」——`docs/verification.md` 有完整规则，
@@ -134,7 +140,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，1108 例）：
+测试（全离线，1176 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -226,6 +232,10 @@ python cli/mosu.py dispatch steer --message "重点看工作相关的"   # 引�
 python cli/mosu.py dispatch status                        # 现在在跑什么
 python cli/mosu.py dispatch wait --timeout 120            # 等当前这轮出结果
 python cli/mosu.py dispatch runs --limit 10               # 历史
+python cli/mosu.py dispatch stream                        # 订阅实时事件（NDJSON 逐行）
+python cli/mosu.py dispatch stream --since 42             # 从 seq>42 补历史再接实时
+python cli/mosu.py dispatch tail --run-id <id>            # 取末几条回复只要结论
+python cli/mosu.py dispatch stop --run-id <id>            # 取消正在跑的那轮
 ```
 
 三种投递语义对应三种处境：
@@ -237,6 +247,17 @@ python cli/mosu.py dispatch runs --limit 10               # 历史
 
 派活产出的分析同样落盘到 `~/.mosu/runs/`，在 GUI 历史面板里能回看。
 通道只监听 127.0.0.1，token 落 `~/.mosu/dispatch/control.token`（0600）。
+
+**实时事件流**（迭代 9，对标 Lancer 的 Control API `stream`）：
+NDJSON 逐行推，事件带全局单调 `seq`，`--since` 是游标
+（断线重连带上次的 seq，服务端先补齐 `seq > since` 的历史再接实时，
+中间不漏事件——Lancer 的 `ControlStream` 明确要求「订阅先于回放」）。
+事件里的凭证自动脱敏，API key 不会广播出去。
+
+**取消是协作式的**：不打断正在进行的工具调用（那会留下半截状态），
+在主循环的下一步才检查取消标志。所以 `stop` 会等一小会儿确认它真停了——
+停不到就明说「已请求但还没停下」，**不谎报取消成功**。
+目标不在跑时明确返回 `NOT_CANCELLABLE`，而不是假装取消成功。
 
 ### 3. 输出格式
 
@@ -384,7 +405,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（1108 例）
+tests/                 离线测试（1176 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -397,7 +418,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（1108 例）
+- [x] 离线测试套件（1176 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -491,7 +512,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (1108 cases)
+tests/          offline test suite (1176 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

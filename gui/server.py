@@ -515,6 +515,22 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 _media = MediaStore(get_ds().user_dir, ROOT / ".cache").build()
             return _media
 
+    # ---- 运行时事件日志（迭代 9）-------------------------------------
+    # GUI 侧的洞察与派活通道**必须共用同一本日志**。
+    # 否则外部订阅端只能看到「派活通道派出去的活」，
+    # 看不到用户在 GUI 里问的那些——而 GUI 才是墨溯的主入口，
+    # 那样的话 stream 这个能力等于只在边角场景可用。
+    from core.dispatch_journal import EventJournal
+    from core.dispatch_server import InsightRunner
+
+    _journal = EventJournal()
+
+    def _dispatch_get_ds():
+        with _ds_lock:
+            return get_ds()
+
+    _runner = InsightRunner(_dispatch_get_ds, journal=_journal)
+
     # ---------------------------------------------------------------- 状态
     def build_status() -> dict:
         cred = wx.load_cred()
@@ -1633,9 +1649,14 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             steps_box = _agent_steps.setdefault(tid, [])
             run_id = runs_mod.make_run_id(question)
             tasks.emit(tid, "start", question=question, runId=run_id)
+            # 迭代 9：GUI 侧的洞察也要进事件日志，
+            # 这样外部订阅端（mosu dispatch stream）能实时看到
+            # 用户在 GUI 里问的这轮跑到哪一步了。
+            _runner.note_run_started(run_id, question)
 
             def on_step(step):
                 steps_box.append(step)
+                _runner.note_step(run_id, step)
                 # 分支状态实时上报：子代理跑到哪一步，用户能实时看到
                 live = {"steps": list(steps_box)}
                 if team.branches:
@@ -1662,6 +1683,9 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     })
                 except Exception:
                     pass
+                _runner.note_run_finished(run_id, "error",
+                                         error=f"{type(e).__name__}: {e}")
+                _runner.mark_done(run_id, "error")
                 raise
             out = run_obj.to_dict()
             out["model"] = ag.llm.model
@@ -1701,6 +1725,17 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             except Exception:
                 # 落盘失败不能连带整轮失败——答案已经算出来了
                 pass
+            # 事件日志收尾（迭代 9）：外部订阅端要看到「这轮跑完了」
+            _runner.note_run_finished(run_id, "done",
+                                     answer=out.get("answer") or "")
+            _runner.mark_done(run_id, "done", out)
+            # 落盘可能给 id 加了后缀（不覆盖旧数据），用户拿到的是 actual_id。
+            # 轨迹与状态要跟着改名，否则 tail/wait 按用户看到的 id 查不到。
+            actual_id = out.get("runId")
+            if actual_id and actual_id != run_id:
+                _runner.alias_run(run_id, actual_id)
+                _runner.rename_done(run_id, actual_id)
+                _runner.mark_done(actual_id, "done", out)
             return out
 
         tid = tasks.submit("insight-agent", run, meta={"question": question})
@@ -2707,15 +2742,15 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     _dispatch_srv = None
     try:
         from core import dispatch as _dp
-        from core.dispatch_server import DispatchServer, InsightRunner
+        from core.dispatch_server import DispatchServer
 
-        def _dispatch_get_ds():
-            with _ds_lock:
-                return get_ds()
-
-        _runner = InsightRunner(_dispatch_get_ds)
-        _dispatch_srv = DispatchServer(_runner, host="127.0.0.1",
-                                       port=_dp.default_port())
+        # 复用上面建好的 _runner（它持有共享的 _journal）。
+        # 这里**不能**再 new 一个 InsightRunner——那会得到第二本事件日志，
+        # GUI 侧的洞察事件就进不了派活通道的 stream。
+        _dispatch_srv = DispatchServer(
+            _runner, host="127.0.0.1", port=_dp.default_port(),
+            # 迭代 9：流式订阅（NDJSON 逐行推运行时事件）
+            streamer=_runner.stream_events)
         _dispatch_srv.serve_forever_in_thread()
         _dp.write_endpoint(_dispatch_srv.port, pid=os.getpid())
         print(f"[mosu-dispatch] 派活通道已开：127.0.0.1:{_dispatch_srv.port}"

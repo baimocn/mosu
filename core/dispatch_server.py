@@ -30,6 +30,7 @@ import uuid
 from pathlib import Path
 
 from core import dispatch as proto
+from core.dispatch_journal import EventJournal
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -83,6 +84,21 @@ class _Handler(socketserver.StreamRequestHandler):
             self._send(400, proto.err(e.code, e.message))
             return
 
+        op = data.get("op") or ""
+
+        # ---- 流式响应（迭代 9）
+        # NDJSON 没有 Content-Length（边跑边写），
+        # 所以不能用普通的 _send()——它会算 Content-Length。
+        if op in proto.STREAM_OPS:
+            try:
+                self._stream(data)
+            except proto.DispatchError as e:
+                self._send(400, proto.err(e.code, e.message))
+            except Exception as e:  # noqa: BLE001
+                self._send(500, proto.err(proto.ERR_INTERNAL,
+                                          f"{type(e).__name__}: {e}"))
+            return
+
         try:
             result = self.server.dispatch(data)
         except proto.DispatchError as e:
@@ -93,6 +109,26 @@ class _Handler(socketserver.StreamRequestHandler):
                                       f"{type(e).__name__}: {e}"))
             return
         self._send(200, proto.ok(result))
+
+    def _stream(self, data: dict) -> None:
+        """NDJSON 流式响应。
+
+        对标 Lancer 的 control-server.ts：
+        `Content-Type: application/x-ndjson`，逐行 `JSON.stringify(event) + "\n"`。
+
+        关键点：
+        - **没有 Content-Length**（长度未知，边跑边写）。
+        - 写完要 flush，否则事件卡在缓冲区里，客户端看不到实时性。
+        - 客户端断开（BrokenPipe）要**安静退出**，不能当错误——
+          客户端 Ctrl+C 停订阅是正常用法。
+        """
+        self.wfile.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/x-ndjson\r\n"
+            b"Cache-Control: no-store\r\n"
+            b"Connection: close\r\n\r\n")
+        self.wfile.flush()
+        self.server.stream_to(self.wfile, data)
 
     def _read_headers(self):
         """读请求头。返回 {小写名: 值}，读不完整返回 None。"""
@@ -154,14 +190,18 @@ class DispatchServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, runner, host="127.0.0.1", port=0):
+    def __init__(self, runner, host="127.0.0.1", port=0, streamer=None):
         """runner: 回调 (op: str, params: dict) -> dict，负责真正干活。
 
         把它做成注入点，是为了让服务端不依赖 GUI 也不依赖真实数据，
         测试里可以塞假 runner。
+
+        streamer: 流式回调 (wfile, params: dict) -> None。
+        为 None 时 stream 操作回 UNSUPPORTED（不是崩溃）。
         """
         super().__init__((host, port), _Handler)
         self.runner = runner
+        self.streamer = streamer
         self.token = proto.ensure_token()
         self.host, self.port = self.server_address[0], self.server_address[1]
         self._thread: threading.Thread | None = None
@@ -176,7 +216,23 @@ class DispatchServer(socketserver.ThreadingTCPServer):
             return self.runner(op, data)
         if op == "wait":
             return self.runner("wait", data)
+        if op == "tail":
+            return self.runner("tail", data)
+        if op == "stop":
+            return self.runner("stop", data)
+        if op in proto.STREAM_OPS:
+            # 走到这里说明没装 streamer —— 但 _Handler 里已经拦住了，
+            # 这是兜底（防止将来加了新流式 op 却忘了实现）。
+            raise proto.DispatchError(proto.ERR_UNSUPPORTED,
+                                      f"操作 {op} 需要流式支持，未启用")
         raise proto.DispatchError(proto.ERR_UNSUPPORTED, f"不支持的操作 {op}")
+
+    def stream_to(self, wfile, data: dict) -> None:
+        """把流式事件写进 wfile。由注入的 streamer 实现。"""
+        if self.streamer is None:
+            raise proto.DispatchError(proto.ERR_UNSUPPORTED,
+                                      "流式操作未启用")
+        self.streamer(wfile, data)
 
     def serve_forever_in_thread(self) -> None:
         self._thread = threading.Thread(target=self.serve_forever, daemon=True,
@@ -208,19 +264,117 @@ class InsightRunner:
 
     对标 Lancer 的 control-service.ts:245（SESSION_BUSY）与
     composer.ts（queue/steer 两种投递方式）。
+
+    迭代 9 新增：事件日志（journal）+ stream/tail/stop 三个操作。
     """
 
-    def __init__(self, get_ds, tasks_hub=None):
+    def __init__(self, get_ds, tasks_hub=None, journal=None):
         self.get_ds = get_ds
         self.tasks = tasks_hub
         self._lock = threading.RLock()
-        # 当前正在跑的那一轮（供 steer 递消息）
+        # 当前正在跑的那一轮（供 steer 递消息、stop 取消）
         self._current = None          # {"agent":..., "question":..., "runId":...}
         # 排队中的活：[(question, history, submitter)]
         self._queue: list[dict] = []
         # 每轮的完成状态，供 wait 查询
         self._done: dict[str, dict] = {}
         self._history: list[dict] = []   # 最近派活记录（给 status 看）
+        # 运行时事件日志（迭代 9）。stream 操作从这里读。
+        self.journal = journal if journal is not None else EventJournal()
+        # 每轮的消息轨迹（tail 操作要末 N 条 + lastAssistant）
+        self._messages: dict[str, list[dict]] = {}
+
+    # ------------------------------------------------------------------ 事件记录
+    # 这三个方法是给**外部**（GUI 的洞察链路）用的：
+    # GUI 的 /api/insight/ask 走自己的 TaskHub，不经过 _start，
+    # 但它同样该被外部订阅端看到 → 所以事件记录的口径必须只有一个，
+    # 不能各写各的。
+    def note_run_started(self, run_id: str, question: str) -> None:
+        """记一轮的开始。"""
+        self.journal.append("runStarted", question, run_id=run_id)
+        self.journal.append("status", "running", run_id=run_id)
+
+    def note_step(self, run_id: str, step: dict) -> None:
+        """记一步工具调用。
+
+        事件日志里**只放摘要**，不放工具的完整返回——
+        完整返回可能几十 KB，NDJSON 逐行推会淹掉客户端。
+        要完整数据走 `runs`/`wait`。
+        """
+        tool = str(step.get("tool") or "")
+        summary = str(step.get("summary") or "")
+        kind = "steer" if tool == "steer" else (
+            "toolFinished" if tool != "cancel" else "runCancelled")
+        self.journal.append(kind, summary, run_id=run_id,
+                             tool=tool,
+                             label=str(step.get("label") or "")[:120])
+        with self._lock:
+            self._messages.setdefault(run_id, []).append({
+                "kind": "tool",
+                "tool": tool,
+                "text": summary[:400],
+            })
+
+    def note_run_finished(self, run_id: str, status: str, answer: str = "",
+                          error: str = "", cancelled: bool = False) -> None:
+        """记一轮的结束（完成 / 失败 / 被取消）。"""
+        if answer:
+            with self._lock:
+                self._messages.setdefault(run_id, []).append({
+                    "kind": "message",
+                    "role": "assistant",
+                    "text": answer,
+                })
+        if status == "cancelled":
+            self.journal.append("runCancelled", error or "外部取消",
+                                run_id=run_id)
+            self.journal.append("status", "cancelled", run_id=run_id)
+        elif status == "error":
+            self.journal.append("runFailed", error or "未知错误",
+                                run_id=run_id)
+            self.journal.append("status", "failed", run_id=run_id)
+        else:
+            self.journal.append("runCompleted", "完成", run_id=run_id)
+            self.journal.append("status", "done", run_id=run_id)
+
+    def alias_run(self, old_id: str, new_id: str) -> None:
+        """把某一轮的消息轨迹改挂到另一个 id 下。
+
+        落盘时 `save_run` 遇到同名会加后缀（不覆盖旧数据），
+        返回的 id 可能 ≠ 传入的 id。GUI 把**返回值**给用户，
+        所以轨迹也要跟着走，否则 `tail --run-id <用户看到的 id>` 查不到。
+        """
+        if not old_id or not new_id or old_id == new_id:
+            return
+        with self._lock:
+            if old_id in self._messages:
+                self._messages[new_id] = self._messages.pop(old_id)
+        # 事件日志里的 runId 也要改（否则 stream --run-id 新 id 查不到）
+        self.journal.alias_run(old_id, new_id)
+
+    def mark_done(self, run_id: str, status: str, result: dict | None = None,
+                  cost: float | None = None, cancelled: bool = False) -> None:
+        """登记某轮的最终状态（供 wait/tail 查）。
+
+        GUI 侧的洞察不走 `_start`，但它也是一轮真实的运行——
+        `wait --run-id` / `tail --run-id` 查不到它的话，
+        外部程序就只能在 GUI 和派活通道之间二选一。
+        """
+        with self._lock:
+            self._done[run_id] = {
+                "status": status,
+                "result": result or {},
+                "cost": cost,
+                "cancelled": cancelled,
+            }
+
+    def rename_done(self, old_id: str, new_id: str) -> None:
+        """把某轮的完成状态改挂到另一个 id 下（配合 alias_run）。"""
+        if not old_id or not new_id or old_id == new_id:
+            return
+        with self._lock:
+            if old_id in self._done:
+                self._done[new_id] = self._done.pop(old_id)
 
     # ------------------------------------------------------------------ 入口
     def __call__(self, op: str, data: dict) -> dict:
@@ -236,6 +390,10 @@ class InsightRunner:
             return self._send(data, mode="queue")
         if op == "steer":
             return self._steer(data)
+        if op == "tail":
+            return self._tail(data)
+        if op == "stop":
+            return self._stop(data)
         raise proto.DispatchError(proto.ERR_UNSUPPORTED, f"不支持的操作 {op}")
 
     # ------------------------------------------------------------------ 状态
@@ -254,6 +412,7 @@ class InsightRunner:
                           for q in self._queue],
                 "recent": list(self._history[-10:]),
                 "finished": len(self._done),
+                "journal": self.journal.state(),
             }
 
     def _runs(self, data: dict) -> dict:
@@ -261,6 +420,116 @@ class InsightRunner:
         limit = int(data.get("limit") or 30)
         limit = max(1, min(limit, 100))
         return {"runs": runs_mod.list_runs(limit)}
+
+    # ------------------------------------------------------------------ 流式
+    def stream_events(self, wfile, data: dict) -> None:
+        """把事件日志推成 NDJSON。
+
+        对标 Lancer 的 control-service.ts 的 `operation === "stream"`：
+        先订阅，再回放，最后接实时。
+
+        **顺序很要紧**：Lancer 的 ControlStream 注释写得很明确——
+        "A subscription is installed before replay so a cursor never races live
+        publication."
+        反过来的话，回放结束到实时开始之间产生的事件会**永久丢失**。
+
+        终止条件：
+        - 客户端断开（BrokenPipe）→ 安静退出
+        - 达到 maxEvents 或总超时 → 正常收尾
+        - **空闲超时**：一段时间没有任何新事件、且当前没有任务在跑
+          → 正常收尾（否则会一直挂着占一条连接）
+
+        为什么要有「空闲超时」而不是「一空闲就收尾」
+        ------------------------------------------
+        一空闲就收尾会**直接废掉「先订阅、后派活」这个用法**：
+        外部程序最自然的用法是先开一条订阅、等着看这轮的分析过程，
+        可它一连上就发现「当前没任务在跑」→ 立刻断开 → 派活时已经没人接了。
+        所以空闲要**连续一段时间**才算真空闲（`idleTimeout`），
+        给「订阅端先就位、派活端后发起」留出窗口。
+
+        Lancer 那边没有这个问题：它的 `ControlStream` 是常驻的
+        （`control-stream.ts` 里只有 close，没有 idle 判定），
+        一直等到客户端主动断开为止。墨溯多一个 idleTimeout
+        是因为派活通道是长驻服务，不能让每条订阅连接无限期挂着。
+        """
+        since = proto.require_cursor(data)
+        run_id = (data.get("runId") or "").strip()
+        max_events = proto.require_int(data, "maxEvents", 1, 5000, 500)
+        timeout = float(data.get("timeout") or 300)
+        timeout = max(1.0, min(timeout, 1800.0))
+        # 空闲多久才算「彻底没事干」。0 = 永不因空闲而收尾（只受 timeout 约束）。
+        idle_timeout = float(data.get("idleTimeout") or 0)
+        idle_timeout = max(0.0, min(idle_timeout, 1800.0))
+        if idle_timeout == 0 and not run_id:
+            # 没指定轮次 = 全局跟随流。给一个默认空闲窗口，
+            # 让「开了个订阅然后一直没人派活」不会挂满 timeout。
+            idle_timeout = 30.0
+
+        pending: list[dict] = []
+        wake = threading.Event()
+
+        def _on_event(ev: dict) -> None:
+            # 订阅只收**目标轮次**的事件（runId 为空则全收）
+            if run_id and ev.get("runId") != run_id:
+                return
+            pending.append(ev)
+            wake.set()
+
+        # ① 先订阅
+        unsub = self.journal.subscribe(_on_event)
+        sent = 0
+        last_event_at = time.time()
+        deadline = time.time() + timeout
+        try:
+            # ② 再回放（seq > since）
+            for ev in self.journal.logs(since=since, run_id=run_id):
+                if not self._write_event(wfile, ev):
+                    return
+                sent += 1
+                last_event_at = time.time()
+                if sent >= max_events:
+                    return
+            # ③ 接实时
+            while sent < max_events and time.time() < deadline:
+                if pending:
+                    batch, pending[:] = list(pending), []
+                    for ev in batch:
+                        if not self._write_event(wfile, ev):
+                            return
+                        sent += 1
+                        last_event_at = time.time()
+                        if sent >= max_events:
+                            return
+                    continue
+                # 没新事件 → 看是不是彻底没事干了
+                with self._lock:
+                    idle = (not self._current) and (not self._queue)
+                    finished = run_id and run_id in self._done
+                if finished:
+                    break
+                if idle and idle_timeout > 0 and \
+                        (time.time() - last_event_at) >= idle_timeout:
+                    break
+                wake.wait(timeout=0.5)
+                wake.clear()
+        except (BrokenPipeError, ConnectionResetError):
+            # 客户端主动断开：正常用法，安静退出
+            return
+        finally:
+            try:
+                unsub()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _write_event(wfile, ev: dict) -> bool:
+        """写一行 NDJSON。返回 False = 客户端已断开。"""
+        try:
+            wfile.write((json.dumps(ev, ensure_ascii=False) + "\n").encode("utf-8"))
+            wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
 
     # ------------------------------------------------------------------ 派活
     def _send(self, data: dict, mode: str) -> dict:
@@ -342,16 +611,27 @@ class InsightRunner:
         agent = InsightAgent(ds, team=team)
 
         def work():
-            steps_box: list[dict] = []
             started = time.time()
+            self.note_run_started(run_id, question)
+
+            def on_step(step: dict) -> None:
+                self.note_step(run_id, step)
+
             try:
-                run_obj = agent.run(question, history=history,
-                                    on_step=steps_box.append)
+                run_obj = agent.run(question, history=history, on_step=on_step)
                 out = run_obj.to_dict()
                 out["model"] = agent.llm.model
                 out["branches"] = [b.to_dict() for b in run_obj.branches]
                 out["facts"] = []
                 out["citations"] = []
+                # 助手回复进消息轨迹（tail 的 lastAssistant 从这来）
+                self.note_run_finished(
+                    run_id,
+                    "cancelled" if out.get("cancelled") else "done",
+                    answer=out.get("answer") or "",
+                    error=out.get("cancelReason") or "",
+                    cancelled=bool(out.get("cancelled")),
+                )
                 try:
                     runs_mod.save_run({
                         "id": run_id, "question": question,
@@ -363,18 +643,25 @@ class InsightRunner:
                         "cost": out.get("cost", 0),
                         "model": out.get("model"),
                         "createdAt": time.time(),
-                        "status": "done",
+                        "status": "cancelled" if out.get("cancelled") else "done",
+                        "cancelled": bool(out.get("cancelled")),
                         "source": "dispatch",
                     })
                 except Exception:
                     pass
                 with self._lock:
-                    self._done[run_id] = {"status": "done", "result": out,
-                                          "cost": out.get("cost")}
+                    self._done[run_id] = {
+                        "status": "cancelled" if out.get("cancelled") else "done",
+                        "result": out,
+                        "cost": out.get("cost"),
+                        "cancelled": bool(out.get("cancelled")),
+                    }
             except Exception as e:  # noqa: BLE001
                 with self._lock:
                     self._done[run_id] = {"status": "error",
                                           "error": f"{type(e).__name__}: {e}"}
+                self.note_run_finished(run_id, "error",
+                                       error=f"{type(e).__name__}: {e}")
             finally:
                 with self._lock:
                     self._current = None
@@ -399,6 +686,95 @@ class InsightRunner:
             item["runId"] = self._start(item["question"], item["history"])
 
     # ------------------------------------------------------------------ 等结果
+    def _tail(self, data: dict) -> dict:
+        """取末 N 条消息 + 最后一条助手回复。
+
+        对标 Lancer 的 `operation === "tail"`：
+        返回 `{...result, messages: transcript.slice(-n), lastAssistant}`。
+
+        与 stream 的分工：
+        - stream 是**跟着看**（要过程）
+        - tail 是**只要结论**（不要过程，但要最后几句话）
+
+        n 的上限 1000（Lancer 同口径）。下限 1——
+        n=0 会返回空列表，那不如不调。
+        """
+        n = proto.require_int(data, "n", 1, 1000, 20)
+        run_id = (data.get("runId") or "").strip()
+        with self._lock:
+            if run_id:
+                msgs = list(self._messages.get(run_id) or [])
+                done = self._done.get(run_id)
+            else:
+                # 不传 runId → 取最近一轮
+                if self._current:
+                    run_id = self._current["runId"]
+                elif self._done:
+                    run_id = list(self._done.keys())[-1]
+                else:
+                    run_id = ""
+                msgs = list(self._messages.get(run_id) or []) if run_id else []
+                done = self._done.get(run_id) if run_id else None
+        tail_msgs = msgs[-n:]
+        last_assistant = None
+        for m in reversed(msgs):
+            if m.get("kind") == "message" and m.get("role") == "assistant":
+                last_assistant = m.get("text") or ""
+                break
+        out = {
+            "runId": run_id,
+            "messages": tail_msgs,
+            "lastAssistant": last_assistant,
+            "n": n,
+        }
+        if done:
+            out["status"] = done.get("status")
+            out["done"] = done.get("status") in ("done", "error", "cancelled")
+        else:
+            out["status"] = "running" if run_id else "idle"
+            out["done"] = False
+        return out
+
+    def _stop(self, data: dict) -> dict:
+        """取消正在跑的那一轮。
+
+        对标 Lancer 的 `operation === "stop"`。
+
+        语义：
+        - 目标不在跑 → NOT_CANCELLABLE（明确说「没在跑」，
+          而不是假装取消成功）
+        - 取消是**协作式**的：主循环在下一步检查到标志才停。
+          所以这里会等一小会儿确认它真的停了。
+        - 等不到（工具调用卡住）→ 仍然返回 accepted=True，
+          但 cancelled=False + note 说明「已请求但还没停下」。
+          撒谎说停了比说没停更糟。
+        """
+        run_id = (data.get("runId") or "").strip()
+        reason = (data.get("reason") or "").strip()[:200]
+        with self._lock:
+            cur = self._current
+            if not cur:
+                raise proto.DispatchError(
+                    proto.ERR_NOT_CANCELLABLE,
+                    "当前没有在跑的任务，没什么可取消")
+            if run_id and cur["runId"] != run_id:
+                raise proto.DispatchError(
+                    proto.ERR_NOT_FOUND,
+                    f"运行中的是 {cur['runId']}，不是 {run_id}")
+            agent = cur["agent"]
+            target = cur["runId"]
+        accepted = agent.cancel(reason or "外部请求取消")
+        stopped = agent.wait_cancelled(timeout=float(data.get("timeout") or 15))
+        self.journal.append("status", "cancelling" if not stopped else "cancelled",
+                            run_id=target)
+        return {
+            "accepted": accepted,
+            "stopped": bool(stopped),
+            "runId": target,
+            "note": ("已停止" if stopped else
+                     "已请求取消，但主循环还没停下（可能卡在一次工具调用里）"),
+        }
+
     def _wait(self, data: dict) -> dict:
         """等某轮跑完。
 
@@ -415,7 +791,11 @@ class InsightRunner:
                 if run_id:
                     st = self._done.get(run_id)
                     if st:
-                        return st
+                        # 取消也要能被 wait 看到——不能装作「还在跑」
+                        # （那会让调用方一直等到超时）。
+                        return {"runId": run_id, **st,
+                                "done": st.get("status") in
+                                ("done", "error", "cancelled")}
                     # 可能还在跑
                     if self._current and self._current["runId"] == run_id:
                         pass
@@ -428,11 +808,13 @@ class InsightRunner:
                         # 没有在跑的 → 看最近完成的一轮
                         if self._done:
                             last = list(self._done.items())[-1]
-                            return {"runId": last[0], **last[1]}
-                        return {"status": "idle",
+                            return {"runId": last[0], **last[1],
+                                    "done": last[1].get("status") in
+                                    ("done", "error", "cancelled")}
+                        return {"status": "idle", "done": False,
                                 "note": "当前没有任务，也没有已完成的任务"}
                     run_id = cur["runId"]
             time.sleep(0.25)
-        return {"status": "timeout",
+        return {"status": "timeout", "done": False,
                 "note": f"等待 {timeout:.0f} 秒仍未完成",
                 "runId": run_id}

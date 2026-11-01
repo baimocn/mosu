@@ -1,0 +1,116 @@
+{
+  "title": "迭代 9：派活通道补齐 stream / tail / stop（对标 Lancer Control API 的 NDJSON 流 + 游标 + 协作式取消）",
+  "level": "L5",
+  "date": "2026-11-03",
+  "commit": "PENDING",
+  "claims": [
+    {
+      "text": "stream 走真正的 NDJSON 流式响应：Content-Type 是 application/x-ndjson、**没有 Content-Length**（长度未知边跑边写）、一行一个 JSON 对象、真 socket 逐行读出来能全部 parse 成功",
+      "level": "L5"
+    },
+    {
+      "text": "事件带**全局单调 seq**：真机跑一轮收到 seq=[1,2,3,4,5,6]，严格递增不回退；since 游标取 seq>since 的事件（since=4 只收到 [5,6]），断线重连能补齐历史且不重复",
+      "level": "L5"
+    },
+    {
+      "text": "「先订阅、后派活」可用：订阅端先建立连接再派活，实时收到 runStarted → toolFinished×2 → runCompleted 的完整轨迹，共 6 条事件，seq 连续",
+      "level": "L5"
+    },
+    {
+      "text": "「先订阅、后派活」这条是被端到端**抓出来的真缺陷**：原实现一发现「当前没任务在跑」就立刻收尾断开，订阅端在派活发生前就被踢下线，整条能力形同虚设；修法是引入 idleTimeout（默认 30 秒）而非一空闲就断",
+      "level": "L5"
+    },
+    {
+      "text": "上面那条缺陷有**反向验证**：把服务端改回旧逻辑后，新增的两条单测（空闲不断开 / 订阅后事件能收到）**双双失败**；恢复修复后双双通过——证明测试真的在测这件事，不是在测「存在性」",
+      "level": "L2"
+    },
+    {
+      "text": "tail 能拿到答案：派活通道跑完一轮后 tail 返回 lastAssistant（233 字，含模型对「没有张三这个人」的诚实回答与依据引用）与 3 条消息列表",
+      "level": "L5"
+    },
+    {
+      "text": "stop 真打断正在跑的那轮：派一个「详细分析过去一年所有聊天」的长活，等 3 秒后 status 显示 busy=True，stop 返回 stopped=true，随后的 wait 看到 status=cancelled（不是干等到超时），取消标记 cancelled=true",
+      "level": "L5"
+    },
+    {
+      "text": "停不到的时候不谎报：空闲时 stop 明确返回错误码 NOT_CANCELLABLE「当前没有在跑的任务，没什么可取消」，而不是假装取消成功",
+      "level": "L5"
+    },
+    {
+      "text": "取消是**协作式**的：不打断正在进行的工具调用（那会留下半截状态），在 ReAct 循环的下一步才检查标志；被取消的那轮跳过成文环节（composeError=已取消）",
+      "level": "L2"
+    },
+    {
+      "text": "凭证脱敏是真生效的：事件流里扫不出真 API Key 明文（真机扫描事件流全文断言）；脱敏分两步做——先从 key/token/secret/password/authorization 命中的字段**采集**凭证，再把凭证字面量从所有文本里替换成 [REDACTED]",
+      "level": "L5"
+    },
+    {
+      "text": "两步脱敏缺一不可：只做替换会漏掉「字段名叫 notes、值其实是 key」的情况；只做采集不替换则文本里仍有明文。采集与替换必须是两个独立步骤",
+      "level": "L2"
+    },
+    {
+      "text": "鉴权仍然有效：token 不对时返回 HTTP 401，不泄露任何数据；token 用 timingSafeEqual 比对",
+      "level": "L5"
+    },
+    {
+      "text": "GUI 侧的洞察与派活通道**共用同一本事件日志**：用户在 GUI 里问的问题，外部订阅端能实时看到（真机收到 25 条事件、11 条 toolFinished）；这条缺口也是端到端抓出来的——最初 GUI 的 TaskHub 不经过派活的 InsightRunner，事件根本进不了 journal",
+      "level": "L5"
+    },
+    {
+      "text": "GUI 那一轮的轮次也能被 wait / tail 按 runId 查到（wait 返回 status=done，tail 返回 657 字答案）——不能只有派活通道派出去的轮次能查，GUI 才是主入口",
+      "level": "L5"
+    },
+    {
+      "text": "落盘给 id 加后缀时（同名不覆盖），事件与状态**一起改名**：journal 提供 alias_run 改写事件归属、runner 提供 alias_run + rename_done 改消息轨迹与完成状态，保证用户拿到的 id 一定查得到",
+      "level": "L2"
+    },
+    {
+      "text": "事件日志有界保留（MAX_EVENTS=500）：墨溯是长驻服务，不截断内存会一直涨；Lancer 是桌面端短生命周期进程所以不截断——这是墨溯按自身生命周期加的约束，不是抄漏了",
+      "level": "L2"
+    },
+    {
+      "text": "订阅先于回放：服务端先装订阅再回放 seq>since 的历史，中间产生的事件不会永久丢失（Lancer control-stream.ts 的注释明确写了这个约束）",
+      "level": "L2"
+    },
+    {
+      "text": "传输层与 Lancer 有意不同：Lancer 用 Unix domain socket 且明确拒绝 Windows；墨溯用 localhost TCP + token，因为 Windows 是主战场",
+      "level": "L2"
+    },
+    {
+      "text": "CLI 三个子命令可用：mosu dispatch stream（流式看事件，逐行按 kind 打图标）、mosu dispatch tail（取末 N 条）、mosu dispatch stop（取消正在跑的那轮）",
+      "level": "L2"
+    },
+    {
+      "text": "文档说的必须真有：core/dispatch.py 顶部声称「流式结果用 NDJSON 逐行推」，迭代 9 之前实现里根本没有流式——现在有单测锁住这条（文档声称 NDJSON + 实现确有 NDJSON）",
+      "level": "L2"
+    },
+    {
+      "text": "全量回归 1160 passed / 16 skipped / 0 failed；新增单测 68 例（test_dispatch_stream.py），端到端 38/38 通过",
+      "level": "L2"
+    }
+  ],
+  "not_run": [
+    "派活通道跨进程跨机器（远程 TCP）——本轮只验了 127.0.0.1 同机跨进程，服务端只绑本地回环，没有做远程暴露与鉴权加固的验证",
+    "CLI 的 mosu dispatch stream 在真 TTY 下的交互体验（Ctrl+C 中断、滚动回看）——本轮只验了脚本调用路径，没在真终端里跑过",
+    "maxEvents 上限截断时的收尾行为——上限逻辑有单测，真机未构造超过 500 条事件的场景验证第 501 条被丢弃",
+    "多个订阅端同时挂在同一条流上时的广播一致性——真机只跑了一个订阅端，多订阅端的顺序与完整性未验",
+    "事件日志满 500 条后旧事件被淘汰，此时用旧 since 游标重连会拿不到被淘汰的事件——该场景未在真机验证",
+    "stop 在工具调用卡住（网络挂起）时的表现——协作式取消明确不打断进行中的调用，但真机未构造一个会卡住的工具调用来验证 stopped=false 的分支",
+    "GUI 与派活通道同时跑两轮洞察时的 seq 交错顺序——真机两轮是先后跑的，并发场景未验",
+    "前端把 stream 事件渲染成实时轨迹的界面——本轮只做了 CLI 与端到端脚本，前端接入未做",
+    "Windows 防火墙拦截下 localhost TCP 的情形——本机未配置出站拦截策略",
+    "Lancer 原版的 ControlStream 常驻语义与墨溯 idleTimeout 收尾的差异在长时间挂起（超过 30 秒无事件）后的客户端行为——真机只验了 150 秒以内的窗口"
+  ],
+  "evidence": [
+    "core/dispatch_journal.py",
+    "core/dispatch_server.py",
+    "core/dispatch.py",
+    "core/agent_engine.py",
+    "gui/server.py",
+    "cli/mosu.py",
+    "tests/test_dispatch_stream.py",
+    "tests/test_dispatch.py",
+    "tests/e2e/lancer/e2e_iter9.py",
+    "docs/benchmark-lancer.md"
+  ]
+}
