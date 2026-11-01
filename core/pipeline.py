@@ -252,6 +252,13 @@ FORBIDDEN: tuple[dict[str, str], ...] = (
         "why": "自己查的数据自己确认、自己写结论，等于自己给自己签字——"
                "这正是 Lancer 的 distinct_configured_model 谓词要防的事。",
     },
+    {
+        "id": "no_stat_without_scope",
+        "text": "数字证据必须带口径（统计对象 / 时间范围 / 统计维度）",
+        "why": "「消息量 158565 条」这句话本身没错，但用户没法核对——"
+               "是全库还是某个会话？是哪段时间？没有口径的数字，"
+               "用户只能选择信或不信，而墨溯的整个卖点就是每句话都能核对。",
+    },
 )
 
 
@@ -559,7 +566,37 @@ def _check_forbidden(run: dict, steps: list[dict], evidence: list[dict],
     else:
         _mk(specs["no_self_review"], False, "")
 
+    # ⑥ 数字证据缺口径
+    #    判据：证据池里有 kind=stat，但它的 scope 是空的
+    #    （scope/period/metric 三个字段至少有一个非空才算有口径）。
+    #
+    #    为什么这条能机械检测：口径是工具层强制产出的结构化字段，
+    #    不是模型写的散文——模型写「我查了最近三个月」没法机械核对，
+    #    但「这条 stat 证据有没有带 scope 字段」是一行代码的事。
+    bare_stats = [e for e in evidence
+                  if e.get("kind") == "stat" and not _has_scope(e)]
+    _mk(specs["no_stat_without_scope"], bool(bare_stats),
+        (f"{len(bare_stats)} 条数字证据没有口径"
+         if bare_stats else ""))
+
     return checks
+
+
+def _has_scope(ev: dict) -> bool:
+    """这条证据有没有带口径。
+
+    口径字段可能是三种形态（历史兼容）：
+      - 新版：ev["scope"] 是 dict，含 scope/period/metric
+      - 简版：ev["scope"] 是字符串，非空即可
+      - 旧版：没有 scope 字段 → 视为无口径
+    """
+    sc = ev.get("scope")
+    if isinstance(sc, dict):
+        return any(str(sc.get(k) or "").strip()
+                   for k in ("scope", "period", "metric"))
+    if isinstance(sc, str):
+        return bool(sc.strip())
+    return False
 
 
 def _count_numbers(text: str) -> int:

@@ -42,7 +42,7 @@ Lancer 完全没有真实数据能力（它的数据只有自己的会话记录�
 | **预算准入** | 4 维（并发/深度/节点/token），首个 await 前占位防超订 | 单维 MAX_STEPS=8 | 缺 | **P0** |
 | **分支落盘追溯** | `.lancer/branch-reports/<sha>.json` + 重启重建 | 无（`AgentRun` 只在内存，任务淘汰即失） | 缺 | **P0** |
 | **子树结算** | 孙分支须先被直接父消费，才向上一级回传 | 无 | 缺 | P1 |
-| **证据账本** | 8 种 kind + severity + git 快照 | `evidence` 有 `quote` / `stat` 两类 | 部分有 | P1 |
+| **证据账本** | 8 种 kind + severity + git 快照 | ✅ **迭代 10**：证据带 `source`（db/message/agent/model）+ `status`（verified/reported）+ 结构化 `scope`（口径四字段）+ 推断标注独立成 `inferences`；数字审计分主代理实测 / 子代理转述两池 | 无缺口（只抄「来源可核验」，不抄 severity / 编排生命周期） | — |
 | **流式反馈** | 事件溯源 + callId upsert + 50ms 节流 | 900ms 轮询 `/api/task` | 差距明显 | P1 |
 | **统一订阅通道** | 单条 `state-changed` 广播全量快照 | ✅ 派活通道 NDJSON 事件流（迭代 9：全局单调 seq + `since` 游标 + 凭证脱敏），GUI 侧洞察共用同一本日志 | 部分有（前端未接入实时渲染） | P1 |
 | **外部派活通道** | Control API（Unix socket + token，`send`/`queue`/`steer`/`wait`/`tail`/`stream`/`stop`） | ✅ 本地 TCP + token，`send`/`queue`/`steer`/`status`/`runs`/`wait`/`tail`/`stream`/`stop`（迭代 9 补齐流式与取消） | 无缺口 | — |
@@ -163,6 +163,7 @@ Lancer 的核心不等式，逐条抄：
 | **7** | 洞察阶段契约（`core/pipeline.py`）：5 阶段 + status code 带 ok_to_proceed + 每阶段 gate 产物 + forbidden 清单 + 机械摘要 | 契约随答案返回；判定用原始答案不自证；前端阶段带三态可区分 | ✅ 完成 |
 | **8** | 阶段模型路由（`core/llmconfig.py` + `core/agent_engine.py`）：取证 / 成文双角色 + `distinct_configured_model` 谓词 | 配了不同模型 → 成文真跑且谓词成立；配同名 → 明确点破不假装；不配置 → 行为一字不变 | ✅ 完成 |
 | **9** | 派活通道补齐 Lancer Control API 的三样：`stream`（NDJSON 事件流 + `since` 游标 + 凭证脱敏）/ `tail` / `stop`（协作式取消） | 订阅端实时看到工具轨迹；`stop` 真打断且 `wait` 看到 `cancelled`；空闲时明确报 `NOT_CANCELLABLE` | ✅ 完成 |
+| **10** | 证据账本升级（对标 `OrchestrationEvidenceRecord`）：来源区分 / 口径 / 数字分池 / 推断标注 | 每条证据带 source+status+scope；口径随查询条件变；推断句与事实句分开摆；非文本消息不产空白证据 | ✅ 完成 |
 
 ### 迭代 1 实测记录（补充）
 
@@ -705,6 +706,89 @@ GUI 侧额外用 `mark_done` / `alias_run` / `rename_done`
 | 鉴权 | token 不对 → HTTP 401 |
 | 脱敏 | 事件流全文扫不出真 API Key 明文 |
 | GUI 侧洞察 | 订阅端收到 25 条事件（11 条 toolFinished），`wait`/`tail` 都能按 runId 查到 |
+
+---
+
+## 六之五、迭代 10 详细记录：证据账本（来源 / 口径 / 推断）
+
+### 读 Lancer 读出了什么
+
+Lancer 的证据账本在 `apps/desktop/contracts/desktop-state.ts:120-161`，四个维度：
+
+| 维度 | 取值 |
+|---|---|
+| `OrchestrationEvidenceKind` | `worker_report` / `orchestrator_acceptance` / `orchestrator_observation` / `orchestrator_action` / `command` / `review_finding` / `blocker`（7 种） |
+| `OrchestrationEvidenceSource` | `worker-reported` / `orchestrator-accepted` / `orchestrator-observed` / `orchestrator-action` / `command` / `review` / `blocker`（7 种） |
+| `OrchestrationEvidenceStatus` | `reported` / `accepted` / `running` / `passed` / `failed` / `blocked`（6 种） |
+| `severity?` | `P0` / `P1` / `P2` / `P3` |
+
+产生点有 5 个（`app-store-orchestration.ts`）：`evidenceFromChildTranscript`(1806)、
+`commandEvidenceFromTool`(1845)、`evidenceFromParentTranscript`(1866)、
+`explicitAcceptanceEvidenceFromParentMessage`(1929)、
+`blockerEvidenceFromChildStatus`(1959)。
+
+最值得抄的是**它怎么拿到 severity**：不是模型自报，而是程序化从文本里正则提取
+（`severityFromText`(2004)：`/^\s*\[?(P[0-3])\]?\s*:/`；`looksLikeBlocker`(2000) 同理）。
+**「分级由程序判，不由模型说」**——这个思路墨溯直接采纳。
+
+### 抄了什么 / 没抄什么
+
+| Lancer 的 | 墨溯的 | 为什么 |
+|---|---|---|
+| `source` 7 种（编排语义） | `source` 4 种：`db` / `message` / `agent` / `model` | Lancer 那 7 种回答的是「这条证据在多 agent 编排链里的位置」。墨溯分析聊天记录、**没有编排验收流程**，照抄会得到 7 个永远填不满的枚举值。墨溯真正要回答的是「从哪来的、能不能核验」 |
+| `status` 6 种生命周期 | `status` 2 种：`verified` / `reported` | Lancer 的 `reported→accepted→running→passed/failed/blocked` 是为**多 agent 验收**设计的。墨溯照抄会得到一个永远是 `reported` 的死字段 |
+| `severity`（P0–P3） | **刻意不抄** | 那是「代码审查发现的问题有多严重」。聊天分析里没有对应物，硬套是形式主义。已写成单元测试 `TestNoSeveritySneakedIn` 锁死，防止后来者顺手补上 |
+| `severityFromText` 程序化分级 | **`scope` 口径四字段**（Lancer 没有，墨溯自加） | 「消息量 158565 条」用户没法核对——是全库还是某会话？哪段时间？哪个维度？没有口径的数字，用户只能选择信或不信 |
+| 数字审计单池 | **分池**：主代理实测 vs 子代理转述 | 子代理的数字有出处但转了一道手，提示等级该不同 |
+| —— | **`inferences` 推断标注**（Lancer 没有） | 模型的主观判断（「他可能在疏远你」）必须跟「查出来的事实」分开摆 |
+
+墨溯真正补齐的 4 件事 + 1 条契约：
+1. `source`（来源区分）
+2. **`scope`（口径）** —— 统计对象 / 会话 / 时间范围 / 统计维度
+3. 数字审计**分池**
+4. **推断标注** —— 程序化检测推断措辞，不让模型自报
+5. 新 forbidden 契约 `no_stat_without_scope`（数字证据必须带口径，可机械检测）
+
+### 三个设计判断（写下来防止后来者"顺手抄回去"）
+
+1. **`source` 按墨溯语义重映射为 4 种** —— 不抄 Lancer 的编排语义。
+2. **`status` 只有 2 种** —— 不抄 Lancer 的 6 种编排生命周期。
+3. **`severity` 刻意不抄** —— 聊天分析里没有 P0–P3。
+
+### 端到端抓到的 5 个真 bug（都是单测抓不到的）
+
+| # | 现象 | 根因 |
+|---|---|---|
+| 1 | 场景 A 全灭，「洞察跑出答案」失败、`steps=0`、证据 0 条 | `/api/insight/ask` 是**异步**的（立即返回 `{taskId, status:"running"}`），脚本按同步接口读。**这是异步契约，不是 bug** |
+| 2 | 场景 I「没拿到 runId」 | 历史回看接口路径写错（用了不存在的 `/api/insight/run/{id}`，实际是 `/api/runs/detail?id=`） |
+| 3 | 场景 A「产出了证据」失败（0 条） | `t_find_contact` / `t_list_sessions` **返回了数字却不产出证据**——答案里的「50 个会话」在证据池里查不到出处，正是本轮要治的病 |
+| 4 | 场景 D「quote 带原文全文」196/212 | **非文本消息（表情/图片/语音）正文在库里就是空的** → 产出**空白证据**，用户点开什么也看不到，「可核对」成了空话 |
+| 5 | 场景 F「推断标注」始终为空 | **推断词表在真实答案上整轮漏检**。模型实际写的是「整体是」「这也解释了」「这是典型的」「我的判断」——第一版词表 12 个词一个都不覆盖 |
+
+第 4、5 两条最值得记：**它们都是「能力看着有、实际不工作」**。
+第 5 条还额外暴露了判据设计错误——第一版把「你说一下大概是什么内容」误标成推断（那是澄清提问，不是判断）。
+**错标比漏标更伤**：错标告诉用户「这是模型的猜测」，但模型只是在正常反问。
+
+修法：词表按**真实答案样本**重写并放宽（短词、不带位置约束），引号规则改成
+「引用动词必须紧挨引号才算引原话」，再加「疑问句不标」兜底。
+
+### 实测记录
+
+- 单元测试：48 例新单测全绿；全量回归 **1225 passed / 17 skipped / 0 failed**
+- 端到端：**54/54 通过**（`tests/e2e/lancer/e2e_iter10.py`，两轮真模型 + 真数据）
+- 验证报告 L5（`docs/verification/iter10-evidence-ledger.json`），10 条「哪些没跑」
+
+真机跑出来的关键事实：
+
+| 场景 | 实际结果 |
+|---|---|
+| 两轮洞察 | 第一轮统计（steps=2，1 条 db 证据），第二轮检索（steps=9，176 条证据含 174 条 quote） |
+| source 覆盖 | `['db', 'message']` 两种并存 |
+| 口径随条件变 | `period` 从「全部时间」→「2025-01-01 00:00 ~ 2025-06-30 23:59」 |
+| quote 可核验 | 174/174 条带原文全文 + 定位信息（会话/时间/发送者） |
+| 推断标注 | 第二轮标出 4 条，含模型自报的「要说判断：这不是闹别扭的那种冷淡…」 |
+| 不误标 | 事实句「10-22 08:45 他说我基本上都没去」不标；澄清提问不标 |
+| 落盘 | 第二轮 inferences 落盘一致（1 vs 1），87 条 quote 带全文 |
 
 ---
 

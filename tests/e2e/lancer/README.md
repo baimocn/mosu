@@ -27,11 +27,20 @@ python cli/mosu.py gui --port 8788 --no-browser
 | `e2e_iter7.py` | 迭代 7 阶段契约 | **L5** | 契约随答案返回、status code 带 okToProceed、每阶段一个 gate、机械摘要无叙述、forbidden 逐条判定、落盘带契约、前端阶段带三态可区分 |
 | `e2e_iter8.py` | 迭代 8 阶段模型路由 | **L5** | 不配置时行为一字不变、**真跑两个不同模型**成文生效、`distinct_configured_model` 谓词成立、同名时明确点破、成文答案带「依据」标记、落盘带 modelRouting、前端交叉核验块与设置页真渲染 |
 | `e2e_iter9.py` | 迭代 9 派活通道 stream/tail/stop | **L5** | NDJSON 协议头且无 Content-Length、**先订阅后派活**真收到轨迹、全局单调 seq、`since` 游标补历史不重复、tail 拿答案、**stop 真打断**且 wait 看到 cancelled、空闲时明确报 NOT_CANCELLABLE、鉴权 401、流里无明文 key、**GUI 侧洞察进同一条流** |
+| `e2e_iter10.py` | 迭代 10 证据账本 | **L5** | 每条证据带 source 且**真的覆盖两种**（db + message）、数字证据带结构化口径且**随查询条件变**、quote 证据 source=message / status=verified / 带原文全文与定位、**非文本消息不产空白证据**、契约含 `no_stat_without_scope` 且未被违反、**推断标注非空且句句来自原文**、落盘 inferences 与响应一致、前端真渲染口径行与推断区 |
 
 > 迭代 8 的脚本有个特别要求：网关的模型列表里必须同时有
 > `deepseek-v4.1-flash` 与 `glm-5.3`（两个不同家族）。
 > 缺了就明确跳过（退出码 2），**不伪装通过**——
 > mock 造出工具结果就能让判定过，但那不叫交叉核验。
+
+> 迭代 10 的脚本会**自己起一个独立的 GUI 服务**（端口 8801，独立配置目录），
+> 不碰你正在用的 8788。它跑**两轮**真模型 + 真数据：
+> 第一轮问统计（产出 db 来源证据），第二轮逼模型检索原话（产出 message 来源 + 推断句）。
+> 为什么要两轮——第一轮只调统计工具，quote 分支和推断分支**永远走不到**，
+> 断言会变成「软通过」，看着绿其实没验到东西。
+> 被问对象从本机真实会话里自动挑（消息量最多的私聊），
+> 写死人名会让模型答「没找到」，证据池空、后面场景全废。
 
 > 迭代 9 的脚本要求本机 8787 有可用的 OpenAI 兼容网关。
 > 它验证的是「订阅端能不能实时看到轨迹」「stop 能不能真的打断」——
@@ -49,6 +58,7 @@ python tests/e2e/lancer/e2e_iter6.py
 python tests/e2e/lancer/e2e_iter7.py
 python tests/e2e/lancer/e2e_iter8.py
 python tests/e2e/lancer/e2e_iter9.py
+python tests/e2e/lancer/e2e_iter10.py
 ```
 
 退出码：`0` 全通过；`1` 有断言失败。

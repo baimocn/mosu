@@ -30,7 +30,7 @@ import threading
 import time
 from datetime import datetime
 
-from core.agent_tools import ToolBox
+from core.agent_tools import SOURCE_AGENT, SOURCE_MESSAGE, ToolBox
 
 # ------------------------------------------------------------------ 提示词
 
@@ -197,8 +197,16 @@ class AgentRun:
         self.answer = ""
         self.tokens = 0
         self.t0 = time.time()
-        # 工具返回里出现过的所有数字（字符串形式）——用来核对答案里的数字有没有出处
-        self.tool_numbers: set[str] = set()
+        # 工具返回里出现过的所有数字（字符串形式）——用来核对答案里的数字有没有出处。
+        #
+        # 分两个池（迭代 10）：主代理**实测**的数字 vs 子代理**转述**的数字。
+        # 为什么不合成一池：合并之后，审计分不出「2814 是我自己查到的」
+        # 还是「子代理说的、我没复核」。父代理引用子代理的数字时，
+        # 风险等级本来就比自测的数字高一档——它经过了转述。
+        self.tool_numbers: set[str] = set()        # 主代理实测
+        self.branch_numbers: set[str] = set()      # 子代理转述
+        # 推断类句子（模型的主观判断）。跑完时填。
+        self.inferences: list[str] = []
         # 阶段契约判定结果（core/pipeline.py）。
         # 没有它就只是一段文本答案；有了它，每个阶段的状态码可机械核验。
         self.contract: dict = {}
@@ -211,6 +219,16 @@ class AgentRun:
         # 否则用户看到半截答案还以为跑完了。
         self.cancelled = False
         self.cancelReason = ""
+
+    @property
+    def all_numbers(self) -> set[str]:
+        """所有有出处的数字（主代理实测 + 子代理转述）。
+
+        用于「这个数字有没有出处」这个二元判断。
+        「出处够不够硬」（实测 vs 转述）是另一个判断——
+        那由 _transcribed_numbers 单独做，不混在这里。
+        """
+        return self.tool_numbers | self.branch_numbers
 
     def to_dict(self) -> dict:
         return {
@@ -228,6 +246,8 @@ class AgentRun:
             # 取消状态：True = 被外部打断（不是正常跑完）
             "cancelled": self.cancelled,
             "cancelReason": self.cancelReason,
+            # 推断类句子（模型的判断，不是查出来的事实）
+            "inferences": self.inferences,
         }
 
 
@@ -558,10 +578,14 @@ class InsightAgent:
                 if name == "delegate_tasks" and self.team is not None:
                     payload, branches = self._run_delegate(args, on_step)
                     run.branches.extend(branches)
-                    # 子代理工具返回里的数字也要进审计范围——
-                    # 否则父代理引用子代理给的数字，会被误判成「没有出处」
+                    # 子代理工具返回里的数字要进审计范围——
+                    # 否则父代理引用子代理给的数字，会被误判成「没有出处」。
+                    #
+                    # 但**进的是 branch_numbers 而不是 tool_numbers**（迭代 10）：
+                    # 子代理的数字经过了转述，父代理没亲眼看着 SQL 跑出来。
+                    # 混进主池的话，审计就分不出「我实测的」和「它转述的」。
                     for br in branches:
-                        run.tool_numbers |= br.numbers
+                        run.branch_numbers |= br.numbers
                     # 子代理的证据也要进总证据池（前端要能点开看原文）
                     for ev in _branch_evidence(branches):
                         key = (ev.get("sessionId"), ev.get("localId"))
@@ -678,6 +702,7 @@ class InsightAgent:
                 "evidence": run.evidence,
                 "answer": run.answer,
                 "toolNumbers": run.tool_numbers,
+                "branchNumbers": run.branch_numbers,
                 "branches": run.branches,
                 "unsourcedNumbers": _unsourced_numbers(run),
                 "modelRouting": run.model_routing,
@@ -687,6 +712,11 @@ class InsightAgent:
             # 契约是附加的验收信息，不是主链路。
             run.contract = {}
 
+        # 推断标注要在审计提示**之前**算：
+        # _audit_numbers 会往答案尾巴上追加提示文本，
+        # 而提示文本本身含数字（「2814」会写进提醒里），
+        # 先追加再算推断，会把提示里的句子误判成模型的推断。
+        run.inferences = _inference_marks(run)
         run.answer = _audit_numbers(run)
         return run
 
@@ -860,6 +890,13 @@ def _branch_evidence(branches: list) -> list[dict]:
 
     子代理查到的原话要能点开看——所以带进父级的证据池，
     并标注来源分支（`via`），用户能看出「这句是子代理查到的」。
+
+    `source` 的处理（迭代 10）：
+        子代理查到的**原话**仍是原话，source 保持 message——
+        用户点开能看到原文，核对性不受影响。
+        但它多了一层「转述」：**是子代理挑的，不是主代理挑的**。
+        所以另加 `via` 字段标记来源分支（前端摆出时要说明），
+        并把 status 保持 verified（原文确实能核对）。
     """
     out: list[dict] = []
     for br in branches:
@@ -867,6 +904,11 @@ def _branch_evidence(branches: list) -> list[dict]:
             item = dict(ev)
             item["via"] = br.goal
             item["branchId"] = br.id
+            # 子代理的证据默认没有 source（旧路径或手工构造）→ 标 agent，
+            # 别让它冒充主代理实测的。
+            item.setdefault("source", SOURCE_AGENT)
+            if item["source"] == SOURCE_MESSAGE:
+                item["transcribed"] = True   # 原话，但经过子代理转述
             out.append(item)
     return out
 
@@ -1056,6 +1098,12 @@ def _unsourced_numbers(run: AgentRun) -> list[str]:
     拆出来的原因：阶段契约（core/pipeline.py）要用这份清单判状态码，
     而提示文本本身含数字（「2904」会被写进提醒里），
     所以**判定必须用原始答案**，不能用拼完提示的答案——否则会自证。
+
+    「有出处」的判据（迭代 10 起分两档）：
+        - 主代理实测的数字（tool_numbers）→ 完全有出处
+        - 子代理转述的数字（branch_numbers）→ **算有出处，但档次低一档**
+          （经过了转述，父代理没亲眼看着 SQL 跑出来）
+    两者都算「有出处」，所以不进这份清单——但档次差异要在提醒里说出来。
     """
     ans = run.answer or ""
     if not ans.strip():
@@ -1063,10 +1111,133 @@ def _unsourced_numbers(run: AgentRun) -> list[str]:
     nums = _numbers_in(ans)
     return sorted(
         (n for n in nums
-         if not _has_source(n, run.tool_numbers)
+         if not _has_source(n, run.all_numbers)
          and not _is_structural(ans, n)),
         key=lambda x: (len(x), x),
     )
+
+
+def _transcribed_numbers(run: AgentRun) -> list[str]:
+    """答案里「只有子代理转述出处」的数字。
+
+    这些数字不是瞎报的——子代理确实查到了。但它们跟主代理实测的数字
+    风险等级不同：多经过一次转述，父代理没核对过原始数据。
+    用户核对时应该知道这个区别。
+
+    为什么要单列一份而不是混进 unsourced：
+    混进去等于说「这些数字没出处」，那是冤枉子代理；
+    完全不列又等于把转述和实测当一回事——那才是真的瞒着用户。
+    """
+    ans = run.answer or ""
+    if not ans.strip():
+        return []
+    nums = _numbers_in(ans)
+    out = []
+    for n in nums:
+        if _is_structural(ans, n):
+            continue
+        if _has_source(n, run.tool_numbers):
+            continue          # 主代理实测过 → 档次最高，不提
+        if _has_source(n, run.branch_numbers):
+            out.append(n)
+    return sorted(out, key=lambda x: (len(x), x))
+
+
+# 推断类措辞。模型做主观判断时常用这些词——
+# 「他可能在疏远你」「感觉她不太想聊」「大概是想岔开话题」。
+#
+# 为什么要在意：这类结论**没有出处**（数据库里查不到「谁在疏远谁」），
+# 但读起来跟有据可查的事实一模一样。用户分不出哪个是算出来的、
+# 哪个是猜的，就只能全信或全不信。
+#
+# 刻意做得**保守**：只认「明确的主观判断」标记，
+# 不做语义分析。宁可漏标（漏了顶多少个提醒），
+# 不可错标（错标把有据可查的结论说成是猜的，那是在损坏可信度）。
+# 推断类措辞。模型做主观判断时常用这些词——
+#
+# 这一版是**按真实答案样本重写的**。上一版只有 12 个词
+# （可能/也许/感觉/推测…），端到端实测整轮答案**一句都没标出来**，
+# 因为模型实际写的是「整体是」「这也解释了」「这是典型的」
+# 「更准确地说」「没看到…的迹象」——一个都不在词表里。
+# 教训：穷举形容词必然漏，得改成**按句式判断这句是不是结论**。
+_INFER_WORDS = (
+    # 显式不确定
+    "可能", "也许", "或许", "大概", "似乎", "好像",
+    "感觉", "猜", "推测", "估计", "多半", "八成", "未必",
+    # 结论性归纳（「这是典型的…」「整体是…」「更准确地说…」）
+    "典型的", "整体是", "整体上", "总体上", "总的来说",
+    "更准确", "也就是说", "换个说法", "归纳起来", "总结起来",
+    # 归因与解释（「这也解释了为什么…」「这意味着…」）
+    # 注意用**短词**：上一版写「这解释了」，而模型实际写「这也解释了」，
+    # 中间插了个「也」就匹配不上了——词表带位置约束必然漏。
+    # 教训同上：宁可放宽，靠「不含数字/引号/疑问」这两条兜住误标。
+    "解释了", "意味着", "反映出", "看得出来",
+    "之所以", "原因在于", "说明的是",
+    # 有限定的观察（「没看到…迹象」「谈不上…」）
+    "没看到", "没发现", "谈不上", "算不上", "不存在",
+    # 模型自报判断（「我的判断是…」「结论：…」）
+    # 这类是**最强的**推断信号，却漏了整整两版——
+    # 因为模型最爱用的就是「我的判断」，而词表里没有它。
+    "我的判断", "我的结论", "判断是", "结论是", "结论：", "判断：",
+    "据此", "所以我", "因此我",
+    # 有限定的不确定（「不能因此断定…」「不能就此…」）
+    "不能因此", "不能就此", "尚不能", "不好说", "说不准",
+    "不一定", "不见得", "难以判断",
+)
+
+
+def _inference_marks(run: AgentRun) -> list[str]:
+    """找出答案里「推断性」的句子片段。
+
+    返回的是**句子**（不是整段），因为一条推断通常只是答案里的一两句，
+    把整段都标成推断会淹没真正的重点。
+
+    判据（两条都要满足）：
+      ① 句子里出现推断措辞（_INFER_WORDS）
+      ② 该句**不含可核验的载体**（不含数字、不含引号引用）
+    理由：
+      - 「他说了 3 次『懒得聊』」——有数字有引号，这是事实陈述
+      - 「他可能在疏远你」——纯判断，该标
+
+    为什么 ② 要**按句**判而不是按段判：真实答案里经常是
+    「10-22 他连问『这种你会吗』，是你在给建议。整体是你给得多。」
+    —— 前半句有数字有引号（是事实），后半句是判断。
+    按段判会把整段都放过（漏标），按句判才能把判断摘出来。
+    """
+    ans = run.answer or ""
+    if not ans.strip():
+        return []
+    out: list[str] = []
+    for raw in re.split(r"[。！？\n；]", ans):
+        s = (raw or "").strip()
+        if len(s) < 4:
+            continue
+        if not any(w in s for w in _INFER_WORDS):
+            continue
+        # 有可核验载体 → 不标
+        if re.search(r"\d", s):
+            continue
+        # 引号规则：**要区分「引原话」和「引号当修辞用」**。
+        #   「他说『懒得聊』」——引号里是原话 → 有载体，不标
+        #   「属于『有事说事』的搭子」——引号里是概括，不是原话 → 该标
+        # 判据：**引用动词必须紧挨着引号**才算引原话。
+        # 上一版只看句子里有没有「说」字，结果「属于『有事说事』的搭子」
+        # 里的「说事」被当成引用动词 → 漏标。
+        if re.search(r"[“\"「『]", s):
+            quoted = re.search(
+                r"(说|提到|写过|回|原话|写道|表示|问|答)(过|了|的)?\s*[：:]?\s*"
+                r"[“\"「『]", s)
+            if quoted:
+                continue
+        # 疑问句不是判断（「你说一下大概是什么内容」是在问用户，
+        # 不是在下判断——上一版把它误标成推断，这是**错标**，
+        # 错标比漏标更伤：它说「这是模型的猜测」，但模型在正常提问。）
+        if re.search(r"[？?]|^(你|您|咱|请问)|什么内容|哪(些|个|些个)|告诉我", s):
+            continue
+        if len(s) > 120:
+            s = s[:117] + "…"
+        out.append(s)
+    return out
 
 
 def _audit_numbers(run: AgentRun) -> str:
@@ -1078,17 +1249,45 @@ def _audit_numbers(run: AgentRun) -> str:
 
     **不篡改答案**——模型可能是对的（比如它自己从多处结果推断），
     但用户有权知道哪些数字是需要留意的。
+
+    迭代 10 起提示分三档（按风险从高到低）：
+      ① 完全没出处      → ⚠️ 必须核对
+      ② 只有子代理转述  → ℹ️ 有出处但经过转述，核对时留意口径
+      ③ 含推断措辞      → 💭 这是模型的判断，不是查出来的事实
     """
     ans = run.answer or ""
     if not ans.strip():
         return ans
+    notes: list[str] = []
+
     unknown = _unsourced_numbers(run)
-    # 最多报 5 个，多了是噪音
-    if not unknown:
-        return ans
-    shown = "、".join(unknown[:5])
-    more = f"（等 {len(unknown)} 处）" if len(unknown) > 5 else ""
-    note = (f"\n\n---\n\n⚠️ 核对提醒：答案里的 **{shown}**{more} "
+    if unknown:
+        # 最多报 5 个，多了是噪音
+        shown = "、".join(unknown[:5])
+        more = f"（等 {len(unknown)} 处）" if len(unknown) > 5 else ""
+        notes.append(
+            f"⚠️ 核对提醒：答案里的 **{shown}**{more} "
             f"在工具返回结果里没找到出处，可能是模型自己算的。"
             f"请按上面的依据自己复核一下。")
-    return ans + note
+
+    transcribed = _transcribed_numbers(run)
+    if transcribed:
+        shown = "、".join(transcribed[:5])
+        more = f"（等 {len(transcribed)} 处）" if len(transcribed) > 5 else ""
+        notes.append(
+            f"ℹ️ 出处说明：答案里的 **{shown}**{more} "
+            f"来自子代理查到的结果（经转述，主代理未直接核对原始数据）。"
+            f"数字本身有出处，只是转了一道手。")
+
+    infers = _inference_marks(run)
+    if infers:
+        shown = "；".join(infers[:3])
+        more = f"（等 {len(infers)} 处）" if len(infers) > 3 else ""
+        notes.append(
+            f"💭 判断说明：{shown}{more} —— 这些是模型的**主观判断**，"
+            f"不是从数据库里查出来的事实（数据库里没有「谁在疏远谁」这种字段）。"
+            f"当参考看，别当结论。")
+
+    if not notes:
+        return ans
+    return ans + "\n\n---\n\n" + "\n\n".join(notes)

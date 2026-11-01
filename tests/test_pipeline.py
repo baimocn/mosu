@@ -227,13 +227,14 @@ class TestGates(unittest.TestCase):
 
 
 class TestForbidden(unittest.TestCase):
-    def test_all_five_rules_present(self):
+    def test_all_six_rules_present(self):
         ids = [f["id"] for f in pipeline.FORBIDDEN]
         self.assertEqual(ids, ["no_number_without_source",
                                 "no_stat_as_quote",
                                 "no_answer_without_evidence",
                                 "no_quote_without_read",
-                                "no_self_review"])
+                                "no_self_review",
+                                "no_stat_without_scope"])
 
     def test_unsourced_number_violates(self):
         r = pipeline.evaluate(_run(

@@ -1709,6 +1709,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     "answer": out.get("answer", ""),
                     "steps": out.get("steps", []),
                     "evidence": out.get("evidence", []),
+                    "inferences": out.get("inferences", []),
                     "branches": out.get("branches", []),
                     # 阶段契约一起落盘：回看历史时能看到「当时哪些阶段过了、
                     # 哪些没过、哪些禁止项被违反」——不是只有一段答案文本

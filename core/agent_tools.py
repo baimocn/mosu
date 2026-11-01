@@ -167,6 +167,116 @@ def _clip(s: str, n: int = 160, keep_newline: bool = False) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+# 非文本消息的可读占位。跟 core/persona.py 的 _clean_for_corpus 保持同一套说法。
+#
+# 为什么必须有：表情/图片/语音/视频这类消息，正文在库里**本来就是空的**
+# （内容在二进制流里，不在 text 字段）。不填占位就直接产出证据，
+# 用户点开看到的是一条**空白条目**——「可核对」就成了空话。
+# 端到端第一次跑就栽在这：212 条 quote 里有 16 条是空白。
+_KIND_PLACEHOLDER = {
+    "emoji": "[表情]",
+    "image": "[图片]",
+    "video": "[视频]",
+    "voice": "[语音]",
+    "file": "[文件]",
+    "system": "[系统消息]",
+}
+
+
+def _msg_text(m: dict) -> str:
+    """消息的可读正文。有正文用正文，没有就用类型占位。
+
+    语音额外带上时长、文件带上文件名——这些是用户点开时唯一
+    能核对上的信息（总不能显示一句空白的「[语音]」）。
+    """
+    body = (m.get("content") or "").strip()
+    if body:
+        return body
+    kind = (m.get("kind") or "").strip()
+    if kind == "voice":
+        ms = m.get("voiceMs") or 0
+        vt = (m.get("voiceText") or "").strip()
+        base = f"[语音 {int(ms)}秒]" if ms else "[语音]"
+        return f"{base} {vt}" if vt else base
+    if kind == "file":
+        name = m.get("fileName") or m.get("title") or ""
+        return f"[文件] {name}".strip()
+    return _KIND_PLACEHOLDER.get(kind, "[非文本消息]")
+
+
+# ------------------------------------------------------------------ 证据来源
+
+# 证据的来源。对标 Lancer 的 OrchestrationEvidenceSource，但**按墨溯的语义重映射**。
+#
+# Lancer 那 7 种（worker-reported / orchestrator-accepted / orchestrator-observed /
+# orchestrator-action / command / review / blocker）全是**编排语义**——
+# 它们回答的是「这条证据在多 agent 编排链里的位置」。
+# 墨溯分析的是聊天记录，不是代码，没有编排/验收这套流程，
+# 照抄过来会得到 7 个永远填不满的枚举值。
+#
+# 墨溯真正需要回答的是：**这条证据是从哪来的、能不能被核验**。
+# 所以来源按「数据的产出链路」分四种：
+SOURCE_DB = "db"            # 工具层 SQL 直接算出来的
+SOURCE_MESSAGE = "message"  # 聊天记录原文（可点开核对）
+SOURCE_AGENT = "agent"      # 子代理查到的（经转述，父代理没亲眼见原始数据）
+SOURCE_MODEL = "model"      # 模型自述（无机器出处）
+
+
+# ------------------------------------------------------------------ 证据口径
+
+# 证据的核对状态。对标 Lancer 的 OrchestrationEvidenceStatus，
+# 但**语义完全不同**——刻意不抄。
+#
+# Lancer 的 6 种（reported / accepted / running / passed / failed / blocked）
+# 描述的是「一条证据在编排流水线上的位置」：worker 报了 → orchestrator 接受了
+# → 命令跑了 → 通过/失败/阻塞。那套生命周期是为**多 agent 编排的验收**设计的。
+#
+# 墨溯没有编排验收环节（模型自己查自己写），照抄会得到一个
+# 永远是 "reported" 的死字段。墨溯真正要回答的是：
+# **这条证据，用户能不能自己核验？**
+#
+#   verified —— 能。有原文可点开，或数字在工具返回里能对上。
+#   reported —— 只能信模型的嘴。推断性结论、没有载体的事实陈述都归这一档。
+#
+# 「可核验」比「编排位置」更贴近墨溯用户的真实需求：
+# 他点开证据面板是为了自己确认，不是为了看流程图。
+STATUS_VERIFIED = "verified"
+STATUS_REPORTED = "reported"
+
+
+def scope_of(scope: str = "", session: str = "", period: str = "",
+             metric: str = "") -> dict:
+    """造一条证据的口径（scope）。
+
+    为什么要有口径：
+        「消息量 158565 条」——这句话本身没错，但用户没法核对：
+        是全库还是某个会话？是哪段时间？是消息总量还是我发出去的？
+        没有口径的数字，用户只能选择「信」或「不信」，
+        而墨溯的整个卖点就是「每句话都能核对」。
+
+    口径四要素（缺哪项就留空，不要编）：
+        scope  —— 统计对象（全库 / 会话「张三」）
+        period —— 时间范围（全部时间 / 2025-01-01 ~ 2025-06-01）
+        metric —— 统计维度（消息量排行 / 按小时分布 / 关系画像）
+
+    刻意做成结构化而不是一整句文本：前端要分栏摆，
+    程序要拿它做断言（比如「数字证据必须带口径」）。
+    """
+    return {
+        "scope": scope or "",
+        "session": session or "",
+        "period": period or "",
+        "metric": metric or "",
+    }
+
+
+def scope_text(sc: dict) -> str:
+    """把口径压成一行人话，给前端做悬浮提示 / 给模型回喂。"""
+    bits = [b for b in (sc.get("scope"), sc.get("period"),
+                        sc.get("metric")) if b]
+    return " · ".join(bits)
+
+
 # ------------------------------------------------------------------ 工具注册表
 
 # OpenAI function calling 的 schema 格式。描述写给模型看——要写清边界，
@@ -381,6 +491,48 @@ class ToolBox:
     def _range(self, args: dict) -> tuple[int | None, int | None]:
         return parse_when(args.get("from")), parse_when(args.get("to"), end=True)
 
+    # ------------------------------------------------------------ 证据工厂
+
+    @staticmethod
+    def _period(f_ts: int | None, t_ts: int | None) -> str:
+        """时间范围的人话表述。"""
+        if not f_ts and not t_ts:
+            return "全部时间"
+        if f_ts and t_ts:
+            return f"{_ts_text(f_ts)} ~ {_ts_text(t_ts)}"
+        if f_ts:
+            return f"{_ts_text(f_ts)} 起"
+        return f"至 {_ts_text(t_ts)}"
+
+    def _ev(self, kind: str, text: str, *, source: str,
+            session_id: str | None = None, local_id: int | None = None,
+            time: str = "", sender: str = "", full: str = "",
+            scope: dict | None = None) -> dict:
+        """造一条证据。
+
+        三件套强制同现，缺一不可：
+          kind   —— quote（原话）/ stat（数字）/ inference（模型推断）
+          source —— 从哪来（db / message / agent / model）
+          status —— 能不能核验（verified / reported）
+
+        为什么强制：手工写这三个字段必然漏——漏了 source 的证据，
+        用户分不清「数据库算的」和「模型说的」，那跟没做证据系统一样。
+        让工厂兜住，漏不掉。
+        """
+        return {
+            "sessionId": session_id,
+            "localId": local_id,
+            "time": time,
+            "sender": sender,
+            "kind": kind,
+            "text": text,
+            "full": full,
+            "source": source,
+            "status": (STATUS_VERIFIED if kind in ("quote", "stat")
+                       else STATUS_REPORTED),
+            "scope": scope or scope_of(),
+        }
+
     # ------------------------------------------------------------ 工具实现
     def t_resolve_time(self, args: dict) -> dict:
         phrase = (args.get("phrase") or "").strip()
@@ -409,8 +561,23 @@ class ToolBox:
             return {"summary": f"没找到叫「{q}」的会话",
                     "data": {"matches": []}, "evidence": []}
         lines = "、".join(f"{m['displayName']}（{m['messageCount']} 条）" for m in matches[:5])
+        # 「某某有 1234 条消息」是模型会直接写进答案的数字，
+        # 没出处的话用户没法核对（端到端实测踩到过：
+        # 模型说「我查了全量会话列表，最近活跃的 50 个」，
+        # 那个 50 在证据池里查不到出处）。
+        sc = scope_of(scope="全库",
+                      period="全部时间",
+                      metric=f"按「{q}」匹配会话")
+        ev = [self._ev(
+            "stat",
+            f"「{m['displayName']}」共 {m['messageCount']} 条消息",
+            source=SOURCE_DB,
+            session_id=m["sessionId"],
+            sender=m["displayName"],
+            scope=sc,
+        ) for m in matches[:10]]
         return {"summary": f"找到 {len(matches)} 个匹配：{lines}",
-                "data": {"matches": matches}, "evidence": []}
+                "data": {"matches": matches, "scope": sc}, "evidence": ev}
 
     def t_list_sessions(self, args: dict) -> dict:
         q = (args.get("query") or "").strip().lower()
@@ -421,9 +588,28 @@ class ToolBox:
         sess = sorted(sess, key=lambda s: s.get("messageCount") or 0, reverse=True)[:limit]
         rows = [{"sessionId": s["sessionId"], "displayName": s["displayName"],
                  "type": s.get("type"), "messageCount": s.get("messageCount")} for s in sess]
+        # 同上：会话数、消息量都是模型会写进答案的数字，得有出处。
+        sc = scope_of(scope="全库",
+                      period="全部时间",
+                      metric=(f"会话列表（按消息量排序，取前 {len(rows)}）"
+                              if not q else f"会话列表（匹配「{q}」，取前 {len(rows)}）"))
+        ev = [self._ev(
+            "stat",
+            f"「{r['displayName']}」共 {r['messageCount']} 条消息",
+            source=SOURCE_DB,
+            session_id=r["sessionId"],
+            sender=r["displayName"],
+            scope=sc,
+        ) for r in rows[:10]]
+        ev.append(self._ev(
+            "stat",
+            f"本次列出 {len(rows)} 个会话",
+            source=SOURCE_DB,
+            scope=sc,
+        ))
         return {"summary": f"共 {len(rows)} 个会话：" + "、".join(
             f"{r['displayName']}({r['messageCount']})" for r in rows[:10]),
-            "data": {"sessions": rows}, "evidence": []}
+            "data": {"sessions": rows, "scope": sc}, "evidence": ev}
 
     def t_chat_stats(self, args: dict) -> dict:
         from core.analytics import Analytics
@@ -439,7 +625,17 @@ class ToolBox:
             tr = g.get("timeRange") or {}
             total = g.get("totalMessages") or 0
             mine = g.get("myMessages") or 0
-            ev = []
+            # 概览也要有出处——「共 231000 条」是整段结论的根，
+            # 它没有出处的话，后面所有数字都悬空。
+            ev = [self._ev(
+                "stat",
+                f"共 {total} 条消息（我发出 {mine} 条），"
+                f"{g.get('totalSessions')} 个会话、{g.get('totalContacts')} 个联系人",
+                source=SOURCE_DB,
+                scope=scope_of(scope="全库",
+                               period=self._period(f_ts, t_ts),
+                               metric="全局概览"),
+            )]
             # 摘要必须带「我发出多少」：只给总量的话，模型问不到这个数，
             # 只能去猜或者告诉用户「查不到」——实测它就答过「没法保证准确，不瞎报」。
             summary = (f"共 {total} 条消息（其中我发出 {mine} 条，占 "
@@ -466,13 +662,19 @@ class ToolBox:
             # 排行结论也要能核对：每条一个 evidence（无原文，但有口径与数字）
             # kind="stat" —— 它是统计数字不是原话，前端要分开摆，
             # 不能让用户以为「消息量 158565 条」是某句话
-            ev = [{"sessionId": c.get("wxid"), "localId": None,
-                   "time": "", "sender": c.get("displayName") or c.get("wxid"),
-                   "kind": "stat",
-                   "text": f"消息量 {c.get('messageCount')} 条"}
-                  for c in contacts[:10]]
+            sc = scope_of(scope="全库",
+                          period=self._period(f_ts, t_ts),
+                          metric=f"消息量排行 Top {min(top, 10)}")
+            ev = [self._ev(
+                "stat",
+                f"消息量 {c.get('messageCount')} 条",
+                source=SOURCE_DB,
+                session_id=c.get("wxid"),
+                sender=c.get("displayName") or c.get("wxid"),
+                scope=sc,
+            ) for c in contacts[:10]]
             return {"summary": f"消息量排行：{lines}",
-                    "data": {"contacts": contacts}, "evidence": ev}
+                    "data": {"contacts": contacts, "scope": sc}, "evidence": ev}
 
         if metric == "time_distribution":
             # session 必须传下去——漏传会让「某人的时段分布」返回全库分布，
@@ -485,19 +687,50 @@ class ToolBox:
                 return {"summary": "该时间段没有消息", "data": {"distribution": {}}, "evidence": []}
             peak = items[0]
             total = sum(v for _, v in items) or 1
-            ev = [{"sessionId": None, "localId": None, "time": str(peak[0]),
-                   "sender": "统计", "kind": "stat", "text": f"{peak[1]} 条"}]
+            # 口径里的对象必须写清楚是谁——「按小时分布」是全库的
+            # 还是某个人的，差别巨大（之前踩过这个坑）。
+            sess_name = ""
+            if sess_id:
+                s = self._resolve(sess_id)
+                sess_name = (s or {}).get("displayName") or sess_id
+            sc = scope_of(scope=(f"会话「{sess_name}」" if sess_name else "全库"),
+                          period=self._period(f_ts, t_ts),
+                          metric=f"按{by}分布")
+            ev = [self._ev(
+                "stat",
+                f"{peak[1]} 条",
+                source=SOURCE_DB,
+                time=str(peak[0]),
+                sender="统计",
+                scope=sc,
+            )]
             return {"summary": (f"按{by}分布，共 {total} 条；峰值 {peak[0]} 有 {peak[1]} 条"
                                 f"（占 {round(peak[1] / total * 100, 1)}%）"),
-                    "data": {"by": by, "distribution": dist, "total": total},
+                    "data": {"by": by, "distribution": dist, "total": total,
+                             "scope": sc},
                     "evidence": ev}
 
         if metric == "keywords":
             st = an.keyword_stats(session=sess_id, top=top, from_ts=f_ts, to_ts=t_ts)
             kws = st.get("keywords") or []
+            # 高频词也要有出处：「你最近老说『加班』」这句话，
+            # 用户得知道是哪个范围里统计出来的。
+            sess_name = ""
+            if sess_id:
+                s = self._resolve(sess_id)
+                sess_name = (s or {}).get("displayName") or sess_id
+            sc = scope_of(scope=(f"会话「{sess_name}」" if sess_name else "全库"),
+                          period=self._period(f_ts, t_ts),
+                          metric=f"高频词 Top {min(top, 12)}")
+            ev = [self._ev(
+                "stat",
+                f"「{k.get('word')}」出现 {k.get('count')} 次",
+                source=SOURCE_DB,
+                scope=sc,
+            ) for k in kws[:12]]
             return {"summary": "高频词：" + "、".join(
                 f"{k.get('word')}({k.get('count')})" for k in kws[:12]),
-                "data": {"keywords": kws}, "evidence": []}
+                "data": {"keywords": kws, "scope": sc}, "evidence": ev}
 
         if metric == "types":
             # 有 sessionId 就必须走单会话口径——
@@ -507,14 +740,23 @@ class ToolBox:
             if sess_id:
                 ss = an.session_stats(sess_id, from_ts=f_ts, to_ts=t_ts)
                 by_type = ss.get("byType") or {}
-                scope = (f"会话「{ss.get('session', {}).get('displayName') or sess_id}」")
+                scope_label = f"会话「{ss.get('session', {}).get('displayName') or sess_id}」"
             else:
                 g = an.global_stats(from_ts=f_ts, to_ts=t_ts)
                 by_type = g.get("byType") or {}
-                scope = "全库"
-            return {"summary": f"{scope}消息类型：" + "、".join(
+                scope_label = "全库"
+            sc = scope_of(scope=scope_label,
+                          period=self._period(f_ts, t_ts),
+                          metric="消息类型构成")
+            ev = [self._ev(
+                "stat",
+                f"{k} {v} 条",
+                source=SOURCE_DB,
+                scope=sc,
+            ) for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])]
+            return {"summary": f"{scope_label}消息类型：" + "、".join(
                 f"{k} {v}" for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])),
-                "data": {"byType": by_type, "scope": scope}, "evidence": []}
+                "data": {"byType": by_type, "scope": sc}, "evidence": ev}
 
         return {"summary": f"未知统计维度 {metric}", "data": {}, "evidence": []}
 
@@ -531,24 +773,33 @@ class ToolBox:
             return {"summary": f"搜索失败：{e}", "data": {"messages": []}, "evidence": []}
         msgs = r.get("messages") or []
         out, ev = [], []
+        total = r.get("total")
+        sc = scope_of(scope="全库关键词检索",
+                      period=self._period(f_ts, t_ts),
+                      metric=f"关键词「{kw}」")
         for m in msgs:
-            txt = _clip(m.get("content") or "", 200)
+            body = _msg_text(m)
+            txt = _clip(body, 200)
             out.append({"time": _ts_text(m.get("createTime")),
                         "sender": m.get("senderName") or "",
                         "direction": m.get("direction"),
                         "sessionName": m.get("sessionName"),
                         "content": txt})
-            ev.append({"sessionId": m.get("sessionId"), "localId": m.get("localId"),
-                       "time": _ts_text(m.get("createTime")),
-                       "sender": m.get("senderName") or "",
-                       "kind": "quote",
-                       "text": txt,
-                       # full 是完整原文（evidence 不回喂给模型，所以放长一点无代价）。
-                       # 前端折叠时显示 text，展开时显示 full —— 这才是「可核对」。
-                       "full": _clip(m.get("content") or "", 1200, keep_newline=True)})
-        total = r.get("total")
+            ev.append(self._ev(
+                "quote", txt,
+                source=SOURCE_MESSAGE,
+                session_id=m.get("sessionId"),
+                local_id=m.get("localId"),
+                time=_ts_text(m.get("createTime")),
+                sender=m.get("senderName") or "",
+                # full 是完整原文（evidence 不回喂给模型，所以放长一点无代价）。
+                # 前端折叠时显示 text，展开时显示 full —— 这才是「可核对」。
+                full=_clip(body, 1200, keep_newline=True),
+                scope=sc,
+            ))
         summary = f"命中 {total} 条「{kw}」" + (f"，展示前 {len(out)} 条" if out else "")
-        return {"summary": summary, "data": {"total": total, "messages": out}, "evidence": ev}
+        return {"summary": summary, "data": {"total": total, "messages": out,
+                                             "scope": sc}, "evidence": ev}
 
     def t_read_timeline(self, args: dict) -> dict:
         sid = args.get("sessionId")
@@ -564,22 +815,33 @@ class ToolBox:
             return {"summary": f"读取失败：{e}", "data": {"messages": []}, "evidence": []}
         msgs = r.get("messages") or []
         out, ev = [], []
+        sc = scope_of(scope=f"会话「{sess.get('displayName')}」",
+                      period=self._period(f_ts, t_ts),
+                      metric=f"时间线（升序前 {min(limit, 40)} 条）")
         for m in msgs:
-            txt = _clip(m.get("content") or "", 200)
+            body = _msg_text(m)
+            txt = _clip(body, 200)
             who = "我" if m.get("direction") == "out" else (m.get("senderName") or "对方")
             out.append({"time": _ts_text(m.get("createTime")), "who": who,
                         "content": txt})
-            ev.append({"sessionId": m.get("sessionId"), "localId": m.get("localId"),
-                       "time": _ts_text(m.get("createTime")), "sender": who,
-                       "kind": "quote", "text": txt,
-                       "full": _clip(m.get("content") or "", 1200, keep_newline=True)})
+            ev.append(self._ev(
+                "quote", txt,
+                source=SOURCE_MESSAGE,
+                session_id=m.get("sessionId"),
+                local_id=m.get("localId"),
+                time=_ts_text(m.get("createTime")),
+                sender=who,
+                full=_clip(body, 1200, keep_newline=True),
+                scope=sc,
+            ))
         return {"summary": (f"「{sess.get('displayName')}」在 "
                             f"{_ts_text(f_ts) if f_ts else '全部时间'}～"
                             f"{_ts_text(t_ts) if t_ts else '现在'} "
                             f"共读到 {len(out)} 条消息"),
                 "data": {"sessionId": sess["sessionId"],
                          "displayName": sess.get("displayName"),
-                         "messages": out},
+                         "messages": out,
+                         "scope": sc},
                 "evidence": ev}
 
     def t_session_detail(self, args: dict) -> dict:
@@ -604,11 +866,19 @@ class ToolBox:
                    + (f"；首次 {first} 最近 {last}" if first else ""))
         # 画像里的数字也得能核对——模型拿着「2904 条」写进答案，
         # 用户却看不到出处，就等于信它瞎报。这里逐项产出 stat 类证据。
-        ev = [{"sessionId": sess["sessionId"], "localId": None, "time": "",
-               "sender": name, "kind": "stat",
-               "text": f"共 {total} 条，我发 {sent} 条（{round(sent / max(1, total) * 100)}%），"
-                       f"对方发 {recv} 条，活跃 {st.get('activeDays')} 天"}]
-        return {"summary": summary, "data": st, "evidence": ev}
+        sc = scope_of(scope=f"会话「{name}」",
+                      period=self._period(f_ts, t_ts),
+                      metric="关系画像")
+        ev = [self._ev(
+            "stat",
+            f"共 {total} 条，我发 {sent} 条（{round(sent / max(1, total) * 100)}%），"
+            f"对方发 {recv} 条，活跃 {st.get('activeDays')} 天",
+            source=SOURCE_DB,
+            session_id=sess["sessionId"],
+            sender=name,
+            scope=sc,
+        )]
+        return {"summary": summary, "data": dict(st, scope=sc), "evidence": ev}
 
     def t_resolve_name(self, args: dict) -> dict:
         """把 wxid / sessionId 换成人名。
@@ -632,9 +902,16 @@ class ToolBox:
             total = sess.get("messageCount") or 0
         return {"summary": f"{sid} 是「{name}」（共 {total} 条消息）",
                 "data": {"sessionId": sid, "displayName": name, "totalMessages": total},
-                "evidence": [{"sessionId": sid, "localId": None, "time": "",
-                              "sender": name, "kind": "stat",
-                              "text": f"「{name}」共 {total} 条消息"}]}
+                "evidence": [self._ev(
+                    "stat",
+                    f"「{name}」共 {total} 条消息",
+                    source=SOURCE_DB,
+                    session_id=sid,
+                    sender=name,
+                    scope=scope_of(scope=f"会话「{name}」",
+                                   period="全部时间",
+                                   metric="消息总数"),
+                )]}
 
     def t_my_profile(self, args: dict) -> dict:
         f_ts, t_ts = self._range(args)

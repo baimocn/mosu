@@ -90,6 +90,14 @@ python cli/mosu.py sessions
 - **Agentic 洞察**（GUI 洞察页）：模型自己调工具查数据、自己换算时间、自己读原文，
   工具调用轨迹与证据出处全程可见；**数字只能来自工具返回**（不给模型写 SQL 的能力），
   答案里的数字会做程序化审计，没出处的会挂核对提醒
+- **证据带来源与口径**：每条证据都带 **来源**（数据库算的 / 原话 / 子代理转述 / 模型自述）
+  与 **口径**（统计对象 / 会话 / 时间范围 / 统计维度）——
+  「158565 条消息」这种没口径的数字，用户没法核对，只能选择信或不信；
+  口径会随查询条件实时变（换时间范围，period 就跟着变）
+- **推断与事实分开摆**：模型的主观判断（「他可能在疏远你」）会单独标出来，
+  跟查出来的事实**分区展示**——不标的话，用户分不清哪个是算出来的、哪个是猜的
+- **数字审计分池**：主代理实测的数字与子代理转述的数字分开统计，
+  转述的数字只提示「转了一道手」而不是「没有出处」，提示等级对得上真实风险
 - **多代理并行**：洞察主代理可把问题拆成几个子任务，派子代理**并行**查
   （分支树 + 树级预算准入 + 回执状态机；子代理的数字同样进审计范围）
 - **分支树可视化**：多代理并行时画成一棵**树**——顶层子代理各占一条泳道（固定调色板，
@@ -102,8 +110,8 @@ python cli/mosu.py sessions
   答案核验 / 交叉核验五个环节，每个环节给状态码（通过 / 未涉及 / 查无数据 / 未执行 /
   缺原话支撑 / 数字无出处 / 成文失败）；状态码带**机器可判的推进条件**，
   答得不够格会明确挂出来而不是糊过去；
-  同时逐条检查五条禁止项（数字没出处、统计冒充原话、空手作答、没读原文就引用原话、
-  成文模型与取证模型是同一个）
+  同时逐条检查六条禁止项（数字没出处、统计冒充原话、空手作答、没读原文就引用原话、
+  成文模型与取证模型是同一个、数字证据没带口径）
 - **阶段模型路由（交叉核验）**：取证与成文**可以绑不同的模型**——
   取证模型跑工具查数据，成文模型只拿**证据包**（不含取证者的自述）写最终答案，
   两个模型互为独立判断，谓词 `distinct_configured_model`；
@@ -140,7 +148,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，1176 例）：
+测试（全离线，1225 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -405,7 +413,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（1176 例）
+tests/                 离线测试（1225 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -418,7 +426,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（1176 例）
+- [x] 离线测试套件（1225 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -512,7 +520,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (1176 cases)
+tests/          offline test suite (1225 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

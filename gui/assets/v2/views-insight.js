@@ -259,7 +259,7 @@
           <article class="v2-ia-answer" v-html="rendered(t)"></article>
 
           <!-- 证据出处 -->
-          <div v-if="(t.evidence || []).length" class="v2-ia-cites">
+          <div v-if="(t.evidence || []).length || (t.inferences || []).length" class="v2-ia-cites">
             <!-- 原话：能点开看全文 -->
             <template v-if="quotes(t, ti).length">
               <div class="v2-ia-sec-title">它读了这些原话（点开看全文）</div>
@@ -269,9 +269,11 @@
                         @click="toggleEv(ti, q._i)">
                   <span class="v2-ia-ev-time">{{ q.time }}</span>
                   <span class="v2-ia-ev-sender">{{ q.sender }}</span>
-                  <!-- 折叠显示摘要，展开显示全文（两者不同时出现，避免同一句显示两遍） -->
+                  <!-- 折叠显示摘要，展开时显示全文（两者不同时出现，避免同一句显示两遍） -->
                   <span v-if="!(evOpen(ti, q._i) && q.full)" class="v2-ia-ev-text">{{ q.text }}</span>
                   <span v-if="evOpen(ti, q._i) && q.full" class="v2-ia-ev-full">{{ q.full }}</span>
+                  <!-- 转述标记：原话还是原话，但挑它的是子代理 -->
+                  <span v-if="q.transcribed" class="v2-ia-ev-src v2-ia-ev-src-agent">子代理转述</span>
                 </button>
               </div>
             </template>
@@ -283,6 +285,17 @@
                   <span class="v2-ia-ev-time">{{ e.time }}</span>
                   <span class="v2-ia-ev-sender">{{ e.sender }}</span>
                   <span class="v2-ia-ev-text">{{ e.text }}</span>
+                  <!-- 口径：这串数字是「谁 / 哪段时间 / 哪个维度」算出来的 -->
+                  <span v-if="scopeLine(e)" class="v2-ia-ev-scope">{{ scopeLine(e) }}</span>
+                </div>
+              </div>
+            </template>
+            <!-- 推断：模型的判断，不是查出来的事实 -->
+            <template v-if="(t.inferences || []).length">
+              <div class="v2-ia-sec-title">这是它的判断（不是查出来的事实）</div>
+              <div class="v2-ia-ev-row">
+                <div v-for="(s, si) in t.inferences" :key="'i' + si" class="v2-ia-ev v2-ia-ev-infer">
+                  <span class="v2-ia-ev-text">{{ s }}</span>
                 </div>
               </div>
             </template>
@@ -437,6 +450,8 @@
           answer: "",
           steps: [],
           evidence: [],
+          // 推断类句子（模型的判断，不是查出来的事实）
+          inferences: [],
           branches: [],
           // 阶段契约：跑完才有值，先占位（Vue 响应式要求字段预先存在）
           contract: {},
@@ -486,6 +501,7 @@
                 turn.answer = res.answer || "";
                 turn.steps = res.steps || turn.steps;
                 turn.evidence = res.evidence || [];
+                turn.inferences = res.inferences || [];
                 // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
                 turn.contract = res.contract || {};
                 // 分支树：主代理派的子代理各查各的
@@ -597,6 +613,7 @@
             turn.answer = res.answer || "";
             turn.steps = res.steps || turn.steps;
             turn.evidence = res.evidence || [];
+            turn.inferences = res.inferences || [];
             // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
             turn.contract = res.contract || {};
             turn.branches = res.branches || [];
@@ -742,6 +759,21 @@
         return (t.evidence || []).filter(e => e.kind === "stat");
       }
 
+      // 口径行：这串数字是「谁 / 哪段时间 / 哪个维度」算出来的。
+      //
+      // 为什么重要：「消息量 158565 条」这句话本身没错，
+      // 但用户没法核对——是全库还是某个会话？是哪段时间？
+      // 没有口径的数字，用户只能选择信或不信。
+      //
+      // 兼容两种形态：新的结构化 scope（dict），旧的纯字符串。
+      function scopeLine(e) {
+        const sc = e && e.scope;
+        if (!sc) return "";
+        if (typeof sc === "string") return sc;
+        const bits = [sc.scope, sc.period, sc.metric].filter(x => x && String(x).trim());
+        return bits.join(" · ");
+      }
+
       function autoGrow(e) {
         const el = e.target;
         el.style.height = "auto";
@@ -860,7 +892,7 @@
         libTotal, libSessions, libContacts, libSpan, topNames, ph,
         rawOpen, rawLoading, rawData, evShown, evOpenMap,
         submit, usePreset, askFollow, followUps, toggleEv, evOpen, autoGrow,
-        quotes, stats,
+        quotes, stats, scopeLine,
         rendered, calendar, heatMonths, hourlyRows, topics, heatColor,
         // 历史分析
         histOpen, histLoading, history, histOpenId, histDetail,

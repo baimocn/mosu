@@ -1463,6 +1463,33 @@
   border: 1px dashed var(--border);
 }
 .v2-ia-ev-stat:hover { border-color: var(--border); background: var(--bg-inset); }
+/* 口径行：这串数字是「谁 / 哪段时间 / 哪个维度」算出来的。
+   没有它用户没法核对，只能选择信或不信。 */
+.v2-ia-ev-scope {
+  flex: 0 0 100%;
+  font-size: var(--fs-11); color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+/* 统计类证据要能换行，否则口径行会被挤到同行末尾 */
+.v2-ia-ev-stat { flex-wrap: wrap; }
+/* 转述标记：原话还是原话，但挑它的是子代理（多了一道手） */
+.v2-ia-ev-src {
+  flex: 0 0 auto;
+  font-size: var(--fs-11); padding: 1px 6px; border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+.v2-ia-ev-src-agent { background: var(--warn-soft); color: var(--warn); }
+/* 推断类：模型的判断，不是查出来的事实。用 warn 色区分于可核验的证据 */
+.v2-ia-ev-infer {
+  cursor: default; flex-wrap: wrap;
+  background: var(--warn-soft);
+  border: 1px dashed var(--warn);
+}
+.v2-ia-ev-infer:hover { border-color: var(--warn); background: var(--warn-soft); }
+.v2-ia-ev-infer .v2-ia-ev-text {
+  flex: 1 1 auto; white-space: normal; color: var(--text-1);
+  line-height: 1.55;
+}
 .v2-ia-ev-more {
   margin-top: var(--sp-2);
   background: none; border: none; cursor: pointer;

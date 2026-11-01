@@ -1,0 +1,50 @@
+{
+  "title": "迭代 10：证据账本升级（来源 / 口径 / 数字分池 / 推断标注，对标 Lancer OrchestrationEvidenceRecord）",
+  "level": "L5",
+  "date": "2026-11-03",
+  "commit": "PENDING",
+  "claims": [
+    { "text": "每条证据都带 source，且取值只能是 db / message / agent / model 四种之一（不是 Lancer 那 7 种编排语义）", "level": "L5" },
+    { "text": "source 真的能覆盖多种：真机两轮洞察跑出 db 与 message 两种来源并存（第一轮统计产出 db，第二轮检索产出 message），不是只有一种", "level": "L5" },
+    { "text": "每条数字证据都带结构化口径 scope，含统计对象 / 会话 / 时间范围 / 统计维度四个字段", "level": "L5" },
+    { "text": "口径随查询条件变化：换时间范围后 period 从「全部时间」变成「2025-01-01 00:00 ~ 2025-06-30 23:59」，口径不是写死的静态文案", "level": "L5" },
+    { "text": "quote 证据 source 恒为 message、status 恒为 verified，且带原文全文与定位信息（会话 / 时间 / 发送者），点开可逐字核对", "level": "L5" },
+    { "text": "非文本消息（表情 / 图片 / 语音）也产出可读证据而不是空白条目：真机 174 条 quote 全部带全文，空白数为 0", "level": "L5" },
+    { "text": "status 只有 verified 与 reported 两种，且由 kind 机械决定（quote/stat → verified，其余 → reported），不是模型自报", "level": "L2" },
+    { "text": "契约新增第 6 条 no_stat_without_scope：数字证据必须带口径，真机跑完未被违反", "level": "L5" },
+    { "text": "数字审计分两池：主代理实测数字与子代理转述数字分开统计，转述数字只挂「ℹ️ 出处说明」不挂「⚠️ 核对提醒」", "level": "L2" },
+    { "text": "推断标注独立成字段 inferences，不与事实混在答案正文里；前端单独成区展示", "level": "L5" },
+    { "text": "推断标注能识别模型自报判断：真机第二轮答案里的「要说判断：这不是闹别扭的那种冷淡…」被正确标出", "level": "L5" },
+    { "text": "推断标注不误标事实句与澄清提问：「10-22 08:45 他说我基本上都没去」不被标，「你说一下大概是什么内容」也不被标", "level": "L2" },
+    { "text": "落盘保留完整证据账本：~/.mosu/runs/*.json 里每条证据带 source 与口径，inferences 字段与响应一致（真机 1 vs 1）", "level": "L5" },
+    { "text": "前端真渲染：v2 洞察脚本调用 scopeLine(e) 渲染口径行、渲染 v2-ia-ev-infer 推断区、展示 transcribed 转述标记", "level": "L5" },
+    { "text": "工具层直调也带三件套：绕开模型直接调 ToolBox.chat_stats，5 条证据全部带 source=db、status=verified 与口径", "level": "L5" },
+    { "text": "刻意不抄 Lancer 的 severity（P0-P3）：已写成单元测试 TestNoSeveritySneakedIn 锁死，防止后来者顺手补上", "level": "L2" },
+    { "text": "core/agent_tools.py 与 core/agent_engine.py 零新增第三方依赖", "level": "L1" },
+    { "text": "反向验证：端到端真跑两轮洞察，抓到 5 个单测与渲染测试都发现不了的实现缺陷（异步契约被当同步读、历史回看接口路径写错、find_contact 返数字不产证据、非文本消息产出空白证据、推断词表在真实答案上整轮漏检）", "level": "L5" }
+  ],
+  "not_run": [
+    "推断标注在浅色主题下的配色对比度——本轮只在暗色主题下真机验过前端渲染",
+    "inferences 条目超过 20 条时的前端折叠与滚动表现——真机跑到的最多是 4 条",
+    "子代理转述路径（source=agent）的真机多分支场景——本轮主代理未实际派子代理，转述池与 transcribed 标记只有单测覆盖",
+    "source=model 的真机产出——工具层不产出 model 来源证据，该来源目前只在契约与前端有位置，尚无真实产出路径",
+    "证据总量超过 500 条时的前端渲染性能——真机单轮最多 176 条证据，未做万条级压测",
+    "契约 no_stat_without_scope 被违反时的前端告警表现——真机未构造违规样本，只验了未违反的正常路径",
+    "Windows 显示缩放 150% 下证据区的口径行换行位置——只验了 100% 缩放",
+    "非文本消息占位符在语音转写文本（voiceText）实际存在时的显示——本机样本语音均无转写文本，只验了纯占位形态",
+    "增量导出与证据账本的交互——增量导出走独立路径，本轮未验证导出产物里是否带 source 与口径",
+    "CLI 侧（mosu insight 之类）输出里展示证据来源与口径——本轮只做了 GUI 与 core，CLI 未暴露该信息"
+  ],
+  "evidence": [
+    "core/agent_tools.py",
+    "core/agent_engine.py",
+    "core/pipeline.py",
+    "gui/server.py",
+    "gui/assets/v2/views-insight.js",
+    "gui/assets/v2/app.css",
+    "tests/test_evidence_ledger.py",
+    "tests/test_pipeline.py",
+    "tests/e2e/lancer/e2e_iter10.py",
+    "docs/benchmark-lancer.md"
+  ]
+}
