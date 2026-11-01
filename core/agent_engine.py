@@ -51,6 +51,13 @@ SYSTEM = """你在帮用户分析他/她自己的微信聊天记录。这是**�
 - session_detail：某个人的关系画像（往来量、我方占比、活跃天数、共同话题）。
 - my_profile：我本人的说话习惯与作息。
 - search_moments：查朋友圈。
+- delegate_tasks：把问题拆成几个互不依赖的子任务，派给子代理**并行**去查。
+  **什么该用它**：问题里涉及**两个以上互不相干的对象**时
+  （「分别分析张三和李四王五」「同时查这三个时间段」），
+  你自己一个个查会占满步数还慢。**什么不该用**：只查一个人、
+  或者几个子任务有先后依赖（那还是要你自己按顺序查）。
+  派之前先自己确认这些人存在（find_contact），别派一堆查不到的任务。
+  子代理回来的结论你要**核对**再用——它可能查偏了。
 
 # 硬规矩
 1. **数字必须来自工具返回的内容**。你自己算出来的百分比、总数、排名都不算数。
@@ -96,6 +103,33 @@ FINAL_HINT = """现在给出最终答案。
 - 不要再调工具，直接写答案。"""
 
 
+# 子代理专用提示词。父代理的提示词里有一大段「怎么跟用户说话」，
+# 子代理不需要（它不面向用户），但需要额外的两条：
+#   1. 只查这一个子任务，别顺手多查
+#   2. 输出要短（父代理要汇总，塞不进一屏长文）
+SUBAGENT_SYSTEM = """你是主助手派出的子助手，负责**一个**具体子任务。
+
+# 你的子任务
+（见用户消息）
+
+# 规矩
+1. **只查你这个子任务**。别顺手查别的、别扩大范围。
+2. **数字必须来自工具返回的内容**，不要自己算、不要自己估。
+3. **引用消息必须来自 search_messages / read_timeline 的返回**，
+   引用时带上时间和说话人。
+4. 检索结果只是线索，要下结论得用 read_timeline 把前后文读完。
+5. 相对时间必须先调 resolve_time 换算成绝对日期。
+6. 查不到就明说「查不到」，**不要编一个像样的答案**。
+
+# 怎么写
+- 开头一句话给结论，然后列 2–4 条要点。
+- 每条要点后面标依据：「（依据：<工具返回的原话或数字>）」。
+- 说清你查了哪段时间、哪个会话。
+- **总共控制在 500 字以内**——你的结果会被汇总进主助手的回答，
+  写太长会把主助手的上下文冲爆，等于白干。
+- 中文。"""
+
+
 # ------------------------------------------------------------------ 引擎
 
 class AgentRun:
@@ -109,6 +143,7 @@ class AgentRun:
         self.question = question
         self.steps: list[dict] = []      # 工具调用轨迹
         self.evidence: list[dict] = []   # 去重后的出处
+        self.branches: list = []         # 子分支记录（多代理编排）
         self.answer = ""
         self.tokens = 0
         self.t0 = time.time()
@@ -121,6 +156,7 @@ class AgentRun:
             "answer": self.answer,
             "steps": self.steps,
             "evidence": self.evidence,
+            "branches": [b.to_dict() for b in self.branches],
             "tokens": self.tokens,
             "cost": round(time.time() - self.t0, 2),
         }
@@ -130,16 +166,24 @@ class InsightAgent:
     """Agent 引擎。一个实例复用一个 ToolBox（会话列表缓存）。"""
 
     # 单轮最多几次工具调用。竞品用 maxSteps=10，
-    # 这里给 8 次：够覆盖「解析人名 → 查统计 → 读原文」这类三段式链路，
+    # 这里给 10 次：够覆盖「解析人名 → 查统计 → 读原文」这类三段式链路，
     # 又不至于让用户等太久。
-    MAX_STEPS = 8
+    #
+    # 从 8 提到 10 的原因（端到端实测）：
+    # 问「分别分析三个人」时，模型串行查要 15 步（3 找人 + 3 画像 + 3 关键词
+    # + 3 读原文 + 2 补充），8 步根本不够，它会被截断。
+    # 有 delegate_tasks 时主代理只需 4-5 步，但模型**不一定**用委派
+    # （比如它判断只有一个人值得深挖），所以上限还是要留够。
+    MAX_STEPS = 10
     # 单次工具调用的超时上限（秒）
     TOOL_TIMEOUT = 45
 
-    def __init__(self, ds, llm=None, max_steps: int | None = None):
+    def __init__(self, ds, llm=None, max_steps: int | None = None,
+                 team=None):
         self.ds = ds
         self.box = ToolBox(ds)
         self._llm = llm
+        self.team = team          # AgentTeam：多代理编排（可为 None）
         if max_steps:
             self.MAX_STEPS = max_steps
 
@@ -175,6 +219,10 @@ class InsightAgent:
         messages.append({"role": "user", "content": question})
 
         tools = ToolBox.schemas()
+        # 有编排团队时才给「派子代理」这个工具。
+        # 没有 team 时模型压根不知道自己能派活，避免它喊一个不存在的工具。
+        if self.team is not None:
+            tools = tools + [DELEGATE_SCHEMA]
         for step_i in range(self.MAX_STEPS):
             resp = self.llm.chat_tools(messages, tools, temperature=0.3,
                                        max_tokens=1500)
@@ -204,6 +252,43 @@ class InsightAgent:
             for call in calls:
                 name = call.get("name") or ""
                 args = call.get("args") or {}
+
+                # ---- 委派：并行跑子代理，把有界摘要回喂
+                if name == "delegate_tasks" and self.team is not None:
+                    payload, branches = self._run_delegate(args, on_step)
+                    run.branches.extend(branches)
+                    # 子代理工具返回里的数字也要进审计范围——
+                    # 否则父代理引用子代理给的数字，会被误判成「没有出处」
+                    for br in branches:
+                        run.tool_numbers |= br.numbers
+                    # 子代理的证据也要进总证据池（前端要能点开看原文）
+                    for ev in _branch_evidence(branches):
+                        key = (ev.get("sessionId"), ev.get("localId"))
+                        if not any((e.get("sessionId"), e.get("localId")) == key
+                                   for e in run.evidence):
+                            run.evidence.append(ev)
+                    # 委派本身也要记一步，前端轨迹里要看得见「派了子代理」
+                    run.steps.append({
+                        "index": len(run.steps) + 1,
+                        "tool": "delegate_tasks",
+                        "label": _tool_label("delegate_tasks", args),
+                        "summary": (f"派了 {len(branches)} 个子代理并行查："
+                                    + "、".join(b.goal[:20] for b in branches)),
+                        "cost": round(sum(b.cost for b in branches), 2),
+                        "ok": True,
+                    })
+                    if on_step:
+                        try:
+                            on_step(run.steps[-1])
+                        except Exception:
+                            pass
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.get("id"),
+                        "content": payload,
+                    })
+                    continue
+
                 res = self.box.run(name, args)
                 # 记下工具返回里的所有数字，末尾用来核对答案
                 run.tool_numbers |= _numbers_in(json.dumps(res.get("data") or {},
@@ -245,6 +330,64 @@ class InsightAgent:
         run.answer = _audit_numbers(run)
         return run
 
+    # ------------------------------------------------------------ 委派
+    def _run_delegate(self, args: dict, on_step=None) -> tuple[str, list]:
+        """执行一次委派：并行跑子代理，回传有界摘要。
+
+        返回 (给模型看的 payload, 分支记录列表)。
+
+        失败不能崩主流程——委派失败就当成一个空结果回喂，
+        让模型自己决定是继续用自己的工具查，还是直接说做不到。
+        """
+        from core.agent_team import branch_payload
+        goals = args.get("tasks") or []
+        if isinstance(goals, str):
+            goals = [goals]
+        goals = [str(g).strip() for g in goals if str(g).strip()]
+        # 子任务目标里的 wxid 换成人名——子代理和用户都不该看机器标识
+        goals = [_humanize_text(self.ds, g) for g in goals]
+
+        if not goals:
+            return json.dumps({"分支数": 0, "说明": "没有给出子任务"},
+                              ensure_ascii=False), []
+
+        ok, why = self.team.can_delegate(0)
+        if not ok:
+            return json.dumps({"分支数": 0, "说明": why},
+                              ensure_ascii=False), []
+
+        def _on_child_step(step):
+            """子代理的步骤也推给前端——用户要看得到「它在查什么」。
+
+            同时收进主代理的轨迹（带 branchId 标记），
+            否则用户看整体轨迹时会发现中间少了一截。
+            """
+            run.steps.append(step)
+            # 编号要全局连续：子代理自己从 1 开始会跟主代理的撞号，
+            # 前端 v-for 用 :key="s.index"，撞号会导致渲染错乱。
+            step["index"] = len(run.steps)
+            step["branchStep"] = True
+            if on_step:
+                try:
+                    on_step(step)
+                except Exception:
+                    pass
+
+        try:
+            branches = self.team.delegate(goals, depth=0, parent=None,
+                                          on_step=_on_child_step)
+        except Exception as e:  # noqa: BLE001 —— 委派失败不能让整个洞察崩掉
+            return json.dumps({"分支数": 0,
+                               "说明": f"派发失败：{type(e).__name__}: {e}"},
+                              ensure_ascii=False), []
+
+        payload = json.dumps(branch_payload(branches), ensure_ascii=False,
+                             default=str)
+        # 有界：父代理的上下文不能被回填撑爆
+        if len(payload) > 6000:
+            payload = payload[:5900] + "…（子代理结果过长已截断）"
+        return payload, branches
+
 
 # ------------------------------------------------------------------ 辅助
 
@@ -258,7 +401,78 @@ _TOOL_LABELS = {
     "session_detail": "看关系画像",
     "my_profile": "看我的画像",
     "search_moments": "翻朋友圈",
+    "delegate_tasks": "派子代理并行查",
 }
+
+
+# 委派工具的 schema。**刻意不放进 agent_tools.TOOL_SCHEMAS**——
+# 那样它会出现在 ToolBox.schemas() 里，而 ToolBox.schemas() 正是
+# 子代理的工具集来源。子代理能再派子代理 = 无限递归 = 烧钱无底洞。
+# 放在这里单独注入，主代理才有这个能力。
+DELEGATE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "delegate_tasks",
+        "description": "把问题拆成几个互不依赖的子任务，派给子代理**并行**去查。"
+                       "适合「分别分析张三和李四王五」「同时查三个时间段」这类"
+                       "拆开查比一个个查快的场景。"
+                       "每个子任务都要能独立查证。子代理查完会把结论和依据给你，"
+                       "你**核对**之后自己整合，不要原样照抄。只读。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "子任务列表，2-4 个。每个写清要查什么、"
+                                   "查谁、查哪段时间。",
+                },
+            },
+            "required": ["tasks"],
+        },
+    },
+}
+
+
+def _humanize_text(ds, text: str) -> str:
+    """把文本里的 wxid 机器标识换成人名。
+
+    为什么需要：主代理查完 find_contact 后，手里拿的是 sessionId（wxid），
+    它写子任务目标时可能直接把 wxid 抄进去。
+    后果有二：
+      1. 子代理看到的是机器标识，判断「这是谁」全靠再查一次；
+      2. 前端分支卡片会把 wxid 显示给用户——违反「不给人看机器标识」的纪律。
+
+    已有纪律是「在执行层直接替掉，不指望模型自觉」——这里同理。
+    """
+    if not text:
+        return text
+    out = text
+    # wxid_xxx / gh_xxx / @chatroom
+    for m in set(re.findall(r"(?:wxid_[A-Za-z0-9_-]+|gh_[A-Za-z0-9_-]+|@chatroom)", text)):
+        try:
+            sess = ds.find_session(m)
+        except Exception:
+            sess = None
+        if sess and sess.get("displayName"):
+            out = out.replace(m, sess["displayName"])
+    return out
+
+
+def _branch_evidence(branches: list) -> list[dict]:
+    """汇总所有子分支的证据。
+
+    子代理查到的原话要能点开看——所以带进父级的证据池，
+    并标注来源分支（`via`），用户能看出「这句是子代理查到的」。
+    """
+    out: list[dict] = []
+    for br in branches:
+        for ev in (br.evidence or []):
+            item = dict(ev)
+            item["via"] = br.goal
+            item["branchId"] = br.id
+            out.append(item)
+    return out
 
 
 def _tool_label(name: str, args: dict) -> str:
@@ -280,6 +494,11 @@ def _tool_label(name: str, args: dict) -> str:
     elif name == "search_moments":
         if args.get("keyword"):
             bits.append(f"「{args['keyword']}」")
+    elif name == "delegate_tasks":
+        tasks = args.get("tasks") or []
+        if isinstance(tasks, str):
+            tasks = [tasks]
+        bits.append(f"{len(tasks)} 个子任务")
     if args.get("from"):
         bits.append(f"起 {args['from']}")
     if args.get("to"):

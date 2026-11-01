@@ -87,6 +87,11 @@ python cli/mosu.py sessions
 - **导出**：HTML（微信气泡式，图片视频内嵌）/ JSON / CSV / TXT，可全量
 - **朋友圈**：正文、图片、点赞、评论
 - **MCP Server**：12 个工具，AI 客户端可直接调用，图片能直接"看"
+- **Agentic 洞察**（GUI 洞察页）：模型自己调工具查数据、自己换算时间、自己读原文，
+  工具调用轨迹与证据出处全程可见；**数字只能来自工具返回**（不给模型写 SQL 的能力），
+  答案里的数字会做程序化审计，没出处的会挂核对提醒
+- **多代理并行**：洞察主代理可把问题拆成几个子任务，派子代理**并行**查
+  （分支树 + 树级预算准入 + 回执状态机；子代理的数字同样进审计范围）
 - **离线情感分析**：内置中文情感词典 + 否定/程度规则，不调任何外部 API
 
 ## 安装
@@ -102,7 +107,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，645 例）：
+测试（全离线，694 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -327,7 +332,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（645 例）
+tests/                 离线测试（694 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -340,7 +345,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（645 例）
+- [x] 离线测试套件（694 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -434,7 +439,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (645 cases)
+tests/          offline test suite (694 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

@@ -1213,6 +1213,24 @@ def build_parser():
     return ap
 
 
+def _precheck_time_args(args):
+    """在**加载数据之前**校验时间参数。
+
+    为什么必须提前：Dataset 构造会去定位微信数据目录，找不到就 SystemExit。
+    早先的顺序是「先建 Dataset → 再解析时间」，于是用户写错 `--from` 时
+    看到的第一句是「没找到微信数据目录，请用 --db-path 指定」——
+    明明是自己的时间写错了，却被引导去查数据路径，完全指错方向。
+
+    参数校验早于资源加载，是 CLI 该有的次序：先告诉用户「你写错了什么」，
+    再告诉他「环境缺什么」。两件事同时存在时，参数错优先。
+    """
+    for attr, is_end in (("from", False), ("to", True)):
+        v = getattr(args, attr, None)
+        if v in (None, ""):
+            continue
+        parse_time(v, end=is_end)
+
+
 def main():
     ap = build_parser()
     args = ap.parse_args()
@@ -1222,6 +1240,11 @@ def main():
     if args.cmd in ("init", "config") and getattr(args, "config_cmd", "show") == "show" and args.cmd == "config":
         pass
     wxid = getattr(args, "wxid", None)
+    try:
+        # 先校验参数，再加载数据——顺序反了会把用户引向错误方向
+        _precheck_time_args(args)
+    except ValueError as e:
+        sys.exit(str(e))
     try:
         ds = Dataset(data_dir=args.db_path, key_hex=args.key, refresh=args.refresh,
                      quiet=args.quiet, with_wal=args.with_wal, account=wxid)

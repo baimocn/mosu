@@ -37,6 +37,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
+from core.locks import DS_LOCK
+
 GUI_DIR = Path(__file__).resolve().parent
 ROOT = GUI_DIR.parent
 if str(ROOT) not in sys.path:
@@ -398,9 +400,14 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     _ds_err = None
     _moments_rows = None      # 朋友圈全量缓存（get_moments 首屏解析后填充）
     _moments_unsup = None     # 无 sns.db 时 True（缓存）
-    _ds_lock = threading.RLock()  # SQLite 连接跨线程复用：整个数据 API 期间持锁
-                                  # （RLock：api_* 持锁时内部 get_ds 可重入），
-                                  # 同时防并发首次触发重复解密
+    # SQLite 连接跨线程复用：整个数据 API 期间持锁
+    # （RLock：api_* 持锁时内部 get_ds 可重入），
+    # 同时防并发首次触发重复解密
+    #
+    # 用的是 core.locks 的**全局锁**，不是本地新建的：
+    # Agentic 洞察的并行子代理也会碰同一个 SQLite 连接，
+    # 两套锁各管各的 = 等于没锁。必须共用一把。
+    _ds_lock = DS_LOCK
     tasks = _TaskHub(EXPORT_ROOT)   # 异步任务（关键词统计/导出）
     # Agent 洞察的工具调用轨迹：task_id → steps 列表。
     # TaskHub.report 是覆盖式更新，多步累积必须自己存一份再整体覆盖。
@@ -1527,9 +1534,14 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
         def run(tid):
             from core.agent_engine import InsightAgent
+            from core.agent_team import AgentTeam, BranchBudget
             with _ds_lock:
                 ds_obj = get_ds()
-            ag = InsightAgent(ds_obj)
+            # 多代理编排：主代理可派子代理并行查不同的人/时间段。
+            # 预算保守：最多 3 个并发子代理、整棵树 6 个分支、24 次工具调用。
+            # （默认值见 core/agent_team.py DEFAULT_BUDGET）
+            team = AgentTeam(ds_obj, budget=BranchBudget())
+            ag = InsightAgent(ds_obj, team=team)
 
             # steps 要跨回调累积：tasks.report 是「覆盖式更新」，
             # 多步时必须自己拼一份再整体覆盖。
@@ -1537,12 +1549,18 @@ def run_gui(corpus_path, port: int | None = None) -> None:
 
             def on_step(step):
                 steps_box.append(step)
-                tasks.report(tid, steps=list(steps_box))
+                # 分支状态实时上报：子代理跑到哪一步，用户能实时看到
+                live = {"steps": list(steps_box)}
+                if team.branches:
+                    live["branches"] = [b.to_dict() for b in team.branches]
+                tasks.report(tid, **live)
 
             tasks.report(tid, steps=[])
             run_obj = ag.run(question, history=history, on_step=on_step)
             out = run_obj.to_dict()
             out["model"] = ag.llm.model
+            # 分支树（多代理）：给前端画「谁派的、谁查的、什么结论」
+            out["branches"] = [b.to_dict() for b in run_obj.branches]
             # 兼容旧字段：前端老组件读 facts/citations
             out["facts"] = []
             out["citations"] = []

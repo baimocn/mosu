@@ -1041,6 +1041,50 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* 分支树（多代理并行）：主代理派的子代理 */
+.v2-ia-branches {
+  margin-top: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  border-left: 2px solid var(--wechat);
+}
+.v2-ia-branch {
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--border);
+}
+.v2-ia-branch:first-of-type { border-top: none; }
+.v2-ia-branch-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  font-size: var(--fs-12);
+}
+.v2-ia-branch-dot {
+  flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: var(--r-full);
+  background: var(--success);
+}
+.v2-ia-branch-dot.failed { background: var(--danger); }
+.v2-ia-branch-dot.running { background: var(--warn); }
+.v2-ia-branch-goal {
+  flex: 1 1 auto; font-weight: 600; color: var(--text-1);
+}
+.v2-ia-branch-meta {
+  flex: 0 0 auto; font-size: var(--fs-11); color: var(--text-4);
+}
+.v2-ia-branch-report {
+  margin-top: 4px; padding-left: 15px;
+  font-size: var(--fs-12); line-height: 1.65; color: var(--text-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.v2-ia-branch-err {
+  margin-top: 4px; padding-left: 15px;
+  font-size: var(--fs-12); line-height: 1.65; color: var(--danger);
+}
+.v2-ia-branch-live {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-12); color: var(--text-3);
+}
+
 /* 证据出处 */
 .v2-ia-cites { margin-top: var(--sp-4); }
 .v2-ia-ev-row {

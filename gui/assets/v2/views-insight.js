@@ -115,6 +115,10 @@
               <span class="v2-ia-step-sum">{{ s.summary }}</span>
             </div>
           </div>
+          <!-- 派了子代理：并行时告诉用户有几路在查 -->
+          <div v-if="(t.branches || []).length" class="v2-ia-branch-live">
+            已派出 {{ t.branches.length }} 个子代理，正在并行查询…
+          </div>
         </div>
 
         <!-- 失败 -->
@@ -132,6 +136,24 @@
               <span class="v2-ia-step-no">{{ s.index }}</span>
               <span class="v2-ia-step-label">{{ s.label }}</span>
               <span class="v2-ia-step-sum">{{ s.summary }}</span>
+            </div>
+          </div>
+
+          <!-- 分支树（多代理）：主代理派的子代理，各查各的 -->
+          <div v-if="t.branches && t.branches.length" class="v2-ia-branches">
+            <div class="v2-ia-steps-head">
+              <span class="v2-ia-steps-title">它派了 {{ t.branches.length }} 个子代理去查</span>
+              <span class="v2-ia-steps-count">并行执行</span>
+            </div>
+            <div v-for="b in t.branches" :key="b.id" class="v2-ia-branch"
+                 :class="{ failed: b.status === 'failed' }">
+              <div class="v2-ia-branch-head">
+                <span class="v2-ia-branch-dot" :class="b.status"></span>
+                <span class="v2-ia-branch-goal">{{ b.goal }}</span>
+                <span class="v2-ia-branch-meta">{{ b.steps ? b.steps.length : 0 }} 次查询 · {{ b.cost || 0 }} 秒</span>
+              </div>
+              <div v-if="b.error" class="v2-ia-branch-err">{{ b.error }}</div>
+              <div v-else-if="b.report" class="v2-ia-branch-report">{{ b.report }}</div>
             </div>
           </div>
 
@@ -309,6 +331,7 @@
           answer: "",
           steps: [],
           evidence: [],
+          branches: [],
           cost: 0,
           pending: true,
           error: "",
@@ -346,11 +369,17 @@
                 const last = live.steps[live.steps.length - 1];
                 turn.stage = "正在「" + (last.label || "查数据") + "」…";
               }
+              // 分支实时状态：并行时能看到有几路在查
+              if (live.branches && live.branches.length) {
+                turn.branches = live.branches;
+              }
               if (t.status === "done") {
                 const res = t.result || {};
                 turn.answer = res.answer || "";
                 turn.steps = res.steps || turn.steps;
                 turn.evidence = res.evidence || [];
+                // 分支树：主代理派的子代理各查各的
+                turn.branches = res.branches || [];
                 turn.cost = t.cost || 0;
                 turn.pending = false;
                 if (res.model) model.value = res.model;

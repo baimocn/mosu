@@ -118,12 +118,37 @@ class TestReadmeMcpToolCountMatchesRegistry(unittest.TestCase):
                                   f"{t['name']} 缺 inputSchema")
 
 
+_PYTEST_COUNT_CACHE: list = []
+
+
 def _actual_test_count() -> int:
-    """跑一遍 discovery 拿真实用例数——不硬编码，不估算。"""
-    if str(ROOT / "tests") not in sys.path:
-        sys.path.insert(0, str(ROOT / "tests"))
-    import unittest
-    return unittest.defaultTestLoader.discover(str(ROOT / "tests")).countTestCases()
+    """跑一遍真实收集拿用例数——不硬编码，不估算。
+
+    口径必须跟用户实际敲的命令一致，也就是 `pytest tests/`。
+    早先这里用的是 unittest discovery（679），跟 pytest 收集数（694）差 15 个
+    ——差在不是 TestCase 子类的纯函数式用例。README 写的是「测试（全离线，N 例）」，
+    读者照着 pytest 跑就发现数字对不上，这种「文档数字靠另一套口径」本身也是腐化。
+    """
+    if _PYTEST_COUNT_CACHE:
+        return _PYTEST_COUNT_CACHE[0]
+    import re
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
+         "-p", "no:typeguard"],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=180,
+    )
+    m = re.findall(r"(\d+)\s+tests?\s+collected", proc.stdout)
+    if not m:
+        # 收集失败别把测试搞红，退回 unittest discovery，至少不是 0
+        if str(ROOT / "tests") not in sys.path:
+            sys.path.insert(0, str(ROOT / "tests"))
+        import unittest
+        n = unittest.defaultTestLoader.discover(str(ROOT / "tests")).countTestCases()
+    else:
+        n = int(m[-1])
+    _PYTEST_COUNT_CACHE.append(n)
+    return n
 
 
 class TestReadmeTestCount(unittest.TestCase):

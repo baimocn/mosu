@@ -25,6 +25,8 @@ import re
 import time
 from datetime import datetime, timedelta
 
+from core.locks import DS_LOCK
+
 # ------------------------------------------------------------------ 时间解析
 
 
@@ -473,7 +475,9 @@ class ToolBox:
                     "data": {"contacts": contacts}, "evidence": ev}
 
         if metric == "time_distribution":
-            st = an.time_stats(by=by, from_ts=f_ts, to_ts=t_ts)
+            # session 必须传下去——漏传会让「某人的时段分布」返回全库分布，
+            # 模型会拿一个完全不相干的数字当结论（端到端实测踩到过）。
+            st = an.time_stats(by=by, session=sess_id, from_ts=f_ts, to_ts=t_ts)
             dist = st.get("distribution") or {}
             items = sorted(((str(k), v) for k, v in dist.items()),
                            key=lambda kv: -kv[1])
@@ -496,11 +500,21 @@ class ToolBox:
                 "data": {"keywords": kws}, "evidence": []}
 
         if metric == "types":
-            g = an.global_stats(from_ts=f_ts, to_ts=t_ts)
-            by_type = g.get("byType") or {}
-            return {"summary": "消息类型：" + "、".join(
+            # 有 sessionId 就必须走单会话口径——
+            # global_stats 只支持全库，传了 sessionId 还返回全库数字，
+            # 模型会拿不相干的数字当这个人的消息类型构成
+            # （端到端实测：子代理自己发现了这个不一致）。
+            if sess_id:
+                ss = an.session_stats(sess_id, from_ts=f_ts, to_ts=t_ts)
+                by_type = ss.get("byType") or {}
+                scope = (f"会话「{ss.get('session', {}).get('displayName') or sess_id}」")
+            else:
+                g = an.global_stats(from_ts=f_ts, to_ts=t_ts)
+                by_type = g.get("byType") or {}
+                scope = "全库"
+            return {"summary": f"{scope}消息类型：" + "、".join(
                 f"{k} {v}" for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])),
-                "data": {"byType": by_type}, "evidence": []}
+                "data": {"byType": by_type, "scope": scope}, "evidence": []}
 
         return {"summary": f"未知统计维度 {metric}", "data": {}, "evidence": []}
 
@@ -727,7 +741,12 @@ class ToolBox:
         args = args or {}
         t0 = time.time()
         try:
-            r = fn(self, args)
+            # 全局数据锁：并行子代理会共用同一个 SQLite 连接，
+            # 同一时刻只能有一个线程在用（游标会互相踩，
+            # 表现为结果错乱或 database disk image is malformed）。
+            # 工具调用是毫秒级，串行化不损失什么；真正该并行的 LLM 推理在锁外。
+            with DS_LOCK:
+                r = fn(self, args)
         except Exception as e:  # noqa: BLE001 —— 工具失败必须变成可读信息，不能崩
             r = {"summary": f"工具 {name} 执行失败：{type(e).__name__}: {e}",
                  "data": {}, "evidence": []}
@@ -740,5 +759,10 @@ class ToolBox:
         return r
 
     @staticmethod
-    def schemas() -> list[dict]:
-        return TOOL_SCHEMAS
+    def schemas(names: list[str] | None = None) -> list[dict]:
+        """工具 schema。传 names 则只返回这些工具（子代理用受限工具集）。"""
+        if names is None:
+            return TOOL_SCHEMAS
+        want = set(names)
+        return [s for s in TOOL_SCHEMAS
+                if (s.get("function") or {}).get("name") in want]
