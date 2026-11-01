@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -186,6 +187,55 @@ class InsightAgent:
         self.team = team          # AgentTeam：多代理编排（可为 None）
         if max_steps:
             self.MAX_STEPS = max_steps
+        # 外部引导（steer）：跑的过程中塞进来的额外指令。
+        # 用锁保护：派活通道的 steer 线程写、主循环线程读。
+        self._steer_lock = threading.Lock()
+        self._pending_steer: list[str] = []
+        # 最近一次注入的引导原文（供落盘时记录「引导了什么」）
+        self.last_steer: list[str] = []
+
+    def steer(self, message: str) -> None:
+        """插入一条引导，下一轮模型调用前会被送进上下文。
+
+        对标 Lancer 的 steer 语义（control-service.ts:245）：
+        不是「打断当前这轮」，而是「在当前这轮还在跑的时候，把新指令递进去」，
+        让模型自己决定是调整方向还是照原计划走完。
+
+        为什么用「下一轮注入」而不是立刻打断：
+        打断会丢掉模型已经查到的东西（工具调用可能已经发出去了），
+        而引导是**增量**的——模型手里已有的证据不丢，还多了条新约束。
+        """
+        msg = (message or "").strip()
+        if not msg:
+            return
+        with self._steer_lock:
+            self._pending_steer.append(msg)
+
+    def _take_steer(self) -> list[str]:
+        """取走并清空待注入的引导。"""
+        with self._steer_lock:
+            out = list(self._pending_steer)
+            self._pending_steer.clear()
+            return out
+
+    def _inject_steer(self, messages: list[dict]) -> bool:
+        """把待注入的引导变成 user 消息追加到上下文。返回是否注入了。
+
+        同时把**引导的原文**记到 self.last_steer 里——落盘时要用，
+        否则回看历史只看到「收到外部引导」这种固定文案，
+        根本不知道当时引导了啥（这跟「摘要与详情同名不同型」是同一类问题：
+        有信息但看不出来）。
+        """
+        st = self._take_steer()
+        if not st:
+            return False
+        body = "；".join(st)
+        self.last_steer = st
+        messages.append({
+            "role": "user",
+            "content": (f"【来自外部的补充指令，请立即纳入考虑】{body}"),
+        })
+        return True
 
     @property
     def llm(self):
@@ -224,6 +274,26 @@ class InsightAgent:
         if self.team is not None:
             tools = tools + [DELEGATE_SCHEMA]
         for step_i in range(self.MAX_STEPS):
+            # 外部引导（steer）：在每轮模型调用**之前**注入。
+            # 放这里而不是循环外，是因为引导可能随时到达——
+            # 循环外只注一次的话，运行中途来的引导就丢了。
+            if self._inject_steer(messages):
+                _steer_text = "；".join(self.last_steer)
+                run.steps.append({
+                    "index": len(run.steps) + 1,
+                    "tool": "steer",
+                    "label": "收到外部引导",
+                    # 记录引导原文（截断），否则回看历史只知道「有过引导」，
+                    # 不知道引导了啥
+                    "summary": (_steer_text[:80] + "…")
+                    if len(_steer_text) > 80 else _steer_text,
+                    "ok": True,
+                })
+                if on_step:
+                    try:
+                        on_step(run.steps[-1])
+                    except Exception:
+                        pass
             resp = self.llm.chat_tools(messages, tools, temperature=0.3,
                                        max_tokens=1500)
             run.tokens += int((resp.get("usage") or {}).get("total_tokens") or 0)

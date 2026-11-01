@@ -209,6 +209,58 @@ class TestListRuns(unittest.TestCase):
         self.assertEqual(items[0]["question"], "q2")
         self.assertEqual(items[-1]["question"], "q0")
 
+    def test_list_sorted_by_created_at_not_filename(self):
+        """排序必须按 createdAt，**不是文件名**。
+
+        真踩过的坑：早期派活通道用 uuid hex 当 run_id，
+        而 GUI 侧用「时间戳-哈希-序号」。两种格式的文件混在一个目录里，
+        按文件名排 → 派活的记录位置随机，看起来像乱序，而且**不报错**。
+
+        这里故意造一个「文件名完全乱序、createdAt 正确」的场景来锁死行为。
+        """
+        d = self.runs.runs_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        # 文件名故意跟时间相反：最早的文件名最大
+        (d / "zzzzzzzzzzzz.json").write_text(
+            json.dumps({"question": "最早", "createdAt": 1000.0}),
+            encoding="utf-8")
+        (d / "aaaaaaaaaaaaaaaa.json").write_text(
+            json.dumps({"question": "最新", "createdAt": 2000.0}),
+            encoding="utf-8")
+        items = self.runs.list_runs()
+        self.assertEqual(items[0]["question"], "最新",
+                         "按文件名排会把「最早」顶到最前，这是真 bug")
+        self.assertEqual(items[-1]["question"], "最早")
+
+    def test_summary_includes_source(self):
+        """摘要要带 source，回看时得知道这条是界面问的还是派活进来的。"""
+        self.runs.save_run({"question": "界面问的", "answer": "a"})
+        self.runs.save_run({"question": "派活来的", "answer": "a",
+                            "source": "dispatch"})
+        items = self.runs.list_runs()
+        by_q = {it["question"]: it for it in items}
+        self.assertEqual(by_q["界面问的"]["source"], "gui")
+        self.assertEqual(by_q["派活来的"]["source"], "dispatch")
+
+    def test_make_run_id_is_used_by_dispatch_server(self):
+        """派活服务端必须用 make_run_id，不能自己另起一套 id 格式。
+
+        id 格式全局唯一是 list_runs 排序正确的前提。
+        """
+        import inspect
+        from core import dispatch_server
+        src = inspect.getsource(dispatch_server.InsightRunner._start)
+        self.assertIn("make_run_id", src,
+                      "派活自己造 id 会让历史列表排序失效")
+        # 只看代码行，不看注释（注释里会提到历史做法 uuid4）
+        code_lines = [ln for ln in src.splitlines()
+                      if not ln.strip().startswith("#")]
+        code = "\n".join(code_lines)
+        # 去掉 docstring
+        code = code.split('"""', 2)[-1] if code.count('"""') >= 2 else code
+        self.assertNotIn("uuid", code,
+                         "派活不该再自己造 uuid 格式的 id")
+
     def test_list_respects_limit(self):
         for i in range(5):
             self.runs.save_run({"question": f"q{i}", "answer": "a"})

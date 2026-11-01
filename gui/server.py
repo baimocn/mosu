@@ -2597,4 +2597,37 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             webbrowser.open(f"http://127.0.0.1:{port}")
     except Exception:
         pass
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+    # ---- 派活通道：让外部 CLI / 脚本把活派给这个跑着的墨溯 ----
+    # 对标 Lancer 的 Control API。它起在**另一个端口**上（8790），
+    # 独立于 GUI 的 HTTP 端口——派活协议不是 HTTP/JSON 语义，
+    # 混进 GUI 路由会让两边都变复杂。
+    _dispatch_srv = None
+    try:
+        from core import dispatch as _dp
+        from core.dispatch_server import DispatchServer, InsightRunner
+
+        def _dispatch_get_ds():
+            with _ds_lock:
+                return get_ds()
+
+        _runner = InsightRunner(_dispatch_get_ds)
+        _dispatch_srv = DispatchServer(_runner, host="127.0.0.1",
+                                       port=_dp.default_port())
+        _dispatch_srv.serve_forever_in_thread()
+        _dp.write_endpoint(_dispatch_srv.port, pid=os.getpid())
+        print(f"[mosu-dispatch] 派活通道已开：127.0.0.1:{_dispatch_srv.port}"
+              f"（mosu dispatch --help 看用法）")
+    except OSError as e:
+        # 端口被占 → 派活通道不可用，但**不影响 GUI 主功能**
+        print(f"[mosu-dispatch] ⚠ 派活通道未启动（端口被占：{e}）。"
+              f"GUI 正常可用，只是外部派活用不了。")
+    except Exception as e:  # noqa: BLE001
+        print(f"[mosu-dispatch] ⚠ 派活通道启动失败：{type(e).__name__}: {e}。"
+              f"GUI 正常可用。")
+
+    try:
+        ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    finally:
+        if _dispatch_srv is not None:
+            _dispatch_srv.stop()

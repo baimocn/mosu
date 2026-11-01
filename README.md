@@ -95,6 +95,10 @@ python cli/mosu.py sessions
 - **实时进度流**：洞察过程用 SSE 推送（工具轨迹、分支状态实时到达，不是 900ms 轮询）；
   SSE 不可用时自动降级轮询，结果一样完整
 - **分析历史**：每轮洞察完整落盘到 `~/.mosu/runs/`，关页面、重启、隔天回来都能回看
+- **外部派活通道**：`mosu dispatch send|queue|steer` 把活派给**正在跑的**墨溯，
+  外部脚本 / 定时任务 / 别的 agent 都能用；三种投递语义——`send` 忙时明确拒绝、
+  `queue` 排队等当前这轮跑完、`steer` 把补充指令递进正在跑的那轮；
+  token 鉴权 + 常量时间比较，通道只监听 127.0.0.1
 - **离线情感分析**：内置中文情感词典 + 否定/程度规则，不调任何外部 API
 
 ## 安装
@@ -110,7 +114,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，749 例）：
+测试（全离线，798 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -188,6 +192,31 @@ python cli/mosu.py export "张三" --incremental    # 之后只导新消息（�
 ```
 
 完整命令与选项见 [docs/CLI.md](docs/CLI.md)。
+
+### 2.1 外部派活（把活派给正在跑的墨溯）
+
+墨溯 GUI 在跑的时候，它自己就是个派活服务端（127.0.0.1:8790，token 鉴权）。
+外部脚本 / 定时任务 / 别的 agent 都能把活派进来：
+
+```bash
+python cli/mosu.py dispatch endpoint                      # 看端点与 token
+python cli/mosu.py dispatch send --question "上个月跟谁聊得最多？" --wait
+python cli/mosu.py dispatch queue --question "去年发了多少条？"   # 忙时排队
+python cli/mosu.py dispatch steer --message "重点看工作相关的"   # 引导当前这轮
+python cli/mosu.py dispatch status                        # 现在在跑什么
+python cli/mosu.py dispatch wait --timeout 120            # 等当前这轮出结果
+python cli/mosu.py dispatch runs --limit 10               # 历史
+```
+
+三种投递语义对应三种处境：
+
+| 处境 | `send` | `queue` | `steer` |
+|---|---|---|---|
+| 墨溯空闲 | 立刻开跑 | 立刻开跑 | 开一个新任务 |
+| 墨溯正忙 | **明确拒绝**（`BUSY`，退出码 1） | 排队，当前那轮跑完自动接上 | 消息递进正在跑的那轮 |
+
+派活产出的分析同样落盘到 `~/.mosu/runs/`，在 GUI 历史面板里能回看。
+通道只监听 127.0.0.1，token 落 `~/.mosu/dispatch/control.token`（0600）。
 
 ### 3. 输出格式
 
@@ -335,7 +364,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（749 例）
+tests/                 离线测试（798 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -348,7 +377,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（749 例）
+- [x] 离线测试套件（798 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -442,7 +471,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (749 cases)
+tests/          offline test suite (798 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

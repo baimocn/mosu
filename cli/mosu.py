@@ -1011,6 +1011,194 @@ def cmd_mcp(args, ds: Dataset):
     not_implemented("mcp", "可用: serve | selftest | config")
 
 
+def cmd_dispatch(args, ds: Dataset):
+    """派活通道 CLI。
+
+    把活派给**跑着的**墨溯 GUI（派活服务端在 GUI 进程里，端口 8790）。
+    这个命令自己不碰数据——它只是个客户端，所以不需要 db-path / key。
+
+    用法：
+      mosu dispatch send --question "我上个月跟谁聊得最多？"
+      mosu dispatch send --question "..." --wait        # 等结果
+      mosu dispatch queue --question "..."             # 排队
+      mosu dispatch steer --message "重点看工作相关的"  # 引导当前这轮
+      mosu dispatch status                             # 看现在在跑什么
+      mosu dispatch runs --limit 10                    # 列历史
+      mosu dispatch wait --run-id <id> --timeout 120   # 等某轮
+    """
+    from core import dispatch as dp
+
+    cmd = args.dispatch_cmd or "status"
+
+    if cmd == "endpoint":
+        ep = dp.read_endpoint()
+        tok = dp.read_token()
+        if not ep:
+            print("[x] 没找到派活端点——墨溯 GUI 没在跑？先 `mosu gui`")
+            return 1
+        if args.json:
+            print(json.dumps({"endpoint": ep, "token": tok}, ensure_ascii=False,
+                             indent=2))
+        else:
+            print(f"端点：{ep.get('host')}:{ep.get('port')}")
+            print(f"协议版本：{ep.get('protocol')}")
+            print(f"服务 PID：{ep.get('pid')}")
+            print(f"token：{(tok[:8] + '…') if tok else '（无）'}")
+            print(f"token 文件：{dp.token_path()}")
+        return 0
+
+    if cmd == "send" or cmd == "queue":
+        q = (args.question or "").strip()
+        if not q:
+            print("[x] 缺少 --question")
+            return 1
+        req = dp.make_request(cmd, question=q)
+    elif cmd == "steer":
+        msg = (args.message or "").strip()
+        if not msg:
+            print("[x] 缺少 --message")
+            return 1
+        req = dp.make_request("steer", message=msg,
+                              question=(args.question or "").strip() or None)
+    elif cmd == "wait":
+        req = dp.make_request("wait", run_id=args.run_id,
+                              timeout=args.timeout)
+    elif cmd == "runs":
+        # --limit 来自 common 父解析器（SUPPRESS 默认，没给就不存在）
+        req = dp.make_request("runs",
+                              limit=getattr(args, "limit", None) or 30)
+    else:
+        req = dp.make_request("status")
+
+    resp = dp.call(req, timeout=max(10.0, float(args.timeout or 30) + 30))
+
+    if not resp.get("ok"):
+        err = resp.get("error") or {}
+        code = err.get("code") or "UNKNOWN"
+        msg = err.get("message") or "未知错误"
+        if args.json:
+            print(json.dumps(resp, ensure_ascii=False, indent=2))
+        else:
+            print(f"[x] {code}：{msg}")
+            if code == dp.ERR_UNAUTHORIZED:
+                print("    token 不对——是不是墨溯重启过？重新看 `mosu dispatch endpoint`")
+            elif code == dp.ERR_BUSY:
+                print("    墨溯正忙：改用 queue 排队，或 steer 引导当前这轮")
+        return 1
+
+    result = resp.get("result") or {}
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    # ---- 人类可读输出
+    if cmd in ("send", "queue"):
+        if result.get("queued"):
+            print(f"[排队] 位置 {result.get('position')}，"
+                  f"runId={result.get('runId')}")
+            print("（当前那轮跑完就自动开始）")
+        else:
+            print(f"[已受理] runId={result.get('runId')}")
+        if getattr(args, "wait", False):
+            return _dispatch_wait(result.get("runId"), args)
+        return 0
+
+    if cmd == "steer":
+        if result.get("delivered"):
+            print(f"[已引导] 消息已递进当前这轮（runId={result.get('runId')}）")
+        else:
+            print(f"[提示] {result.get('note')}（runId={result.get('runId')}）")
+        return 0
+
+    if cmd == "status":
+        cur = result.get("current")
+        if cur:
+            print(f"[在跑] {cur.get('question')}")
+            print(f"       runId={cur.get('runId')}，"
+                  f"已跑 {round(__import__('time').time() - (cur.get('since') or 0), 1)} 秒")
+        else:
+            print("[空闲] 当前没有在跑的任务")
+        if result.get("queued"):
+            print(f"[排队] {result.get('queued')} 个")
+            for q in result.get("queue") or []:
+                print(f"       - {q.get('question')}")
+        print(f"[已完成] {result.get('finished')} 轮")
+        return 0
+
+    if cmd == "runs":
+        runs = result.get("runs") or []
+        if not runs:
+            print("（还没有历史记录）")
+            return 0
+        for r in runs:
+            print(f"{r.get('createdAt') and _fmt_ts(r.get('createdAt'))}  "
+                  f"{r.get('stepsCount')}步 {r.get('evidenceCount')}证据  "
+                  f"{r.get('question')}")
+        return 0
+
+    if cmd == "wait":
+        st = result.get("status")
+        if st == "done":
+            res = result.get("result") or {}
+            print(res.get("answer") or "（没有答案）")
+            ev = res.get("evidence") or []
+            if ev:
+                print(f"\n（{len(ev)} 条证据，{len(res.get('steps') or [])} 步查询，"
+                      f"{result.get('cost')} 秒）")
+            return 0
+        if st == "error":
+            print(f"[x] 任务失败：{result.get('error')}")
+            return 1
+        print(f"[{st}] {result.get('note') or ''}")
+        return 0
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _dispatch_wait(run_id: str | None, args) -> int:
+    """等某轮跑完并打印结果。
+
+    单独抽出来是因为 send --wait 与 wait 子命令共用同一段逻辑。
+    """
+    from core import dispatch as dp
+    req = dp.make_request("wait", run_id=run_id,
+                          timeout=getattr(args, "timeout", 300))
+    resp = dp.call(req, timeout=max(10.0, float(getattr(args, "timeout", 300) or 30) + 30))
+    if not resp.get("ok"):
+        err = resp.get("error") or {}
+        print(f"[x] {err.get('code')}：{err.get('message')}")
+        return 1
+    result = resp.get("result") or {}
+    st = result.get("status")
+    if st == "done":
+        res = result.get("result") or {}
+        if getattr(args, "json", False):
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        print(res.get("answer") or "（没有答案）")
+        ev = res.get("evidence") or []
+        if ev:
+            print(f"\n（{len(ev)} 条证据，{len(res.get('steps') or [])} 步查询，"
+                  f"{result.get('cost')} 秒）")
+        return 0
+    if st == "error":
+        print(f"[x] 任务失败：{result.get('error')}")
+        return 1
+    print(f"[{st}] {result.get('note') or ''}")
+    return 0
+
+
+def _fmt_ts(ts) -> str:
+    """时间戳 → "11-02 02:05"。"""
+    try:
+        import datetime as _dt
+        return _dt.datetime.fromtimestamp(float(ts)).strftime("%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------- 入口
 def build_parser():
     # 子命令也能接收的全局项（default=SUPPRESS，避免覆盖主 parser 已解析的值）
@@ -1210,6 +1398,26 @@ def build_parser():
                    default="serve", help="serve=起服务 selftest=自测 config=打印接入配置")
     p.set_defaults(func=cmd_mcp)
 
+    p = sub.add_parser("dispatch", help="派活通道：把活派给跑着的墨溯",
+                       parents=[common])
+    p.add_argument("dispatch_cmd", nargs="?", default="status",
+                   choices=["send", "queue", "steer", "status", "runs", "wait",
+                            "endpoint"],
+                   help="send=立刻开跑 queue=排队 steer=引导当前这轮 "
+                        "status=看状态 runs=列历史 wait=等结果 "
+                        "endpoint=打印接入信息")
+    p.add_argument("--question", help="要问的问题（send/queue 用）")
+    p.add_argument("--message", help="引导内容（steer 用）")
+    p.add_argument("--run-id", help="等哪一轮（wait 用）")
+    p.add_argument("--timeout", type=float, default=300,
+                   help="wait 最多等多少秒（默认 300）")
+    # --limit 已在 common 父解析器里（argparse.SUPPRESS 默认），
+    # 这里不能重复定义，否则 argparse 直接报 conflict。
+    p.add_argument("--wait", action="store_true",
+                   help="send/queue 之后等它跑完并打印答案")
+    p.add_argument("--json", action="store_true", help="输出原始 JSON")
+    p.set_defaults(func=cmd_dispatch)
+
     return ap
 
 
@@ -1245,6 +1453,18 @@ def main():
         _precheck_time_args(args)
     except ValueError as e:
         sys.exit(str(e))
+    # dispatch 是**纯客户端**命令：它只跟派活服务端说话，不碰本地数据。
+    # 所以不该要求 db-path / key，也不该因为找不到数据目录就报错退出。
+    if args.cmd == "dispatch":
+        try:
+            _rc = args.func(args, None)
+        except ValueError as e:
+            sys.exit(str(e))
+        # 命令用「返回非 0」表达失败时，必须转成进程退出码。
+        # 否则脚本/CI 看到的是 exit 0 + 满屏错误信息，判断不了成败。
+        if isinstance(_rc, int) and _rc != 0:
+            sys.exit(_rc)
+        return
     try:
         ds = Dataset(data_dir=args.db_path, key_hex=args.key, refresh=args.refresh,
                      quiet=args.quiet, with_wal=args.with_wal, account=wxid)
@@ -1255,12 +1475,17 @@ def main():
         else:
             raise
     try:
-        args.func(args, ds)
+        _rc = args.func(args, ds)
     except ValueError as e:
         # 参数非法（如 --from 写错）。以前 core 层用 SystemExit 报这类错，
         # Python 会打印消息并以 1 退出；改抛 ValueError 后若不在这里接住，
         # 用户看到的就是一整段 traceback。sys.exit(str) 保持原有输出完全一致。
         sys.exit(str(e))
+    # 命令用「返回非 0」表达失败时，必须转成进程退出码。
+    # 否则脚本/CI 看到的是 exit 0 + 满屏错误信息，判断不了成败。
+    # bool 是 int 的子类，排除掉（True 会被误当成失败）。
+    if isinstance(_rc, int) and not isinstance(_rc, bool) and _rc != 0:
+        sys.exit(_rc)
 
 
 if __name__ == "__main__":

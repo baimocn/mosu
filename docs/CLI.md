@@ -117,7 +117,32 @@ mosu config set --db-path <dir>
 mosu mcp serve            # 起服务，日志走 stderr，协议走 stdin/stdout
 mosu mcp selftest         # 不启服务，把每个工具跑一遍
 mosu mcp config           # 打印接入用的 mcp.json 片段
+
+# 外部派活（把活派给正在跑的墨溯 GUI）
+mosu dispatch endpoint                       # 看端点、协议版本、服务 PID、token
+mosu dispatch send --question "问题"          # 立刻开跑；目标正忙 → BUSY（退出码 1）
+mosu dispatch send --question "问题" --wait   # 等结果（配合 --timeout 秒）
+mosu dispatch queue --question "问题"         # 忙时排队，当前那轮跑完自动接上
+mosu dispatch steer --message "补充指令"      # 把指令递进正在跑的那轮
+mosu dispatch status                         # 现在在跑什么 / 排了几个 / 完成了多少
+mosu dispatch wait --timeout 120             # 等当前这轮出结果
+mosu dispatch wait --run-id <id> --timeout 120  # 等指定的一轮
+mosu dispatch runs --limit 10                # 历史
+mosu dispatch <子命令> --json                 # 机器可读输出
 ```
+
+派活通道的语义（对标 Lancer Control API）：
+
+| 目标状态 | `send` | `queue` | `steer` |
+|---|---|---|---|
+| 空闲 | 立刻开跑 | 立刻开跑 | 当新任务开跑 |
+| 正忙 | **明确拒绝** `BUSY` | 排队，当前轮跑完自动接上 | 指令递进当前轮 |
+
+- 通道由 `mosu gui` 自动拉起（127.0.0.1:8790），只监听本地回环
+- token 落 `~/.mosu/dispatch/control.token`，请求带 `Authorization: Bearer <token>`
+- 错误码：`BUSY` / `UNAUTHORIZED` / `NOT_FOUND` / `INVALID_REQUEST` / `TOO_LARGE` / `INVALID_JSON`
+- 失败时 CLI **退出码非 0**，可直接用于脚本判断
+- 派活产出的分析同样落盘 `~/.mosu/runs/`，在 GUI 历史面板里能回看
 
 ## MCP Server
 

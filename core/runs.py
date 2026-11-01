@@ -135,13 +135,29 @@ def save_run(record: dict) -> str:
 
 
 def _trim(keep: int = MAX_RUNS) -> None:
-    """超过上限就删最旧的。只删 .json，临时文件不动。"""
+    """超过上限就删最旧的。只删 .json，临时文件不动。
+
+    按 createdAt 排序淘汰，不按文件名——理由同 list_runs()：
+    文件名里的时间戳只是约定，id 格式不统一时按文件名排会删错。
+    """
     d = runs_dir()
     if not d.exists():
         return
-    files = sorted(d.glob("*.json"))
+    files = list(d.glob("*.json"))
     if len(files) <= keep:
         return
+
+    def _key(p: Path):
+        ts = 0.0
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                ts = float(data.get("createdAt") or data.get("savedAt") or 0)
+        except (OSError, ValueError, TypeError):
+            pass
+        return (ts, p.name)
+
+    files.sort(key=_key)
     for p in files[:len(files) - keep]:
         try:
             p.unlink()
@@ -158,21 +174,42 @@ def list_runs(limit: int = 30) -> list[dict]:
     d = runs_dir()
     if not d.exists():
         return []
-    out = []
-    for p in sorted(d.glob("*.json"), reverse=True):
-        if len(out) >= max(1, int(limit or 30)):
-            break
+    # 先把能读的文件都读出来，按 createdAt 倒序排。
+    #
+    # 为什么不用「按文件名排序」：文件名里的时间戳只是**约定**，
+    # 一旦有别的写入方用了不同格式的 id（比如早期派活用 uuid hex），
+    # 排序立刻乱掉，而且不报错——历史面板看起来像「随机顺序」。
+    # 按内容里的时间戳排才是语义正确；文件名只做同时间戳时的稳定次序。
+    entries = []
+    for p in d.glob("*.json"):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if not isinstance(data, dict):
+            continue
+        ts = data.get("createdAt") or data.get("savedAt") or 0
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            ts = 0.0
+        entries.append((ts, p.name, data))
+    entries.sort(key=lambda e: (e[0], e[1]), reverse=True)
+
+    out = []
+    for _ts, _name, data in entries:
+        if len(out) >= max(1, int(limit or 30)):
+            break
         out.append({
-            "id": data.get("id") or p.stem,
+            "id": data.get("id") or _name[:-5],
             "question": (data.get("question") or "")[:120],
             "answerHead": (data.get("answer") or "")[:160],
             "createdAt": data.get("createdAt") or data.get("savedAt"),
             "cost": data.get("cost"),
             "model": data.get("model"),
+            # 来源：gui = 界面里问的，dispatch = 外部派活进来的。
+            # 回看时得知道这条是哪来的。
+            "source": data.get("source") or "gui",
             # 计数字段一律带 Count 后缀：摘要里的 evidence 是整数，
             # 详情里的 evidence 是数组——同名不同型是最容易埋雷的写法，
             # 前端拿错字段时不会报错，只会渲染出空列表。
