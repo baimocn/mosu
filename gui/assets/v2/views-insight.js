@@ -22,6 +22,11 @@
 
   const Insight = {
     props: { route: { type: String, default: "insight" } },
+    // 子组件必须**在本视图里**注册，不能指望父组件（App）注册——
+    // Vue 的局部组件注册是**向下**可见的：App 注册了，App 的子组件里用不了。
+    // 踩过这个坑：只在上层注册 → <branch-tree> 成了未知标签，
+    // **Vue 静默忽略不报错**，页面看着正常但分支树永远不出现。
+    components: { "branch-tree": global.MosuV2.BranchTree },
     template: `
     <div class="v2-page v2-scroll v2-ia">
       <div class="v2-page-head">
@@ -170,22 +175,13 @@
             </div>
           </div>
 
-          <!-- 分支树（多代理）：主代理派的子代理，各查各的 -->
+          <!-- 分支树（多代理）：泳道分列 + 语义锚点光线 -->
           <div v-if="t.branches && t.branches.length" class="v2-ia-branches">
             <div class="v2-ia-steps-head">
               <span class="v2-ia-steps-title">它派了 {{ t.branches.length }} 个子代理去查</span>
               <span class="v2-ia-steps-count">并行执行</span>
             </div>
-            <div v-for="b in t.branches" :key="b.id" class="v2-ia-branch"
-                 :class="{ failed: b.status === 'failed' }">
-              <div class="v2-ia-branch-head">
-                <span class="v2-ia-branch-dot" :class="b.status"></span>
-                <span class="v2-ia-branch-goal">{{ b.goal }}</span>
-                <span class="v2-ia-branch-meta">{{ b.steps ? b.steps.length : 0 }} 次查询 · {{ b.cost || 0 }} 秒</span>
-              </div>
-              <div v-if="b.error" class="v2-ia-branch-err">{{ b.error }}</div>
-              <div v-else-if="b.report" class="v2-ia-branch-report">{{ b.report }}</div>
-            </div>
+            <branch-tree :branches="t.branches"></branch-tree>
           </div>
 
           <article class="v2-ia-answer" v-html="rendered(t)"></article>

@@ -118,6 +118,34 @@ BRANCH_FAILED = "failed"
 RECEIPT_REPORTED = "reported"   # 子分支跑完了，但父级还没核对
 RECEIPT_ACCEPTED = "accepted"   # 父级核对通过，可以当结论用
 
+# 泳道调色板（对应 Lancer 的 ProcessLane.color）
+#
+# 为什么是**固定列表**而不是随机色 / hash 色：
+# Lancer 的纪律是「颜色按泳道分配一次，全链路继承」。
+# 随机色每次刷新都变，用户没法把「那条紫色的线」和某个子代理对上；
+# hash 色在分支增删后会重新洗牌，同样对不上。
+# 固定调色板按泳道索引取色 → 同一泳道永远是同一个颜色，
+# 子分支继承父的泳道 → 整条链一个颜色，视觉上一眼看清归属。
+#
+# 颜色选的是**在明暗两套主题下都能看清**的一组（蓝/紫/青/琥珀/玫红/青绿）。
+LANE_COLORS = [
+    "#3b82f6",  # 蓝
+    "#a855f7",  # 紫
+    "#06b6d4",  # 青
+    "#f59e0b",  # 琥珀
+    "#ec4899",  # 玫红
+    "#10b981",  # 青绿
+    "#8b5cf6",  # 靛
+    "#ef4444",  # 红
+]
+
+
+def lane_color(lane: int) -> str:
+    """泳道索引 → 颜色。越界时取模循环（不会崩，但也不会重复太多）。"""
+    if lane is None or lane < 0:
+        return LANE_COLORS[0]
+    return LANE_COLORS[lane % len(LANE_COLORS)]
+
 
 class Branch:
     """一个子分支的完整记录。
@@ -127,11 +155,16 @@ class Branch:
     保留的是**最关键的三样**：父子关系、状态、证据。
     """
 
-    def __init__(self, goal: str, depth: int, parent: "Branch | None" = None):
+    def __init__(self, goal: str, depth: int, parent: "Branch | None" = None,
+                 lane: int | None = None):
         self.id = "b" + uuid.uuid4().hex[:8]
         self.goal = goal
         self.depth = depth
         self.parent_id = parent.id if parent else None
+        # 泳道：顶层分支各自一条，子分支**继承父的**。
+        # 这样「父 → 子」的连线天然同色，整条链一眼看清归属。
+        self.lane = (parent.lane if parent is not None
+                     else (lane if lane is not None else 0))
         self.status = BRANCH_QUEUED
         self.receipt = RECEIPT_REPORTED
         self.report = ""            # 子代理的结论
@@ -146,12 +179,21 @@ class Branch:
         if parent is not None:
             parent.children.append(self)
 
+    @property
+    def lane_color(self) -> str:
+        """本分支的泳道颜色。同一泳道恒定，全链路继承。"""
+        return lane_color(self.lane)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "goal": self.goal,
             "depth": self.depth,
             "parentId": self.parent_id,
+            # 泳道与颜色：前端画树时按 lane 分列、按 laneColor 上色。
+            # 颜色在这里算好下发，前端不自己配色——避免两边算法不一致。
+            "lane": self.lane,
+            "laneColor": lane_color(self.lane),
             "status": self.status,
             "receipt": self.receipt,
             "report": self.report,
@@ -224,7 +266,7 @@ class AgentTeam:
 
     # ------------------------------------------------------------ 跑一个分支
     def run_branch(self, goal: str, depth: int, parent: Branch | None = None,
-                   on_step=None) -> Branch:
+                   on_step=None, lane: int | None = None) -> Branch:
         """跑一个子代理（独立 ReAct 循环），返回分支记录。
 
         与主代理的区别只有两点：
@@ -232,13 +274,15 @@ class AgentTeam:
              但**深度上限**由 can_delegate 控制）
           2. 有界输出：结论截断到 MAX_REPORT_CHARS，
              防止子代理写一屏长文把父代理的上下文冲爆
+
+        lane：泳道号。顶层传入（各自一条），子层不传（继承父的）。
         """
-        br = Branch(goal, depth, parent)
+        br = Branch(goal, depth, parent, lane=lane)
         with self._lock:
             self.branches.append(br)
         br.status = BRANCH_RUNNING
 
-        from core.agent_engine import SUBAGENT_SYSTEM, FINAL_HINT
+        from core.agent_engine import SUBAGENT_SYSTEM, FINAL_HINT, DELEGATE_SCHEMA
 
         try:
             llm = self._new_llm()
@@ -248,6 +292,14 @@ class AgentTeam:
                 {"role": "user", "content": goal},
             ]
             tools = ToolBox.schemas()
+            # 子代理**可以再派子代理**（Lancer 的递归天然成立：
+            # 子分支调的是同一个 create_child_thread 工具）。
+            # 但只在深度没到上限时给——孙层再派就该被拒了。
+            # 之前这里没给，等于孙分支永远派不出来，
+            # 「分支树」实际只有一层，「泳道继承」也无从验证。
+            can_sub_delegate, _why = self.can_delegate(depth)
+            if can_sub_delegate:
+                tools = tools + [DELEGATE_SCHEMA]
             answer = ""
             steps: list[dict] = []
 
@@ -277,6 +329,37 @@ class AgentTeam:
                 for call in calls:
                     name = call.get("name") or ""
                     args = call.get("args") or {}
+                    # ---- 子代理的二次委派：派孙分支
+                    if name == "delegate_tasks":
+                        payload, kids = self._sub_delegate(br, args, on_step)
+                        br.children.extend(kids)
+                        run_steps = []
+                        for kid in kids:
+                            br.numbers |= kid.numbers
+                            for ev in kid.evidence:
+                                br.evidence.append(ev)
+                        step = {
+                            "index": len(steps) + 1,
+                            "tool": "delegate_tasks",
+                            "label": _tool_label("delegate_tasks", args),
+                            "summary": (f"又派了 {len(kids)} 个子代理："
+                                        + "、".join(k.goal[:20] for k in kids)),
+                            "ok": True,
+                            "branchId": br.id,
+                        }
+                        steps.append(step)
+                        br.steps.append(step)
+                        if on_step:
+                            try:
+                                on_step(step)
+                            except Exception:
+                                pass
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "content": payload,
+                        })
+                        continue
                     res = box.run(name, args)
                     # 子代理的数字也要进审计范围——否则父代理用它给的数字
                     # 会被数字审计误判成「没有出处」
@@ -322,6 +405,55 @@ class AgentTeam:
         return br
 
     # ------------------------------------------------------------ 并行派发
+    def _sub_delegate(self, parent_branch: Branch, args: dict,
+                      on_step=None) -> tuple[str, list]:
+        """子代理发起二次委派（派孙分支）。
+
+        返回 (给子代理看的 payload, 孙分支列表)。
+
+        与主代理的委派有两个关键差别：
+          1. **深度受限**：can_delegate 检查 depth，孙层不能再往下派
+          2. **泳道继承**：孙分支不传 lane → 继承父的泳道号 →
+             整条链一个颜色，父子关系在视觉上一目了然
+
+        失败不崩：委派失败就回一句说明，让子代理自己决定怎么办。
+        """
+        from core.agent_engine import DELEGATE_SCHEMA  # 延迟导入避免循环
+        goals = args.get("tasks") or []
+        if isinstance(goals, str):
+            goals = [goals]
+        goals = [str(g).strip() for g in goals if str(g).strip()]
+        if not goals:
+            return json.dumps({"分支数": 0, "说明": "没有给出子任务"},
+                              ensure_ascii=False), []
+
+        ok, why = self.can_delegate(parent_branch.depth)
+        if not ok:
+            return json.dumps({"分支数": 0, "说明": why},
+                              ensure_ascii=False), []
+
+        def _on_grandchild_step(step):
+            # 孙代理的步骤也要推到前端，否则轨迹里中间少一截
+            if on_step:
+                try:
+                    on_step(step)
+                except Exception:
+                    pass
+
+        try:
+            kids = self.delegate(goals, depth=parent_branch.depth,
+                                 parent=parent_branch, on_step=_on_grandchild_step)
+        except Exception as e:  # noqa: BLE001
+            return json.dumps({"分支数": 0,
+                               "说明": f"派发失败：{type(e).__name__}: {e}"},
+                              ensure_ascii=False), []
+
+        payload = json.dumps(branch_payload(kids), ensure_ascii=False,
+                             default=str)
+        if len(payload) > 4000:
+            payload = payload[:3900] + "…（子代理结果过长已截断）"
+        return payload, kids
+
     def delegate(self, goals: list[str], depth: int, parent: Branch | None = None,
                  on_step=None) -> list[Branch]:
         """并行跑若干子代理。
@@ -344,16 +476,25 @@ class AgentTeam:
             return []
 
         branches: list[Branch] = []
+        # 同一批派出的顶层分支各占一条泳道。
+        # 泳道号从「已有分支数」往后排，且**只增不减**——
+        # 这样第二批委派不会跟第一批抢同一条泳道，
+        # 用户看到的颜色是稳定的一一对应关系。
+        # 有 parent 时**不分配新泳道**：孙分支继承父的，整条链一个颜色。
+        lane_base = len(self.branches)
+        lane_of = (lambda i: None) if parent is not None else (lambda i: lane_base + i)
         try:
             with ThreadPoolExecutor(max_workers=len(goals),
                                     thread_name_prefix="mosu-sub") as pool:
-                futs = [pool.submit(self.run_branch, g, depth + 1, parent, on_step)
-                        for g in goals]
+                futs = [pool.submit(self.run_branch, g, depth + 1, parent,
+                                    on_step, lane_of(i))
+                        for i, g in enumerate(goals)]
                 for f in futs:
                     try:
                         branches.append(f.result())
                     except Exception as e:  # noqa: BLE001
-                        br = Branch(f"（派发失败）{goals[len(branches)]}", depth + 1, parent)
+                        br = Branch(f"（派发失败）{goals[len(branches)]}", depth + 1,
+                                    parent, lane=lane_of(len(branches)))
                         br.status = BRANCH_FAILED
                         br.error = f"{type(e).__name__}: {e}"
                         br.report = f"（派发失败：{br.error}）"

@@ -37,6 +37,8 @@
     components: {
       Home: V.Home, Chat: V.Chat, Insight: V.Insight, Share: V.Share, Settings: V.Settings,
       Lightbox: global.MosuViews.Lightbox,
+      // 分支树组件（洞察页用）：泳道 + 语义锚点光线
+      "branch-tree": global.MosuV2.BranchTree,
     },
     template: `
     <div class="v2-app">

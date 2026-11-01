@@ -13,6 +13,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 VUE_PATH = ROOT / "gui/vendor/vue.global.prod.js"
 FILES = ["views-home.js", "views-chat.js", "views-insight.js",
+         "views-branch.js",
          "views-share.js", "views-settings.js", "shell.js"]
 
 

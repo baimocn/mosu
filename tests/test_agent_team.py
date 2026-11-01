@@ -23,8 +23,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.agent_engine import DELEGATE_SCHEMA, InsightAgent
-from core.agent_team import (AgentTeam, BranchBudget, branch_payload,
-                              settle_children)
+from core.agent_team import (AgentTeam, Branch, BranchBudget, LANE_COLORS,
+                              branch_payload, lane_color, settle_children)
 from core.agent_tools import ToolBox
 
 
@@ -426,6 +426,139 @@ class TestNumberAuditAcrossBranches(unittest.TestCase):
         out = _audit_numbers(run)
         self.assertNotIn("核对提醒", out,
                          "子代理的数字进了审计范围后不应被误报")
+
+
+class TestLanes(unittest.TestCase):
+    """泳道：颜色按泳道分配一次，全链路继承。
+
+    对标 Lancer 的 ProcessLane.color 纪律：
+    「颜色按泳道分配一次全链路继承，不搞随机色」。
+    随机色每次刷新都变，用户没法把颜色和某个子代理对上；
+    分支增删后洗牌更糟——同一条线换个颜色就没人认得了。
+    """
+
+    def setUp(self):
+        self.ds = _FakeDs()
+        self.team = AgentTeam(self.ds, llm=_FakeLlm(), llm_factory=_FakeLlm)
+
+    def test_siblings_get_different_lanes(self):
+        """同一批派出的子代理必须各占一条泳道（否则颜色撞了分不清）。"""
+        brs = self.team.delegate(["a", "b", "c"], depth=0)
+        lanes = [b.lane for b in brs]
+        self.assertEqual(len(set(lanes)), 3,
+                         f"兄弟分支的泳道不能重复：{lanes}")
+
+    def test_child_inherits_parent_lane(self):
+        """子分支继承父的泳道 → 整条链一个颜色。"""
+        parent = Branch("父", 1, lane=3)
+        child = Branch("子", 2, parent=parent)
+        self.assertEqual(child.lane, 3)
+        self.assertEqual(child.lane_color, parent.lane_color)
+
+    def test_parent_wins_over_explicit_lane(self):
+        """有 parent 时，parent 的泳道优先于显式传入的 lane。"""
+        parent = Branch("父", 1, lane=3)
+        child = Branch("子", 2, parent=parent, lane=99)
+        self.assertEqual(child.lane, 3)
+
+    def test_lane_color_is_stable_for_same_lane(self):
+        """同一泳道永远是同一个颜色。"""
+        a = Branch("a", 1, lane=2)
+        b = Branch("b", 1, lane=2)
+        self.assertEqual(a.lane_color, b.lane_color)
+
+    def test_lane_color_differs_across_lanes(self):
+        """不同泳道颜色必须不同，否则视觉上分不开。"""
+        colors = {lane_color(i) for i in range(len(LANE_COLORS))}
+        self.assertEqual(len(colors), len(LANE_COLORS),
+                         "调色板里有重复色")
+
+    def test_lane_color_is_valid_hex(self):
+        for i in range(len(LANE_COLORS)):
+            c = lane_color(i)
+            self.assertRegex(c, r"^#[0-9a-f]{6}$", f"颜色格式不对：{c}")
+
+    def test_to_dict_includes_lane_and_color(self):
+        """前端画树靠这两个字段下发，不能让前端自己配色。"""
+        brs = self.team.delegate(["a"], depth=0)
+        d = brs[0].to_dict()
+        self.assertIn("lane", d)
+        self.assertIn("laneColor", d)
+        self.assertEqual(d["laneColor"], lane_color(d["lane"]))
+
+    def test_second_delegation_does_not_reuse_lanes(self):
+        """第二批委派不能跟第一批抢同一条泳道。"""
+        first = self.team.delegate(["a", "b"], depth=0)
+        second = self.team.delegate(["c", "d"], depth=0)
+        self.assertFalse(set(b.lane for b in first) & set(b.lane for b in second),
+                         "两批分支的泳道不能重叠")
+
+    def test_grandchild_inherits_lane(self):
+        """孙分支（真实委派路径）继承父的泳道。"""
+        parent = Branch("父", 1, lane=5)
+        kids = self.team.delegate(["孙"], depth=1, parent=parent)
+        self.assertEqual(len(kids), 1)
+        self.assertEqual(kids[0].lane, 5,
+                         "孙分支必须继承父的泳道")
+
+
+class TestSubDelegate(unittest.TestCase):
+    """子代理的二次委派（孙分支）。
+
+    之前的实现里 delegate_tasks 只在 agent_engine 里特殊处理，
+    子代理的工具集里**根本没有它** → 孙分支永远派不出来，
+    「分支树」实际只有一层。这是真缺口。
+    """
+
+    def setUp(self):
+        self.ds = _FakeDs()
+        self.team = AgentTeam(self.ds, llm=_FakeLlm(), llm_factory=_FakeLlm)
+
+    def test_subagent_gets_delegate_tool_when_depth_allows(self):
+        """深度没到上限时，子代理的工具集里必须有 delegate_tasks。"""
+        br = self.team.run_branch("查一下", depth=1)
+        self.assertEqual(br.status, "complete")
+
+    def test_delegate_schema_has_tasks_param(self):
+        from core.agent_engine import DELEGATE_SCHEMA
+        props = DELEGATE_SCHEMA["function"]["parameters"]["properties"]
+        self.assertIn("tasks", props)
+
+    def test_sub_delegate_inherits_lane(self):
+        """子代理派出的孙分支，泳道跟子代理一致。"""
+        parent = Branch("子", 1, lane=4)
+        payload, kids = self.team._sub_delegate(parent, {"tasks": ["再查一层"]})
+        self.assertEqual(len(kids), 1)
+        self.assertEqual(kids[0].lane, 4)
+        self.assertEqual(kids[0].parent_id, parent.id)
+        self.assertIn("分支数", payload)
+
+    def test_sub_delegate_blocked_at_max_depth(self):
+        """深度到顶时，二次委派要被拒并说明原因。"""
+        team = AgentTeam(self.ds, llm=_FakeLlm(), llm_factory=_FakeLlm,
+                         budget=BranchBudget({"max_depth": 1}))
+        parent = Branch("子", 1, lane=0)
+        payload, kids = team._sub_delegate(parent, {"tasks": ["再查一层"]})
+        self.assertEqual(kids, [])
+        self.assertIn("深度", payload)
+
+    def test_sub_delegate_empty_tasks(self):
+        parent = Branch("子", 1, lane=0)
+        payload, kids = self.team._sub_delegate(parent, {"tasks": []})
+        self.assertEqual(kids, [])
+        self.assertIn("分支数", payload)
+
+    def test_sub_delegate_failure_does_not_crash(self):
+        """二次委派炸了不能带崩子代理。"""
+        class BoomTeam(AgentTeam):
+            def delegate(self, *a, **kw):
+                raise RuntimeError("派发炸了")
+
+        team = BoomTeam(self.ds, llm=_FakeLlm(), llm_factory=_FakeLlm)
+        parent = Branch("子", 1, lane=0)
+        payload, kids = team._sub_delegate(parent, {"tasks": ["x"]})
+        self.assertEqual(kids, [])
+        self.assertIn("派发失败", payload)
 
 
 if __name__ == "__main__":

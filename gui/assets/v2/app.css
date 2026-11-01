@@ -1085,6 +1085,146 @@
   font-size: var(--fs-12); color: var(--text-3);
 }
 
+/* ------------------------------------------- 分支树（泳道 + 语义锚点光线） */
+.v2-bt {
+  position: relative;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+}
+/* 连线层：绝对定位铺在节点下面，不占布局空间 */
+.v2-bt-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.v2-bt-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-opacity: 0.5;
+  stroke-linecap: round;
+}
+.v2-bt-lanes {
+  position: relative;
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-start;
+  flex-wrap: wrap;
+  /* 给根节点留出垂直距离，连线才有弧度 */
+  margin-top: var(--sp-4);
+}
+/* 虚拟根节点：代表主代理，居中放在泳道上方 */
+.v2-bt-root {
+  position: relative;
+  /* 注意：inline-flex + margin:auto **不会**居中（inline-level 忽略 auto 外边距），
+     必须用 flex + fit-content。踩过：根节点偏在左边，视觉上不像「根」。 */
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  margin: 0 auto;
+  padding: 5px 12px;
+  border-radius: var(--r-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  font-size: var(--fs-12);
+  color: var(--text-2);
+}
+.v2-bt-root-dot {
+  width: 7px; height: 7px; border-radius: var(--r-full);
+  background: var(--brand);
+}
+.v2-bt-root-label { font-weight: 600; color: var(--text-1); }
+.v2-bt-root-sub { color: var(--text-4); font-size: var(--fs-11); }
+.v2-bt-lane {
+  flex: 1 1 260px;
+  min-width: 220px;
+  max-width: 420px;
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  /* 泳道颜色只在这里定一次，下面的节点全部继承（--lc） */
+  border-top: 2px solid var(--lc, var(--wechat));
+}
+.v2-bt-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-11);
+  color: var(--text-4);
+}
+.v2-bt-lane-dot {
+  width: 6px; height: 6px; border-radius: var(--r-full);
+  background: var(--lc, var(--wechat));
+}
+.v2-bt-lane-label { font-weight: 600; }
+
+.v2-bt-node {
+  position: relative;
+  padding: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  /* 节点颜色继承泳道（Lancer 的 laneStyle：--lc / --cc 一起下发） */
+  border-left: 2px solid var(--lc, var(--wechat));
+}
+.v2-bt-node:last-child { margin-bottom: 0; }
+/* 子代理的子代理：缩进一档 + 虚线边，视觉上明确「下一层」 */
+.v2-bt-node.d-2 { margin-left: var(--sp-3); border-left-style: dashed; }
+.v2-bt-node-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--fs-12);
+}
+.v2-bt-node-dot {
+  flex: 0 0 auto;
+  width: 6px; height: 6px; border-radius: var(--r-full);
+  background: var(--success);
+}
+.v2-bt-node-dot.failed { background: var(--danger); }
+.v2-bt-node-dot.running { background: var(--warn); }
+.v2-bt-node-dot.queued { background: var(--text-4); }
+.v2-bt-node-goal {
+  flex: 1 1 auto;
+  font-weight: 600;
+  color: var(--text-1);
+  word-break: break-word;
+}
+.v2-bt-node-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: var(--fs-11);
+  color: var(--text-4);
+}
+.v2-bt-node-status { color: var(--text-3); }
+.v2-bt-node-sub {
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.v2-bt-node-report {
+  margin-top: 4px;
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.v2-bt-node-err {
+  margin-top: 4px;
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  color: var(--danger);
+}
+
 /* ------------------------------------------- 历史分析（落盘回看） */
 .v2-ia-hist-btn {
   display: inline-flex; align-items: center; gap: 5px;

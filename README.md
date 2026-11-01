@@ -92,6 +92,9 @@ python cli/mosu.py sessions
   答案里的数字会做程序化审计，没出处的会挂核对提醒
 - **多代理并行**：洞察主代理可把问题拆成几个子任务，派子代理**并行**查
   （分支树 + 树级预算准入 + 回执状态机；子代理的数字同样进审计范围）
+- **分支树可视化**：多代理并行时画成一棵**树**——顶层子代理各占一条泳道（固定调色板，
+  颜色一次分配全链路继承，孙分支继承父的），泳道之间用**语义锚点**连曲线；
+  锚点读不到就**放弃这条线**，绝不画到邻近节点上（假关系比没线更糟）
 - **实时进度流**：洞察过程用 SSE 推送（工具轨迹、分支状态实时到达，不是 900ms 轮询）；
   SSE 不可用时自动降级轮询，结果一样完整
 - **分析历史**：每轮洞察完整落盘到 `~/.mosu/runs/`，关页面、重启、隔天回来都能回看
@@ -114,7 +117,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，798 例）：
+测试（全离线，847 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -364,7 +367,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（798 例）
+tests/                 离线测试（847 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -377,7 +380,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（798 例）
+- [x] 离线测试套件（847 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -471,7 +474,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (798 cases)
+tests/          offline test suite (847 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 
