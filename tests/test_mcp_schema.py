@@ -352,3 +352,87 @@ class TestSearchTimeRangeDeclared(unittest.TestCase):
         props = (s["inputSchema"] or {}).get("properties") or {}
         self.assertIn("from", props, "search 缺 from 参数")
         self.assertIn("to", props, "search 缺 to 参数")
+
+
+class TestProfileTimeRangeSQLParams(unittest.TestCase):
+    """按时间范围做画像时，SQL 参数顺序必须对。
+
+    实测 bug（2026-11-02，最隐蔽的一个）：
+        core/profile.py 的 _sql_aggregate 里 SQL 是
+            SELECT count(*), SUM(CASE WHEN real_sender_id=? ...) FROM t WHERE create_time>=? AND <=?
+        但参数传的是 `params + [sid]`，即 [from_ts, to_ts, sid]。
+        `?` 按出现顺序绑定 → real_sender_id 拿到 from_ts，
+        create_time 拿到 to_ts 和 sid → **查出来恒为 0**。
+
+    症状：问「我 10 月发了多少条」，工具答「0 条」。
+    而且不报错、不崩溃，模型只能猜「可能是数据源问题」——
+    用户拿到的是一个看起来合理、实际全错的答案。
+
+    为什么一直没发现：不带时间范围时 params 为空，[sid] 刚好对上。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # conftest 把 MOSU_HOME 指到临时目录（隔离真实数据），
+        # 所以要跑「按真实数据验正确性」的测试必须显式开闸：
+        #     MOSU_ALLOW_REAL_DATA=1 python -m pytest tests/test_mcp_schema.py
+        # 默认跳过 —— 尊重既有的测试隔离，不让单测悄悄读用户真实聊天记录。
+        import json
+        import os
+        if os.environ.get("MOSU_ALLOW_REAL_DATA") != "1":
+            raise unittest.SkipTest("需要真实数据：设 MOSU_ALLOW_REAL_DATA=1 再跑")
+        # 绕开被 conftest 改掉的 MOSU_HOME，直接读真实密钥库
+        cfg_path = Path.home() / ".mosu" / "config.json"
+        if not cfg_path.exists():
+            raise unittest.SkipTest("没有 ~/.mosu/config.json")
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cur = cfg.get("current") or ""
+            acc = (cfg.get("accounts") or {}).get(cur) or {}
+            dbp = acc.get("dbPath")
+            key = acc.get("keyHex")
+            if not (dbp and key):
+                raise unittest.SkipTest("真实配置里缺 dbPath/keyHex")
+            from core.dataset import Dataset
+            cls.ds = Dataset(data_dir=dbp, key_hex=key, quiet=True)
+        except unittest.SkipTest:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise unittest.SkipTest(f"读真实数据失败：{e}")
+        if not cls.ds.sessions():
+            raise unittest.SkipTest("没有会话数据")
+
+    def test_range_profile_is_not_zero(self):
+        """带时间范围的画像必须有数据，不能恒为 0。"""
+        from core.dataset import parse_time
+        from core.profile import ProfileDistiller
+
+        f = parse_time("2026-01-01")
+        t = parse_time("2026-12-31", end=True)
+        p = ProfileDistiller(self.ds).self_profile(from_ts=f, to_ts=t)
+        ov = p["overview"]
+        self.assertGreater(ov["totalMessages"], 0,
+                           "带时间范围的画像算出 0 条 —— SQL 参数顺序大概又错了")
+        self.assertGreater(ov["myMessages"], 0,
+                           "「我发出的」算出 0 条 —— 检查 real_sender_id 的绑定")
+
+    def test_range_subset_of_all(self):
+        """区间内的量必须小于等于全量，且两段区间相加不超过全量。"""
+        from core.dataset import parse_time
+        from core.profile import ProfileDistiller
+        pd = ProfileDistiller(self.ds)
+        alln = pd.self_profile()["overview"]["totalMessages"]
+        p1 = pd.self_profile(from_ts=parse_time("2026-01-01"),
+                             to_ts=parse_time("2026-06-30", end=True))
+        p2 = pd.self_profile(from_ts=parse_time("2026-07-01"),
+                             to_ts=parse_time("2026-12-31", end=True))
+        s = p1["overview"]["totalMessages"] + p2["overview"]["totalMessages"]
+        self.assertLessEqual(s, alln, "两段区间之和超过了全量，时间过滤有问题")
+        self.assertGreater(s, 0, "两段区间都是 0")
+
+    def test_sid_bound_before_time_params(self):
+        """源码断言：sid 必须排在时间参数前面（防止有人改回去）。"""
+        src = (ROOT / "core" / "profile.py").read_text(encoding="utf-8")
+        self.assertNotIn("params + [sid]", src,
+                         "SQL 参数又变回 params + [sid] 了 —— "
+                         "SELECT 里的 ? 在 WHERE 之前，sid 必须先绑定")

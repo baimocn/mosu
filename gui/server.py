@@ -2269,7 +2269,33 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     import socket
     with socket.socket() as s:
         if s.connect_ex(("127.0.0.1", port)) == 0:
-            print(f"[mosu-gui] 端口 {port} 已在服务，直接打开浏览器")
+            # 这句话一定要说清楚「本进程没有启动」。
+            # 之前写「端口已在服务，直接打开浏览器」，看起来像启动成功了——
+            # 实测被它骗过：改完代码跑 mosu gui，日志这么写，
+            # 以为新代码生效，其实一直是几天前那个老进程在应答，
+            # 白白在旧代码上测了好几轮。
+            print(f"[mosu-gui] ⚠ 端口 {port} 已被占用：**本进程未启动**，"
+                  f"请求仍由已在运行的那个进程处理。")
+            print(f"[mosu-gui]   如果你刚改过代码，请先停掉旧进程再启动：")
+            print(f"[mosu-gui]     Windows: netstat -ano | findstr :{port}  然后 taskkill /PID <pid> /F")
+            print(f"[mosu-gui]     Linux/macOS: lsof -ti:{port} | xargs kill")
+            try:
+                import subprocess as _sp
+                if sys.platform.startswith("win"):
+                    # Windows 的 netstat 输出是 **GBK**，不能让它按 UTF-8 解——
+                    # 之前写 text=True 会抛 UnicodeDecodeError（线程里崩，日志很脏）。
+                    # 用 errors="replace" 兜底：拿到乱码也总比崩掉好。
+                    _raw = _sp.run(["netstat", "-ano"], capture_output=True,
+                                   timeout=5).stdout
+                    _out = _raw.decode("gbk", errors="replace")
+                    for _ln in _out.splitlines():
+                        if f":{port}" in _ln and "LISTENING" in _ln.upper():
+                            _pid = _ln.split()[-1]
+                            print(f"[mosu-gui]   占用者 PID：{_pid}")
+                            break
+            except Exception as _e:  # noqa: BLE001
+                print(f"[mosu-gui]   （查占用者失败：{type(_e).__name__}，"
+                      f"手动用上面的命令查）")
             if "--no-browser" not in sys.argv:
                 webbrowser.open(f"http://127.0.0.1:{port}")
             return

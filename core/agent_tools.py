@@ -130,6 +130,22 @@ def parse_when(s: str | None, end: bool = False) -> int | None:
             return mk(y, 12, 31, 23, 59, 59)
         return mk(y, 1, 1)
 
+    # ---- 只说了月份，没给年份：「10月」「10月份」
+    # 默认取**最近的那个** 10 月：今年 10 月还没到就用去年 10 月。
+    # 实测踩过：模型自己把「10 月份」算成去年 10 月（现在是 2026-11，应指 2026-10），
+    # 整条答案全错，用户还看不出哪里错了。
+    m = re.search(r"(\d{1,2})\s*月(?:份)?", t)
+    if m:
+        mo = int(m.group(1))
+        if not (1 <= mo <= 12):
+            return None
+        y = now.year if mo <= now.month else now.year - 1
+        if end:
+            if mo == 12:
+                return mk(y, 12, 31, 23, 59, 59)
+            return mk(y, mo + 1, 1) - 1
+        return mk(y, mo, 1)
+
     return None
 
 
@@ -419,12 +435,20 @@ class ToolBox:
         if metric == "overview":
             g = an.global_stats(from_ts=f_ts, to_ts=t_ts)
             tr = g.get("timeRange") or {}
+            total = g.get("totalMessages") or 0
+            mine = g.get("myMessages") or 0
             ev = []
-            summary = (f"共 {g.get('totalMessages')} 条消息、{g.get('totalSessions')} 个会话、"
+            # 摘要必须带「我发出多少」：只给总量的话，模型问不到这个数，
+            # 只能去猜或者告诉用户「查不到」——实测它就答过「没法保证准确，不瞎报」。
+            summary = (f"共 {total} 条消息（其中我发出 {mine} 条，占 "
+                       f"{round(mine / max(1, total) * 100, 1)}%）、"
+                       f"{g.get('totalSessions')} 个会话、"
                        f"{g.get('totalContacts')} 个联系人；"
                        f"时间跨度 {tr.get('firstText')} 到 {tr.get('lastText')}")
             return {"summary": summary,
-                    "data": {"totalMessages": g.get("totalMessages"),
+                    "data": {"totalMessages": total,
+                             "myMessages": mine,
+                             "myShare": g.get("myShare"),
                              "totalSessions": g.get("totalSessions"),
                              "totalContacts": g.get("totalContacts"),
                              "timeRange": tr,

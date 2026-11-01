@@ -373,3 +373,50 @@ class TestToolPayloadTruncation(unittest.TestCase):
         # 冗余大块不该进回喂
         self.assertNotIn("monthly", out)
         self.assertNotIn("topics", out)
+
+
+class TestParseWhenMonthOnly(unittest.TestCase):
+    """只说月份不给年份：「10月」「10月份」。
+
+    实测踩过：问「10 月发了多少条」，resolve_time 报「没听懂」，
+    模型只好自己猜，猜成了去年 10 月 —— 整条答案全错，
+    而且答案看起来完全合理，用户根本发现不了。
+    """
+
+    def _fmt(self, ts):
+        import datetime
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    def test_month_with_suffix(self):
+        from core.agent_tools import parse_when
+        self.assertIn("-10-01 00:00:00", self._fmt(parse_when("10月份")))
+        self.assertIn("-10-31 23:59:59", self._fmt(parse_when("10月份", end=True)))
+
+    def test_month_without_suffix(self):
+        from core.agent_tools import parse_when
+        self.assertIn("-10-01 00:00:00", self._fmt(parse_when("10月")))
+
+    def test_future_month_rolls_to_last_year(self):
+        """今年还没到的月份，取去年那个 —— 数据里不存在未来的月份。"""
+        import datetime
+        from core.agent_tools import parse_when
+        now = datetime.datetime.now()
+        future = now.month % 12 + 1      # 下个月（今年还没到）
+        ts = parse_when(f"{future}月")
+        self.assertEqual(datetime.datetime.fromtimestamp(ts).year, now.year - 1,
+                         f"「{future}月」应取去年，实际取到今年")
+
+    def test_current_or_past_month_uses_this_year(self):
+        import datetime
+        from core.agent_tools import parse_when
+        now = datetime.datetime.now()
+        ts = parse_when(f"{now.month}月")
+        self.assertEqual(datetime.datetime.fromtimestamp(ts).year, now.year)
+
+    def test_month_end_is_last_day(self):
+        """月末必须是当月最后一天，不能串到下月。"""
+        import datetime
+        from core.agent_tools import parse_when
+        dt = datetime.datetime.fromtimestamp(parse_when("10月", end=True))
+        self.assertEqual((dt.month, dt.day), (10, 31))
+        self.assertEqual((dt.hour, dt.minute, dt.second), (23, 59, 59))

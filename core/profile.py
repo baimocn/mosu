@@ -169,7 +169,7 @@ class ProfileDistiller:
                 r = con.execute(
                     f'SELECT count(*), min(create_time), max(create_time), '
                     f'SUM(CASE WHEN real_sender_id=? THEN 1 ELSE 0 END) '
-                    f'FROM "{t}"{w}', params + [sid]).fetchone()
+                    f'FROM "{t}"{w}', [sid] + params).fetchone()
                 total += r[0] or 0; mine_n += r[3] or 0
                 if r[1]:
                     first = r[1] if first is None else min(first, r[1])
@@ -183,7 +183,7 @@ class ProfileDistiller:
                        f"strftime('%Y-%m', create_time,'unixepoch','localtime'), count(*), "
                        f"SUM(CASE WHEN real_sender_id=? THEN 1 ELSE 0 END) "
                        f'FROM "{t}"{w} GROUP BY 1,2,3')
-                for h, wd, mk, c, cm in con.execute(sql, params + [sid]):
+                for h, wd, mk, c, cm in con.execute(sql, [sid] + params):
                     hour_t[int(h)] += c; hour_m[int(h)] += cm or 0
                     wd_t[int(wd)] += c; wd_m[int(wd)] += cm or 0
                     mon_t[mk] += c; mon_m[mk] += cm or 0
@@ -193,7 +193,7 @@ class ProfileDistiller:
                 for lt, c, cm in con.execute(
                         f'SELECT local_type, count(*), '
                         f'SUM(CASE WHEN real_sender_id=? THEN 1 ELSE 0 END) '
-                        f'FROM "{t}"{w} GROUP BY local_type', params + [sid]):
+                        f'FROM "{t}"{w} GROUP BY local_type', [sid] + params):
                     k = KIND_BY_TYPE.get(lt & 0xFFFFFFFF, "other")
                     kinds[k] += c
                     kinds_mine[k] += cm or 0

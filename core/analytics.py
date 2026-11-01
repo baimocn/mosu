@@ -153,14 +153,22 @@ class Analytics:
     # ------------------------------------------------------------ 全局
     def global_stats(self, from_ts=None, to_ts=None) -> dict:
         total = 0
+        mine = 0
         kinds: Counter = Counter()
         first = last = None
         for sess, sh in self._shards():
             con = self.ds.conn(sh["shard"])
             where, params = self._where(from_ts, to_ts)
-            r = con.execute(f'SELECT count(*), min(create_time), max(create_time) '
-                            f'FROM "{sh["table"]}"{where}', params).fetchone()
+            sid = self.ds.self_id(sh["shard"])
+            # 注意参数顺序：SELECT 里的 `?` 出现在 WHERE 的 `?` **之前**，
+            # 所以 sid 必须排在 params 前面。反过来写会把 from_ts 喂给
+            # real_sender_id，带时间范围时「我发的」恒为 0（踩过一次）。
+            r = con.execute(
+                f'SELECT count(*), min(create_time), max(create_time), '
+                f'SUM(CASE WHEN real_sender_id=? THEN 1 ELSE 0 END) '
+                f'FROM "{sh["table"]}"{where}', [sid] + list(params)).fetchone()
             total += r[0] or 0
+            mine += r[3] or 0
             if r[1]:
                 first = r[1] if first is None else min(first, r[1])
             if r[2]:
@@ -170,6 +178,9 @@ class Analytics:
         media = sum(v for k, v in kinds.items() if k != "text")
         return {
             "totalMessages": total,
+            # 「我发出的」：模型拿这个算占比，不用自己去翻每个会话的画像
+            "myMessages": mine,
+            "myShare": round(mine / max(1, total), 3),
             # count(*) 是**数据库原始行数**，跨分片可能存在重复行（同一消息落了两片）。
             # 浏览页做了去重，两边数字会不等——把这个事实写进返回值，
             # 比让用户自己发现"统计怎么比列表多"要好。写死 false 是诚实的：
