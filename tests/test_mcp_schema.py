@@ -273,3 +273,82 @@ class TestExportNoOverwrite(unittest.TestCase):
         """
         exp = (ROOT / "core" / "exporter.py").read_text(encoding="utf-8")
         self.assertIn('out = self.out_dir / "index.html"', exp)
+
+
+class TestUnknownParamsRejected(unittest.TestCase):
+    """传了 schema 里没有的参数，必须报错而不是静默忽略。
+
+    实测踩过：矩阵里有 7 个用例参数名写错（author vs user、kind vs year、
+    from/to 压根不存在…），工具不报错、把参数忽略掉，用例一路绿灯 ——
+    **测了等于没测，比不测更危险**，它给了虚假的安全感。
+
+    对模型来说同理：它传错参数名时拿到的是全量数据，
+    却以为过滤生效了，最后给用户的结论就是错的。
+    """
+
+    def setUp(self):
+        from core.mcp_server import McpServer
+        self.validate = McpServer._validate
+
+    def test_unknown_param_lists_available_ones(self):
+        with self.assertRaises(ValueError) as cm:
+            self.validate("mosu_moments", {"author": "某人"})
+        msg = str(cm.exception)
+        self.assertIn("author", msg)
+        self.assertIn("可用参数", msg)
+        self.assertIn("user", msg)      # 正确的那个要出现在提示里
+
+    def test_account_is_never_unknown(self):
+        """account 由 call() 统一消费，任何工具都该接受。"""
+        self.validate("mosu_status", {"account": "wxid_a"})
+        self.validate("mosu_media", {"md5": "0" * 32, "account": "wxid_a"})
+
+
+class TestParseTimeEnd(unittest.TestCase):
+    """`to` 只给日期时，必须补到当天 23:59:59。
+
+    否则用户问「10 月的消息」，传 to=2026-10-31，
+    解析成 10-31 00:00 —— 整天被漏掉。
+    """
+
+    def test_end_of_day_is_filled(self):
+        import datetime
+        from core.dataset import parse_time
+        t = parse_time("2026-10-31", end=True)
+        dt = datetime.datetime.fromtimestamp(t)
+        self.assertEqual((dt.hour, dt.minute, dt.second), (23, 59, 59))
+        self.assertEqual((dt.month, dt.day), (10, 31))
+
+    def test_start_of_day_unchanged(self):
+        import datetime
+        from core.dataset import parse_time
+        t = parse_time("2026-10-01")
+        dt = datetime.datetime.fromtimestamp(t)
+        self.assertEqual((dt.hour, dt.minute, dt.second), (0, 0, 0))
+
+    def test_explicit_time_not_overridden(self):
+        """给了具体时间的，end=True 也不该改写它。"""
+        import datetime
+        from core.dataset import parse_time
+        t = parse_time("2026-10-31 12:30", end=True)
+        dt = datetime.datetime.fromtimestamp(t)
+        self.assertEqual((dt.hour, dt.minute), (12, 30))
+
+    def test_all_tools_use_end_for_to(self):
+        """所有工具的 to 都必须带 end=True，否则会漏最后一天。"""
+        src = SERVER.read_text(encoding="utf-8")
+        bad = []
+        for line in src.splitlines():
+            if 'parse_time(a.get("to"))' in line:
+                bad.append(line.strip())
+        self.assertFalse(bad, f"这些 to 没用 end=True，会漏掉最后一天：{bad}")
+
+
+class TestSearchTimeRangeDeclared(unittest.TestCase):
+    """mosu_search 要能按时间范围搜（底层 ds.search 本来就支持）。"""
+
+    def test_from_to_are_declared(self):
+        s = next(t for t in _tools() if t["name"] == "mosu_search")
+        props = (s["inputSchema"] or {}).get("properties") or {}
+        self.assertIn("from", props, "search 缺 from 参数")
+        self.assertIn("to", props, "search 缺 to 参数")

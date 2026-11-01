@@ -128,6 +128,9 @@ TOOLS: list[dict] = [
             "keyword": {"type": "string", "description": "关键词，大小写不敏感"},
             "session": {"type": "string", "description": "限定在某个会话内，可选"},
             "limit": {"type": "integer", "description": "返回条数，默认 20"},
+            "from": {"type": "string",
+                     "description": "起始时间，如 2026-10-01 / 上个月 / 去年"},
+            "to": {"type": "string", "description": "结束时间"},
         }, ["keyword"]),
     },
     {
@@ -281,6 +284,9 @@ class McpServer:
             也不知道该补什么、补什么格式。MCP 层有 schema 就该在这里拦。
 
         校验三件事：必填项、类型、枚举值。都是模型最容易踩的坑。
+        外加一件：**未声明的参数也报错**——否则模型传错参数名时
+        会被静默忽略，它以为过滤生效了，实际拿到的是全量，
+        最后给用户的结论就是错的（实测：模型传 author，实现读的是 user）。
         """
         spec = next((t for t in TOOLS if t["name"] == name), None)
         if not spec:
@@ -288,6 +294,13 @@ class McpServer:
         schema = spec.get("inputSchema") or {}
         props = schema.get("properties") or {}
         required = schema.get("required") or []
+
+        # account 是所有工具的通用参数（由 call() 统一消费，用于多账号切换），
+        # 不在每个工具的 schema 里重复声明，校验时豁免
+        unknown = [k for k in args if k not in props and k != "account"]
+        if unknown:
+            avail = "、".join(sorted(props)) or "（无参数）"
+            raise ValueError(f"没有参数 {'、'.join(unknown)}。可用参数：{avail}")
 
         missing = [k for k in required if args.get(k) in (None, "")]
         if missing:
@@ -372,7 +385,7 @@ class McpServer:
             limit=self._lim(a, 20),
             offset=int(a.get("offset") or 0),
             from_ts=parse_time(a.get("from")),
-            to_ts=parse_time(a.get("to")),
+            to_ts=parse_time(a.get("to"), end=True),
             type_=a.get("type"),
             direction=a.get("direction"),
             order=a.get("order") or "desc",
@@ -431,7 +444,9 @@ class McpServer:
     def t_mosu_search(self, a):
         ds = self.ds
         kw = a.get("keyword") or ""
-        r = ds.search(kw, session=a.get("session"), limit=self._lim(a, 20))
+        r = ds.search(kw, session=a.get("session"), limit=self._lim(a, 20),
+                      from_ts=parse_time(a.get("from")),
+                      to_ts=parse_time(a.get("to"), end=True))
         return {"keyword": kw, "total": r["total"], "count": len(r["messages"]),
                 "messages": [_slim_message(m) for m in r["messages"]]}
 
@@ -458,7 +473,7 @@ class McpServer:
     def t_mosu_moments(self, a):
         r = self.moments().entries(limit=self._lim(a, 10), user=a.get("user"),
                                    from_ts=parse_time(a.get("from")),
-                                   to_ts=parse_time(a.get("to")))
+                                   to_ts=parse_time(a.get("to"), end=True))
         out = []
         for e in r["entries"]:
             out.append({
@@ -650,7 +665,7 @@ class McpServer:
     def t_mosu_profile(self, a):
         from core.profile import ProfileDistiller
         pd = ProfileDistiller(self.ds)
-        frm, to = parse_time(a.get("from")), parse_time(a.get("to"))
+        frm, to = parse_time(a.get("from")), parse_time(a.get("to"), end=True)
         if a.get("session"):
             d = pd.contact_profile(a.get("session"), from_ts=frm, to_ts=to,
                                    top=int(a.get("top") or 10))

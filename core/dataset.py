@@ -280,8 +280,12 @@ class TimeParseError(ValueError):
     """
 
 
-def parse_time(value) -> int | None:
+def parse_time(value, end: bool = False) -> int | None:
     """把 '2026-01-01' / '2026-01-01 12:30' / unix 秒 转成时间戳。
+
+    end=True 表示这是**时间范围的右端**：只给了日期没给时间时，
+    补到当天 23:59:59。否则 `to="2026-10-31"` 会解析成 10-31 00:00，
+    把 10 月 31 日整天漏掉——用户问「10 月的消息」就会缺最后一天。
 
     失败抛 TimeParseError（ValueError 子类），不抛 SystemExit——理由见类文档。
     """
@@ -295,9 +299,13 @@ def parse_time(value) -> int | None:
     import datetime
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d"):
         try:
-            return int(datetime.datetime.strptime(s, fmt).timestamp())
+            dt = datetime.datetime.strptime(s, fmt)
         except ValueError:
             continue
+        # 右端且精度只到天 → 当天 23:59:59
+        if end and fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return int(dt.timestamp())
     raise TimeParseError(f"[x] 无法解析时间: {value}")
 
 
