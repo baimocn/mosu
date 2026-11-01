@@ -98,6 +98,10 @@ python cli/mosu.py sessions
 - **实时进度流**：洞察过程用 SSE 推送（工具轨迹、分支状态实时到达，不是 900ms 轮询）；
   SSE 不可用时自动降级轮询，结果一样完整
 - **分析历史**：每轮洞察完整落盘到 `~/.mosu/runs/`，关页面、重启、隔天回来都能回看
+- **模型目录**：可挂多个 LLM 端点（OpenAI 官方 / DeepSeek / 自建兼容网关…），
+  在设置页点一下就切模型；模型按**家族**归类（GPT / Claude / 豆包 / DeepSeek / Qwen / GLM /
+  Kimi / Gemini / Grok 共 9 类），**按模型名归类而不是按端点名**——
+  用兼容网关转发 Claude，家族仍显示 Claude；三态一眼可分（可用 / 未启用 / 未配置）
 - **外部派活通道**：`mosu dispatch send|queue|steer` 把活派给**正在跑的**墨溯，
   外部脚本 / 定时任务 / 别的 agent 都能用；三种投递语义——`send` 忙时明确拒绝、
   `queue` 排队等当前这轮跑完、`steer` 把补充指令递进正在跑的那轮；
@@ -120,7 +124,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，885 例）：
+测试（全离线，961 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -370,7 +374,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（885 例）
+tests/                 离线测试（961 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -383,7 +387,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（885 例）
+- [x] 离线测试套件（961 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -477,7 +481,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (885 cases)
+tests/          offline test suite (961 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

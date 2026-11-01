@@ -2094,6 +2094,59 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                                (payload.get("apiKey") or "").strip(),
                                (payload.get("model") or "").strip())
 
+    # ------------------------------------------------------------ 模型目录
+    def api_models() -> dict:
+        """模型目录：家族分组 + 三态 + 端点列表。
+
+        端点的 apiKey 不回传明文，只给 hasKey 布尔值。
+        """
+        from core.llmconfig import load_llm_config, load_model_catalog
+        cat = load_model_catalog()
+        cfg = load_llm_config()
+        cat["current"] = {"baseUrl": cfg["baseUrl"], "model": cfg["model"],
+                          "source": cfg["source"],
+                          "activeEndpoint": cfg.get("activeEndpoint", ""),
+                          "activeModel": cfg.get("activeModel", "")}
+        return cat
+
+    def api_models_probe(payload: dict) -> dict:
+        """探测端点支持的模型列表（GET {baseUrl}/models）。"""
+        from core.model_catalog import probe_models
+        return probe_models((payload.get("baseUrl") or "").strip(),
+                             (payload.get("apiKey") or "").strip())
+
+    def api_models_endpoint_save(payload: dict) -> dict:
+        """新增/更新一个端点。"""
+        from core.llmconfig import load_model_catalog, save_endpoint
+        ep = payload.get("endpoint") or {}
+        if not isinstance(ep, dict):
+            raise ValueError("endpoint 必须是对象")
+        eps = save_endpoint(ep)
+        return {"saved": True, "endpoints": eps,
+                "catalog": load_model_catalog()}
+
+    def api_models_endpoint_delete(payload: dict) -> dict:
+        """删除一个端点。"""
+        from core.llmconfig import delete_endpoint, load_model_catalog
+        eps = delete_endpoint((payload.get("id") or "").strip())
+        if not eps:
+            raise ValueError("端点不存在")
+        return {"deleted": True, "endpoints": eps,
+                "catalog": load_model_catalog()}
+
+    def api_models_activate(payload: dict) -> dict:
+        """切换活跃端点与模型（并回写扁平字段，让下游真正用上）。"""
+        from core.llmconfig import load_model_catalog, set_active
+        res = set_active((payload.get("endpointId") or "").strip(),
+                          (payload.get("modelId") or "").strip())
+        return {"activated": True, **res, "catalog": load_model_catalog()}
+
+    def api_models_enabled(payload: dict) -> dict:
+        """设置模型启用名单（空数组 = 全部启用）。"""
+        from core.llmconfig import load_model_catalog, set_enabled_models
+        pats = set_enabled_models(payload.get("patterns") or [])
+        return {"patterns": pats, "catalog": load_model_catalog()}
+
     def api_config() -> dict:
         from core.dataset import (KEYVAULT, LEGACY_VAULT, load_accounts,
                                   load_keyvault, find_user_dir, load_key_hex)
@@ -2153,6 +2206,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/config": (api_config, False),
         "/api/key/selftest": (api_key_selftest, False),
         "/api/llm": (api_llm_get, False),
+        "/api/models": (api_models, False),
         "/api/personas": (api_personas, False),
         "/api/moments": (api_moments, True),
         "/api/moments/probe": (api_moments_probe, True),
@@ -2492,6 +2546,21 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 return
             if path == "/api/llm/test":
                 self._guard(api_llm_test, payload)
+                return
+            if path == "/api/models/probe":
+                self._guard(api_models_probe, payload)
+                return
+            if path == "/api/models/endpoint":
+                self._guard(api_models_endpoint_save, payload)
+                return
+            if path == "/api/models/endpoint/delete":
+                self._guard(api_models_endpoint_delete, payload)
+                return
+            if path == "/api/models/activate":
+                self._guard(api_models_activate, payload)
+                return
+            if path == "/api/models/enabled":
+                self._guard(api_models_enabled, payload)
                 return
             if path == "/api/export":
                 self._guard(api_export, payload)

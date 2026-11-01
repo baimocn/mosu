@@ -29,7 +29,13 @@ def _load_dotenv() -> None:
 
     优先级：进程环境变量 > .env 文件 > 代码默认值。
     这样 `mosu bot` 不用每次手动 export，又不污染代码与版本库。
+
+    MOSU_NO_DOTENV=1 可禁用本文件——端到端测试需要它：
+    .env 里的 MOSU_BOT_BASE_URL 优先级高于 GUI 设置，
+    不禁用的话测试永远读到本机真实网关，测不到「切换模型是否生效」。
     """
+    if os.environ.get("MOSU_NO_DOTENV") == "1":
+        return
     env_path = Path(__file__).resolve().parent.parent.parent / ".env"
     if not env_path.exists():
         return

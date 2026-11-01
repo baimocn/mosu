@@ -1,0 +1,43 @@
+{
+  "title": "迭代 6：多模型目录（9 家族识别 + 多端点 + 三态 + 选择器 UI）",
+  "level": "L5",
+  "date": "2026-11-03",
+  "commit": "PENDING",
+  "claims": [
+    { "text": "模型名优先于 provider 归类：provider=openai 的端点下 claude-sonnet-4 归到 Claude 家族，未被误归 GPT 家族", "level": "L5" },
+    { "text": "9 个模型家族（GPT/Claude/Grok/Gemini/豆包/Kimi/DeepSeek/Qwen/GLM）全部可被模型名识别，每个都有真实模型名样本验证", "level": "L2" },
+    { "text": "三态真实存在：没配 Key 的端点其模型标 unconfigured，端点禁用标 disabled，可用标 available", "level": "L5" },
+    { "text": "切换模型后 /api/llm 的 model 与 baseUrl 真的跟着变（claude-sonnet-4 / https://gw.example.com/v1），source 标记为 active", "level": "L5" },
+    { "text": "切换模型时配置文件扁平字段同步更新（model / baseUrl / apiKey），下游 bot/agent 读到的就是新模型", "level": "L5" },
+    { "text": "旧扁平配置向后兼容：只有 baseUrl/apiKey/model 的 config.json 仍可用，读操作不改写用户文件", "level": "L5" },
+    { "text": "环境变量优先级未被多端点破坏（.env 的 MOSU_BOT_BASE_URL 仍压过配置文件）", "level": "L2" },
+    { "text": "前端真渲染：家族按钮 4 个、端点 3 个，家族按钮带 data-anchor-key=\"family:<id>\"", "level": "L5" },
+    { "text": "前端点家族 → 列表真的切换；点可用模型 → 后端模型真的变了", "level": "L5" },
+    { "text": "未配置/未启用的模型按钮 disabled 属性为 true（真浏览器量出来的）", "level": "L3" },
+    { "text": "搜索框在模型数 > 6 时出现、否则不出现，且过滤真的生效", "level": "L3" },
+    { "text": "删除活跃端点后 activeEndpoint 被清空", "level": "L5" },
+    { "text": "组件注册方向、脚本加载顺序、后端路由、import 完整性（静态检查）", "level": "L1" },
+    { "text": "反向验证：6 条纪律逐条破坏，破坏实现后测试真的会红", "level": "L2" }
+  ],
+  "not_run": [
+    "未配置端点的模型列表探测（GET /models）——本轮探测逻辑已实现但只测了错误分支，没连真实 OpenAI 兼容端点跑通成功分支",
+    "启用名单（enabledModels）的 UI 入口——后端接口 /api/models/enabled 已实现，前端未接入，无人能从界面设置",
+    "模型选择器在浅色主题下的配色对比度——本轮只在暗色主题下验过",
+    "Windows 显示缩放 150% 下的家族徽标与徽章排版——只验了 100% 缩放",
+    "端点数超过 9 个、或模型数超过 200 个时的列表性能与滚动——未构造大数据量",
+    "同一模型 id 挂在两个端点下时前端徽标的归属判定——后端按活跃端点精确匹配，前端反查逻辑已实现但未在真机端到端里构造该场景",
+    "切换模型后 bot/agent 端到端用新模型回答一次真实提问——只验了配置读取生效，未发真实推理请求比对答案风格",
+    "删除端点后若有进程正持有该端点的 LlmClient 连接——未构造并发场景",
+    "墨溯 CLI 侧（mosu config / mosu llm 之类）的模型目录命令——本轮只做了 GUI 入口，CLI 未加"
+  ],
+  "evidence": [
+    "tests/e2e/lancer/e2e_iter6.py",
+    "tests/test_model_catalog.py",
+    "tests/test_model_catalog_wiring.py",
+    "tests/test_model_picker_render.py",
+    "core/model_catalog.py",
+    "core/llmconfig.py",
+    "gui/assets/v2/views-models.js",
+    "docs/benchmark-lancer.md"
+  ]
+}

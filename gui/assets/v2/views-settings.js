@@ -17,6 +17,10 @@
 
   const Settings = {
     props: { route: { type: String, default: "settings" } },
+    // 踩过的坑（迭代 4）：只在上层 shell.js 注册 → 子组件里的 <model-picker>
+    // 成了未知标签，Vue 静默忽略不报错，页面看着像"组件没渲染"。
+    // 局部注册是"向下可见"，自己用自己注册最保险。
+    components: { "model-picker": global.MosuV2.ModelPicker },
     template: `
     <div class="v2-page v2-scroll">
       <div style="max-width:1000px;margin:0 auto">
@@ -162,7 +166,7 @@
 
             <!-- ============ 大模型 ============ -->
             <template v-else>
-              <div class="v2-card">
+              <div class="v2-card" style="margin-bottom:16px">
                 <h2 class="v2-card-title">大模型配置</h2>
                 <p class="v2-card-desc" style="margin-bottom:14px">
                   用于数字分身对话与关键词提取。留空则相关功能不可用。
@@ -181,6 +185,16 @@
                 </div>
                 <button class="v2-btn primary" :disabled="busy" @click="saveLlm">保存</button>
                 <div v-if="llmMsg" class="v2-note" style="margin-top:14px" :class="llmOk ? 'ok' : 'danger'">{{ llmMsg }}</div>
+              </div>
+
+              <!-- 模型目录：多端点 + 家族分组 + 三态（对标 Lancer model-reel） -->
+              <div class="v2-card">
+                <h2 class="v2-card-title">模型目录</h2>
+                <p class="v2-card-desc" style="margin-bottom:14px">
+                  可挂多个端点，切换模型在下面点一下即可（会同时改写上面的单项配置）。
+                  家族按**模型名**归类——用兼容网关转发 Claude，家族仍显示 Claude。
+                </p>
+                <model-picker mode="full"></model-picker>
               </div>
             </template>
           </div>

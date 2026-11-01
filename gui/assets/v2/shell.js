@@ -31,6 +31,11 @@
     { id: "settings", group: "设置", name: "账号与密钥", icon: "settings" },
     { id: "settings.channel", group: "设置", name: "微信通道", icon: "wechat" },
     { id: "settings.mcp", group: "设置", name: "MCP 服务", icon: "plug" },
+    // 大模型 tab（迭代 6 新增）。
+    // 必须登记进 SUB：parseHash 只认 SUB 里有的 id，
+    // 不登记 → #/settings.model 深链被忽略 → tab 停在「账号与密钥」，
+    // 用户从命令面板也搜不到「模型目录」。
+    { id: "settings.model", group: "设置", name: "大模型", icon: "settings" },
   ];
 
   const App = {
@@ -39,6 +44,8 @@
       Lightbox: global.MosuViews.Lightbox,
       // 分支树组件（洞察页用）：泳道 + 语义锚点光线
       "branch-tree": global.MosuV2.BranchTree,
+      // 模型选择器（设置页用）：家族图标条 + 分组 + 三态
+      "model-picker": global.MosuV2.ModelPicker,
     },
     template: `
     <div class="v2-app">

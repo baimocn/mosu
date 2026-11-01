@@ -1359,6 +1359,163 @@
   background: var(--brand-soft);
 }
 
+/* --------------------------------------------------------------- 模型选择器
+   对标 Lancer 的 model-catalog.css。家族徽标用文字 + 家族色（零外部资源），
+   三态靠「颜色 + 文字标签」双通道区分——只靠颜色，色弱用户和截图都看不出来。 */
+.v2-mp { display: flex; flex-direction: column; gap: var(--sp-4); }
+
+/* 家族图标条 */
+.v2-mp-families {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2);
+}
+.v2-mp-fam {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-surface);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.v2-mp-fam:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.v2-mp-fam.active {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--text-1);
+}
+/* 家族下有模型但一个都不可用 → 置灰（对应 Lancer 的 unconfigured 类） */
+.v2-mp-fam.unconfigured { opacity: .55; }
+.v2-mp-fam-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: var(--r-full);
+  color: #fff; font-size: 10px; font-weight: 700; letter-spacing: -.3px;
+}
+.v2-mp-fam-count {
+  color: var(--text-4); font-size: var(--fs-11);
+  font-family: var(--font-mono);
+}
+
+/* 模型列表 */
+.v2-mp-list {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  max-height: 320px; overflow-y: auto;
+}
+.v2-mp-item {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 9px var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: none; border-left: none; border-right: none; border-top: none;
+  text-align: left; cursor: pointer;
+  color: var(--text-1);
+}
+.v2-mp-item:last-child { border-bottom: none; }
+.v2-mp-item:hover:not(:disabled) { background: var(--bg-hover); }
+.v2-mp-item.active { background: var(--brand-soft); }
+.v2-mp-item.disabled, .v2-mp-item.unconfigured {
+  opacity: .5; cursor: not-allowed;
+}
+.v2-mp-item-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: var(--r-full);
+  color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0;
+}
+.v2-mp-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.v2-mp-item-label { font-size: var(--fs-13); }
+.v2-mp-item-sub {
+  font-size: var(--fs-11); color: var(--text-4);
+  font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.v2-mp-item-state {
+  font-size: var(--fs-11); padding: 2px 8px;
+  border-radius: var(--r-full);
+  background: var(--bg-inset); color: var(--text-3);
+  flex-shrink: 0;
+}
+.v2-mp-item-check { color: var(--brand); font-size: var(--fs-13); flex-shrink: 0; }
+.v2-mp-empty {
+  padding: var(--sp-4); font-size: var(--fs-12); color: var(--text-4);
+  text-align: center;
+}
+
+/* 当前模型条（bar 模式） */
+.v2-mp-current-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-surface);
+  color: var(--text-1); font-size: var(--fs-12);
+  cursor: pointer;
+}
+.v2-mp-current-btn:hover { border-color: var(--border-strong); }
+.v2-mp-current-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: var(--r-full);
+  color: #fff; font-size: 9px; font-weight: 700;
+}
+.v2-mp-caret { color: var(--text-4); font-size: 10px; }
+.v2-mp.mode-bar .v2-mp-panel { display: none; }
+.v2-mp.mode-bar .v2-mp-panel.open {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  padding: var(--sp-4);
+  min-width: 340px;
+}
+
+/* 端点管理 */
+.v2-mp-ep-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: var(--fs-12); color: var(--text-3);
+  margin-bottom: var(--sp-2);
+}
+.v2-mp-ep-list {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  overflow: hidden;
+}
+.v2-mp-ep {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 10px var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.v2-mp-ep:last-child { border-bottom: none; }
+.v2-mp-ep.active { background: var(--brand-soft); }
+.v2-mp-ep-main { flex: 1; min-width: 0; }
+.v2-mp-ep-label {
+  font-size: var(--fs-13); color: var(--text-1);
+  display: flex; align-items: center; gap: 7px;
+}
+.v2-mp-ep-state {
+  font-size: var(--fs-11); padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--bg-inset); color: var(--text-3);
+}
+.v2-mp-ep-state.available { background: var(--brand-soft); color: var(--brand); }
+.v2-mp-ep-state.disabled { background: var(--warn-soft); color: var(--warn); }
+.v2-mp-ep-state.unconfigured { background: var(--bg-inset); color: var(--text-4); }
+.v2-mp-ep-url {
+  font-size: var(--fs-11); color: var(--text-4);
+  font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.v2-mp-ep-meta { font-size: var(--fs-11); color: var(--text-3); margin-top: 2px; }
+.v2-mp-ep-ops { display: flex; gap: 6px; flex-shrink: 0; }
+.v2-mp-form {
+  margin-top: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+
 /* --------------------------------------------------------------- 响应式 */
 @media (max-width: 1180px) {
   .v2-ws { grid-template-columns: 260px 1fr 280px; }

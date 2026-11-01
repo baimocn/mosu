@@ -23,6 +23,7 @@ python cli/mosu.py gui --port 8788 --no-browser
 | `e2e_iter2.py` | 迭代 2 SSE + 历史 | **L5** | SSE 首事件延迟、落盘与流**逐字一致**、真机 2s 见轨迹、历史面板可展开 |
 | `e2e_iter3.py` | 迭代 3 派活通道 | **L5** | 真 socket 真模型、忙时 BUSY / queue 排队 / steer 递进、鉴权拒绝、**CLI 退出码非 0** |
 | `e2e_iter4.py` | 迭代 4 分支树 | **L5** | 3 泳道 3 根连线、颜色继承、**锚点缺失不乱飞**、console 0 错误 |
+| `e2e_iter6.py` | 迭代 6 模型目录 | **L5** | **模型名优先于 provider** 归类、三态真实存在、切换模型下游真的生效、旧配置继续可用、前端家族条真渲染 |
 
 ## 跑法
 
@@ -31,6 +32,7 @@ python tests/e2e/lancer/e2e_iter1_l5.py
 python tests/e2e/lancer/e2e_iter2.py
 python tests/e2e/lancer/e2e_iter3.py
 python tests/e2e/lancer/e2e_iter4.py
+python tests/e2e/lancer/e2e_iter6.py
 ```
 
 退出码：`0` 全通过；`1` 有断言失败。
