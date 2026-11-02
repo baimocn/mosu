@@ -2,7 +2,7 @@
   "title": "迭代 7：洞察阶段契约（status code + gate 产物 + forbidden 清单 + 机械摘要）",
   "level": "L5",
   "date": "2026-11-02",
-  "commit": "PENDING",
+  "commit": "250788e",
   "claims": [
     { "text": "契约随答案一起返回：真实洞察跑完后 result.contract 含四个阶段（scope/probe/read/verify），非空非占位", "level": "L5" },
     { "text": "status code 带机器可判的推进条件：每个阶段有 code/label/okToProceed，顶层有 okToProceed 布尔", "level": "L5" },

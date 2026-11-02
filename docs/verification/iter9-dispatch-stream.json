@@ -2,7 +2,7 @@
   "title": "迭代 9：派活通道补齐 stream / tail / stop（对标 Lancer Control API 的 NDJSON 流 + 游标 + 协作式取消）",
   "level": "L5",
   "date": "2026-11-03",
-  "commit": "PENDING",
+  "commit": "12b301c",
   "claims": [
     {
       "text": "stream 走真正的 NDJSON 流式响应：Content-Type 是 application/x-ndjson、**没有 Content-Length**（长度未知边跑边写）、一行一个 JSON 对象、真 socket 逐行读出来能全部 parse 成功",

@@ -2,7 +2,7 @@
   "title": "迭代 13：补迭代 6/7 报告的 not_run 项（多为功能缺口）+ 抓 5 个真 bug",
   "level": "L5",
   "date": "2026-11-04",
-  "commit": "PENDING",
+  "commit": "fccd7dc",
   "claims": [
     { "text": "启用名单有 UI 入口了：后端加 GET /api/models/enabled 读接口（原来只有 POST 写、没有 GET 读，前端接不上），catalog 带 enabledPatterns；前端加 textarea + 「保存名单」/「全部启用」按钮", "level": "L5" },
     { "text": "CLI 侧有模型目录命令了：新增 mosu models 子命令组（list / endpoints / use / enabled / probe / endpoint add|rm），写脚本、跑 CI、派活通道不再只能点界面", "level": "L5" },

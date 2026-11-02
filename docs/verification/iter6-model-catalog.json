@@ -2,7 +2,7 @@
   "title": "迭代 6：多模型目录（9 家族识别 + 多端点 + 三态 + 选择器 UI）",
   "level": "L5",
   "date": "2026-11-03",
-  "commit": "PENDING",
+  "commit": "8f932f6",
   "claims": [
     { "text": "模型名优先于 provider 归类：provider=openai 的端点下 claude-sonnet-4 归到 Claude 家族，未被误归 GPT 家族", "level": "L5" },
     { "text": "9 个模型家族（GPT/Claude/Grok/Gemini/豆包/Kimi/DeepSeek/Qwen/GLM）全部可被模型名识别，每个都有真实模型名样本验证", "level": "L2" },

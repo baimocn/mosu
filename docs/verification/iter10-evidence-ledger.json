@@ -2,7 +2,7 @@
   "title": "迭代 10：证据账本升级（来源 / 口径 / 数字分池 / 推断标注，对标 Lancer OrchestrationEvidenceRecord）",
   "level": "L5",
   "date": "2026-11-03",
-  "commit": "PENDING",
+  "commit": "d2ea67c",
   "claims": [
     { "text": "每条证据都带 source，且取值只能是 db / message / agent / model 四种之一（不是 Lancer 那 7 种编排语义）", "level": "L5" },
     { "text": "source 真的能覆盖多种：真机两轮洞察跑出 db 与 message 两种来源并存（第一轮统计产出 db，第二轮检索产出 message），不是只有一种", "level": "L5" },

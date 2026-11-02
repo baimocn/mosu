@@ -2,7 +2,7 @@
   "title": "迭代 8：阶段模型路由（取证 / 成文双角色，对标 Lancer 的 distinct_configured_model 谓词）",
   "level": "L5",
   "date": "2026-11-03",
-  "commit": "PENDING",
+  "commit": "bf694f8",
   "claims": [
     { "text": "不配置阶段模型时行为与迭代 7 一字不差：crossModel.distinct=False、applied=False、compose 阶段 SKIPPED、且不报 no_self_review（单模型模式不算违规）", "level": "L5" },
     { "text": "配了不同的成文模型时成文真的跑了：applied=True、compose 阶段 OK、谓词 distinct_configured_model 成立、真机用的是两个不同家族模型（取证 deepseek-v4.1-flash / 成文 glm-5.3）", "level": "L5" },
