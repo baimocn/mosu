@@ -2,23 +2,68 @@
   "title": "迭代 11：子树结算 + 回执协议（对标 Lancer settled() / branch-return / orchestrator-accepted）",
   "level": "L5",
   "date": "2026-11-03",
-  "commit": "PENDING",
+  "commit": "2baeb4d",
   "claims": [
-    { "text": "结算门槛照抄 Lancer 的真实语义：**投递确认**而非「模型说采纳了」。Lancer 在 app-store.ts:3586 于报告确实送达父会话后才把回执从 reported 翻成 accepted；墨溯在 payload 回喂进 messages 之后才标 RECEIPT_ACCEPTED", "level": "L5" },
-    { "text": "结算判据是三层递进（对标 branch-return-batch.ts:29-39）：① 自身终态 complete/failed ② 直接子分支递归结算 ③ 每个直接子分支的回执都是 accepted。三条都要满足才算 settled", "level": "L5" },
-    { "text": "「跑完 ≠ 结算」被钉死：子分支跑完但返回没被直接父消费时，父分支 settled 为 False（单元测试 + 端到端反查双向验证）", "level": "L5" },
-    { "text": "接线是真的：settle_children 在生产代码 core/agent_engine.py 的 _settlement_of 里有真实调用点，反查测试守着（不再是「定义了没人调」）", "level": "L5" },
-    { "text": "三层委派真跑起来：端到端跑出 9 条分支（3 顶层 + 6 孙层），Branch.depth 达到 2，证明子代理真的能派孙分支", "level": "L5" },
-    { "text": "孙分支的送达方是它的**直接父**（consumed_by ≠ main），没有跳级——正是 Lancer「immediate parent consumed」语义的落点", "level": "L5" },
-    { "text": "送达时序真跑验证：主代理第二次模型调用时上下文里已有 1 条 tool 结果、子代理上下文里也有孙分支的 tool 结果，证明 payload 真的进了上下文而不是只记了个标志", "level": "L5" },
-    { "text": "显式接受是**独立的第二层**：mosu-accepted: <分支id> 由程序化正则提取（Lancer 的 explicitAcceptanceEvidenceFromParentMessage 同思路），落到分支的 acceptedBy/acceptReason 上", "level": "L5" },
-    { "text": "关键不变量：显式接受**不参与**结算判定。单元测试与端到端双向锁死——Lancer 全仓没有任何提示词教模型写 orchestrator-accepted，照抄成门槛等于结算永远为假", "level": "L5" },
-    { "text": "结算状态落盘：gui/server.py 的 save_run 调用新增 settlement 字段，历史回看能读到「这轮有没有分支没进答案」", "level": "L5" },
-    { "text": "前端呈现：分支树状态标签从「已核对」改为「已回传」（程序只能说送到了，核对是人的动作）；显式采信另用「已采信」徽标，带理由 title", "level": "L5" },
-    { "text": "洞察页与历史回看都有结算状态条：settled 显示「N 条分支的结论都已回传上层」，未结算显示「有 N 条分支的结论没被上层消费——这些角度没有进上面的答案」", "level": "L5" },
-    { "text": "未结算会在答案正文里如实报警（⚠️ 分支未结算），并点名是哪几条分支（分支 id），不是笼统一句「可能不完整」", "level": "L5" },
-    { "text": "前端渲染真验（真浏览器 + 真实组件 + 固定数据，17 例）：老落盘记录（无 settled/accepted 字段）不崩、不凭空显示徽标", "level": "L5" },
-    { "text": "core/agent_team.py 与 core/agent_engine.py 零新增第三方依赖", "level": "L1" }
+    {
+      "text": "结算门槛照抄 Lancer 的真实语义：**投递确认**而非「模型说采纳了」。Lancer 在 app-store.ts:3586 于报告确实送达父会话后才把回执从 reported 翻成 accepted；墨溯在 payload 回喂进 messages 之后才标 RECEIPT_ACCEPTED",
+      "level": "L5"
+    },
+    {
+      "text": "结算判据是三层递进（对标 branch-return-batch.ts:29-39）：① 自身终态 complete/failed ② 直接子分支递归结算 ③ 每个直接子分支的回执都是 accepted。三条都要满足才算 settled",
+      "level": "L5"
+    },
+    {
+      "text": "「跑完 ≠ 结算」被钉死：子分支跑完但返回没被直接父消费时，父分支 settled 为 False（单元测试 + 端到端反查双向验证）",
+      "level": "L5"
+    },
+    {
+      "text": "接线是真的：settle_children 在生产代码 core/agent_engine.py 的 _settlement_of 里有真实调用点，反查测试守着（不再是「定义了没人调」）",
+      "level": "L5"
+    },
+    {
+      "text": "三层委派真跑起来：端到端跑出 9 条分支（3 顶层 + 6 孙层），Branch.depth 达到 2，证明子代理真的能派孙分支",
+      "level": "L5"
+    },
+    {
+      "text": "孙分支的送达方是它的**直接父**（consumed_by ≠ main），没有跳级——正是 Lancer「immediate parent consumed」语义的落点",
+      "level": "L5"
+    },
+    {
+      "text": "送达时序真跑验证：主代理第二次模型调用时上下文里已有 1 条 tool 结果、子代理上下文里也有孙分支的 tool 结果，证明 payload 真的进了上下文而不是只记了个标志",
+      "level": "L5"
+    },
+    {
+      "text": "显式接受是**独立的第二层**：mosu-accepted: <分支id> 由程序化正则提取（Lancer 的 explicitAcceptanceEvidenceFromParentMessage 同思路），落到分支的 acceptedBy/acceptReason 上",
+      "level": "L5"
+    },
+    {
+      "text": "关键不变量：显式接受**不参与**结算判定。单元测试与端到端双向锁死——Lancer 全仓没有任何提示词教模型写 orchestrator-accepted，照抄成门槛等于结算永远为假",
+      "level": "L5"
+    },
+    {
+      "text": "结算状态落盘：gui/server.py 的 save_run 调用新增 settlement 字段，历史回看能读到「这轮有没有分支没进答案」",
+      "level": "L5"
+    },
+    {
+      "text": "前端呈现：分支树状态标签从「已核对」改为「已回传」（程序只能说送到了，核对是人的动作）；显式采信另用「已采信」徽标，带理由 title",
+      "level": "L5"
+    },
+    {
+      "text": "洞察页与历史回看都有结算状态条：settled 显示「N 条分支的结论都已回传上层」，未结算显示「有 N 条分支的结论没被上层消费——这些角度没有进上面的答案」",
+      "level": "L5"
+    },
+    {
+      "text": "未结算会在答案正文里如实报警（⚠️ 分支未结算），并点名是哪几条分支（分支 id），不是笼统一句「可能不完整」",
+      "level": "L5"
+    },
+    {
+      "text": "前端渲染真验（真浏览器 + 真实组件 + 固定数据，17 例）：老落盘记录（无 settled/accepted 字段）不崩、不凭空显示徽标",
+      "level": "L5"
+    },
+    {
+      "text": "core/agent_team.py 与 core/agent_engine.py 零新增第三方依赖",
+      "level": "L1"
+    }
   ],
   "not_run": [
     "显式接受标记在真实模型输出里的自然发生率——本轮用脚本化 LLM 决策构造该场景，真模型会不会主动写 mosu-accepted 未验（Lancer 全仓也没有提示词教模型写，说明真实发生率本来就很低）",
