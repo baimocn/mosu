@@ -168,6 +168,23 @@ LANE_COLORS = [
     "#ef4444",  # 红
 ]
 
+# 语义边配色（对应 Lancer 的 reference / retry 两种跨泳道虚线）
+#
+# 为什么不按泳道上色：一条语义边**横跨两个泳道**，
+# 用其中一路的泳道色会让人误以为它是那条树线的延伸。
+# 语义边必须**一眼看得出是另一种关系**——用中性色 + 虚线区分。
+SEMANTIC_COLORS = {
+    "shared-session": "#64748b",
+    "shared-topic": "#94a3b8",
+}
+
+# 语义边的判据阈值
+TOPIC_MIN_OVERLAP = 2      # 共同话题词至少几个才算「同一件事」
+TOPIC_MAX_OVERLAP = 8      # 超过这个数说明只是通用词撞了，不算关联
+
+# goal → 话题词集合的缓存（实时下发会反复算同一批分支）
+_TOPIC_CACHE: dict[str, set[str]] = {}
+
 
 def lane_color(lane: int) -> str:
     """泳道索引 → 颜色。越界时取模循环（不会崩，但也不会重复太多）。"""
@@ -397,7 +414,15 @@ class AgentTeam:
                     # ---- 子代理的二次委派：派孙分支
                     if name == "delegate_tasks":
                         payload, kids = self._sub_delegate(br, args, on_step)
-                        br.children.extend(kids)
+                        # 注意：Branch.__init__ 里已经 `parent.children.append(self)`，
+                        # 所以孙分支**本来就在** br.children 里。
+                        # 这里再 extend 一次 → 同一个孙分支在树里出现两次
+                        # → 前端把孙节点画了两遍。
+                        # （迭代 12 端到端真跑才抓到：孙分支 id 出现在
+                        #  语义边的两端列表里。）
+                        # 所以这里只补**还没挂上**的，幂等。
+                        known = {c.id for c in br.children}
+                        br.children.extend([k for k in kids if k.id not in known])
                         run_steps = []
                         for kid in kids:
                             br.numbers |= kid.numbers
@@ -786,3 +811,211 @@ def _tool_payload_safe(res: dict) -> str:
 def _numbers_in(text: str) -> set[str]:
     from core.agent_engine import _numbers_in as f
     return f(text)
+
+
+# ------------------------------------------------------------------ 语义关联
+#
+# 迭代 12：对标 Lancer 的**跨泳道语义边**。
+#
+# Lancer 的 process-curve-routes.ts 里，树上有两类线：
+#   ① **树线**（父子关系）——实线
+#   ② **语义边**（reference / retry）——虚线，横跨泳道
+# 墨溯迭代 4 只抄了 ①（父子树线 + 泳道分列），迭代 12 补 ②。
+#
+# Lancer 的语义边来自**事件流里的显式引用**
+# （event.reference / event.retryTarget），
+# 墨溯没有等价的东西——子代理之间不会互相引用。
+# 所以这里**不抄判据，抄纪律**：
+#   - 语义边是**虚线**，跟树线视觉上分开
+#   - 端点绑定在**语义标识**（data-anchor-key）上，不是坐标
+#   - **锚点读不到就整条丢弃**，绝不画到邻近节点
+#
+# 判据用墨溯自己的数据（都是程序可算的，不靠模型自报）：
+#   shared-session —— 两个分支的**quote 类证据**里出现了同一个 sessionId
+#                    （都真读到了同一个人的原话，是最强的关联）
+#   shared-topic   —— 两个分支的目标文本里有共同的话题词
+#                    （同一件事的不同角度）
+#
+# 为什么只有两种（曾经的第三种被砍掉了）：
+#   「时间区间重叠」在并行委派下**必然成立**——
+#   三个子代理一起跑，两两都重叠，那条线等于每对都连，
+#   变成纯噪音。而噪音会稀释真正有信息的线，
+#   用户看多了就不信这层标记了。**假关系比没线更糟。**
+#
+# 为什么 shared-session 只看 quote 类证据：
+#   `find_contact` 会为**搜到的每个会话**产一条 stat 证据，
+#   那只说明「搜到了这个人」，不是「读了这个人的消息」。
+#   把 stat 也算进去 → 「查了张」和任何分支都连上 → 满屏假线。
+#   quote 证据才是**真的读到了原话**。
+#
+# 为什么宁可少画也不多画：
+#   用户看到一条语义边，会以为「这两个分支真的有关系」。
+#   画错的代价远大于漏画——跟迭代 4 的「假关系比没线更糟」同一条纪律。
+
+
+def _branch_quoted_sessions(br: Branch) -> set[str]:
+    """这个分支**真正读到过原话**的会话 ID 集合。
+
+    只取 kind == "quote" 的证据——
+    stat 证据只说明「查到了这个会话」，不代表读过它。
+    """
+    out: set[str] = set()
+    for ev in (br.evidence or []):
+        if ev.get("kind") != "quote":
+            continue
+        sid = ev.get("sessionId")
+        if sid:
+            out.add(str(sid))
+    return out
+
+
+def _branch_quoted_senders(br: Branch) -> set[str]:
+    """这个分支读过原话的**说话人**（人类可读名）。
+
+    用来给语义边写人话标签——
+    sessionId 是 wxid（wxid_xxx / 群 username），直接显示用户看不懂。
+    """
+    out: set[str] = set()
+    for ev in (br.evidence or []):
+        if ev.get("kind") != "quote":
+            continue
+        who = (ev.get("sender") or "").strip()
+        if who and who != "我":
+            out.add(who)
+    return out
+
+
+def _branch_topics(br: Branch) -> set[str]:
+    """这个分支目标文本里的话题词。
+
+    只用**目标文本**（goal），不用结论（report）——
+    结论里全是数字和专有名词，容易撞词。
+    """
+    goal = br.goal or ""
+    if not goal.strip():
+        return set()
+    # 按 goal 文本缓存：实时下发时每次重算会反复跑 jieba（慢），
+    # 而同一批分支的 goal 在一轮里是不变的。
+    cached = _TOPIC_CACHE.get(goal)
+    if cached is not None:
+        return cached
+    try:
+        from core.analytics import extract_keywords
+        kws = extract_keywords([goal], top=12)
+        out = {w for w, _ in kws}
+    except Exception:
+        out = set()
+    if len(_TOPIC_CACHE) < 512:
+        _TOPIC_CACHE[goal] = out
+    return out
+
+
+def _all_branches(branches: list[Branch]) -> list[Branch]:
+    """摊平整棵分支树（含孙分支），按 id 去重。
+
+    AgentRun.branches 只装**顶层**分支，孙分支嵌在 Branch.children 里。
+    直接对 run.branches 两两比较 → 只会看到顶层之间，
+    隔代的关联全漏。所以这里先摊平。
+
+    为什么去重：构造 Branch(parent=P) 时会自动 `P.children.append(self)`。
+    如果调用方既把 child 放进顶层列表、它又在 parent.children 里，
+    摊平后同一个分支会出现两次 → 会出现「自己连自己」的自环。
+    """
+    out: list[Branch] = []
+    seen: set[str] = set()
+
+    def _walk(items):
+        for b in items or []:
+            bid = getattr(b, "id", None)
+            if not bid or bid in seen:
+                continue
+            seen.add(bid)
+            out.append(b)
+            _walk(getattr(b, "children", []) or [])
+    _walk(branches)
+    return out
+
+
+def semantic_links(branches: list[Branch]) -> list[dict]:
+    """算分支之间的语义关联（跨泳道虚线的数据源）。
+
+    对标 Lancer `processTreeRoutes` 的 reference / retry 边，
+    但**判据是墨溯自己的**（见本节开头的说明）。
+
+    返回的每条：
+        {"from": 分支id, "to": 分支id, "kind": 判据名,
+         "label": 人话说明, "color": 配色}
+
+    刻意**只给最强的一种关联**：一对分支只画一条线。
+    同时给「同一个会话」+「同一个话题」两条，用户会以为有两件事，
+    其实是一件事的两种说法——噪音。
+
+    只在**非父子**分支之间算：父子之间已经有树线了，
+    再加一条语义线是重复。
+    """
+    out: list[dict] = []
+    flat = _all_branches(branches)
+    if len(flat) < 2:
+        return out
+
+    sessions = {b.id: _branch_quoted_sessions(b) for b in flat}
+    senders = {b.id: _branch_quoted_senders(b) for b in flat}
+    topics = {b.id: _branch_topics(b) for b in flat}
+
+    for i, a in enumerate(flat):
+        for b in flat[i + 1:]:
+            # 同一个分支跟自己不连（自环没有任何语义）
+            if a.id == b.id:
+                continue
+            # 父子之间不画（树线已经表达了）
+            if a.parent_id == b.id or b.parent_id == a.id:
+                continue
+
+            kind = ""
+            label = ""
+
+            # 判据 1：读到过同一个会话的同一个人（最强）
+            shared = sessions[a.id] & sessions[b.id]
+            if shared:
+                kind = "shared-session"
+                # 标签用**人名**（sender），不用 sessionId——
+                # sessionId 是 wxid/群 username，用户看不懂「都查过 wxid_xxx」。
+                who = sorted(senders[a.id] & senders[b.id])
+                label = ("都读过「%s」的聊天" % "、".join(who[:2]) if who
+                         else "都查了同一个会话")
+
+            # 判据 2：共同话题词
+            if not kind:
+                common = topics[a.id] & topics[b.id]
+                if TOPIC_MIN_OVERLAP <= len(common) <= TOPIC_MAX_OVERLAP:
+                    kind = "shared-topic"
+                    label = "同一话题：" + "、".join(sorted(common)[:3])
+
+            if not kind:
+                continue
+
+            out.append({
+                "from": a.id,
+                "to": b.id,
+                "kind": kind,
+                "label": label,
+                "color": SEMANTIC_COLORS.get(kind, SEMANTIC_COLORS["shared-topic"]),
+            })
+    return out
+
+
+def attach_semantic_links(branch_dicts: list[dict], links: list[dict]) -> None:
+    """把语义关联挂到分支 dict 上（前端按分支 id 取）。
+
+    挂成**每个分支一份**（两端都有），前端画线时不用反查。
+    """
+    by_id: dict[str, list[dict]] = {}
+    for lk in links or []:
+        by_id.setdefault(lk["from"], []).append(lk)
+        by_id.setdefault(lk["to"], []).append(lk)
+
+    def _walk(items):
+        for it in items or []:
+            it["semanticLinks"] = by_id.get(it.get("id"), [])
+            _walk(it.get("children"))
+    _walk(branch_dicts)

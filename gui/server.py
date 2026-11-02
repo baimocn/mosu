@@ -463,6 +463,27 @@ def _zip_dir(src_dir: Path) -> bytes:
     return buf.getvalue()
 
 
+def _branch_dicts_with_links(branches) -> list[dict]:
+    """分支树 dict（含跨分支语义关联，迭代 12）。
+
+    为什么不让前端自己算语义边：判据依赖 quote 证据的 sessionId 交集、
+    goal 的话题词交集——这些都在后端。前端算 = 两边判据必然漂移。
+
+    算失败一律退回**不带语义线的纯分支树**：
+    语义线是锦上添花，不能让它把主链路搞挂。
+    """
+    try:
+        from core.agent_team import attach_semantic_links, semantic_links
+    except Exception:
+        return [b.to_dict() for b in branches]
+    try:
+        dicts = [b.to_dict() for b in branches]
+        attach_semantic_links(dicts, semantic_links(list(branches)))
+        return dicts
+    except Exception:
+        return [b.to_dict() for b in branches]
+
+
 def run_gui(corpus_path, port: int | None = None) -> None:
     from core.bot.service import BotService
     import core.remoteimg as remoteimg
@@ -1660,12 +1681,12 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 # 分支状态实时上报：子代理跑到哪一步，用户能实时看到
                 live = {"steps": list(steps_box)}
                 if team.branches:
-                    live["branches"] = [b.to_dict() for b in team.branches]
+                    live["branches"] = _branch_dicts_with_links(team.branches)
                 tasks.report(tid, **live)
                 # 增量事件：SSE 只推这一步 + 最新的分支快照，
                 # 不用像轮询那样每次把整份 steps 重传一遍
                 tasks.emit(tid, "step", step=step,
-                           branches=[b.to_dict() for b in team.branches])
+                           branches=_branch_dicts_with_links(team.branches))
 
             tasks.report(tid, steps=[])
             try:
@@ -1676,7 +1697,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     runs_mod.save_run({
                         "id": run_id, "question": question, "answer": "",
                         "steps": list(steps_box), "evidence": [],
-                        "branches": [b.to_dict() for b in team.branches],
+                        "branches": _branch_dicts_with_links(team.branches),
                         "error": f"{type(e).__name__}: {e}",
                         "createdAt": time.time(),
                         "status": "error",
@@ -1690,7 +1711,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             out = run_obj.to_dict()
             out["model"] = ag.llm.model
             # 分支树（多代理）：给前端画「谁派的、谁查的、什么结论」
-            out["branches"] = [b.to_dict() for b in run_obj.branches]
+            out["branches"] = _branch_dicts_with_links(run_obj.branches)
+            # 跨分支语义关联（迭代 12）：哪些分支查的是同一件事。
+            # 顶层列表形式（跟 branches 平级），前端可整体遍历。
+            out["semanticLinks"] = list(run_obj.semantic_links or [])
             # 阶段契约（core/pipeline.py）：每个阶段的状态码 + gate 产物。
             # 契约判定失败时是空 dict——不影响主链路，答案照样给。
             out["contract"] = run_obj.contract or {}
@@ -1711,6 +1735,10 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     "evidence": out.get("evidence", []),
                     "inferences": out.get("inferences", []),
                     "branches": out.get("branches", []),
+                    # 跨分支语义关联（迭代 12）：回看历史时也要能看到
+                    # 「哪两个分支查的是同一件事」——不落盘就只剩一棵树，
+                    # 关联信息全丢
+                    "semanticLinks": out.get("semanticLinks", []),
                     # 子树结算状态（迭代 11）：回看历史时要知道
                     # 「这轮有没有分支的结论没被上层消费」——
                     # 不是只有一段答案文本

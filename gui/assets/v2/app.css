@@ -1257,6 +1257,60 @@
   stroke-opacity: 0.5;
   stroke-linecap: round;
 }
+/* 语义边图层（迭代 12）：压在节点**上面**。
+   为什么不在下面：语义边横跨泳道，同层分支在同一行，
+   连线必然横穿中间的节点卡片——压在下面线会被盖住看不见，
+   而且鼠标命中的是卡片不是线，hover 拿不到理由。
+   压在上面正好传达「这是跨越关系，不是树的一部分」。 */
+.v2-bt-sem-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 3;
+}
+/* 语义边（迭代 12）：虚线 + 更弱 + 中性色。
+   为什么弱于树线：树线是**确定的编排关系**（谁派的谁），
+   语义边是**推断出的内容关系**（都查了同一个人）——
+   后者的确定性天然更低，视觉权重就该更低，
+   否则用户会把「两个分支查了同一个人」误读成「它们是同一个分支」。
+   虚线 + 弱化 + 中性灰，三者合起来才是「另一种关系」的信号。 */
+.v2-bt-sem-line {
+  fill: none;
+  stroke-width: 1.4;
+  stroke-opacity: 0.55;
+  stroke-linecap: round;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+/* 语义边的命中区：透明但可接收鼠标事件。
+   .v2-bt-sem-layer 整体是 pointer-events:none（不然会挡住节点点击），
+   所以要在这一条上显式打开 pointer-events:stroke。 */
+.v2-bt-sem-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+}
+/* 语义边提示框 */
+.v2-bt-sem-tip {
+  position: absolute;
+  transform: translate(-50%, -140%);
+  z-index: 5;
+  max-width: 260px;
+  padding: 4px 9px;
+  border-radius: var(--r-md);
+  background: var(--bg-surface-2);
+  color: var(--text-1);
+  border: 1px solid var(--border-strong);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+  pointer-events: none;
+  white-space: normal;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
 .v2-bt-lanes {
   position: relative;
   display: flex;

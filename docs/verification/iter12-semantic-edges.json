@@ -1,0 +1,87 @@
+{
+  "title": "迭代 12：跨分支语义锚点光线（对标 Lancer process-curve-routes / processTreeRoutes）",
+  "level": "L5",
+  "date": "2026-11-03",
+  "commit": "PENDING",
+  "claims": [
+    {
+      "text": "抄纪律不抄判据：Lancer 的语义边来自事件流里的显式引用（event.reference / event.retryTarget），墨溯没有等价物（子代理之间不互相引用事件），所以判据全换成墨溯自己的——都是程序可算的，不靠模型自报",
+      "level": "L5"
+    },
+    {
+      "text": "锚点纪律照抄 Lancer 的 readCurveAnchor：端点绑定在语义标识（data-anchor-key=\"branch:<id>\"）上而非坐标；任一端锚点读不到就**整条线丢弃**，绝不画到邻近节点（Lancer 原文：a clipped anchor cannot be replaced by a nearby node）",
+      "level": "L5"
+    },
+    {
+      "text": "shared-session 判据只看 kind==\"quote\" 的证据（真读到原话），不看 stat——find_contact 会为搜到的每个会话产一条 stat 证据，把 stat 算进去会让「查了张」的分支和任何分支都连上，满屏假线（第一版真实踩到）",
+      "level": "L5"
+    },
+    {
+      "text": "砍掉第三种判据 time-overlap 并把理由写进代码注释：并行委派下三个子代理两两时间都重叠 → 每对都连 → 纯噪音。假关系比没线更糟（单测锁死源码里不含 time-overlap，防止后人加回来）",
+      "level": "L5"
+    },
+    {
+      "text": "shared-topic 判据用分支的**目标文本**（goal）而非结论（report）的话题词交集，重叠数限制在 2..8（超过说明只是通用词撞了）",
+      "level": "L5"
+    },
+    {
+      "text": "同一对分支只给最强的一种关联（一条线），同时给「同一个会话」+「同一个话题」两条会让用户以为有两件事，其实是一件事的两种说法——噪音",
+      "level": "L5"
+    },
+    {
+      "text": "父子之间不画语义边（树线已经表达了那个关系），端到端反查验证",
+      "level": "L5"
+    },
+    {
+      "text": "标签用人类可读的说话人名而不是 sessionId——sessionId 是 wxid_xxx / 群 username，用户看不懂「都查过 wxid_xxx」",
+      "level": "L5"
+    },
+    {
+      "text": "接线是真的：core/agent_engine.py 的 _semantic_links_of 有真实调用点，gui/server.py 的 _branch_dicts_with_links 把语义边下发到前端分支 dict，save_run 落盘 semanticLinks——反查测试扫源码守着（不再是「定义了没人调」）",
+      "level": "L5"
+    },
+    {
+      "text": "前端语义边独立图层、独立配色、虚线样式（stroke-dasharray），与树线（实线）视觉上分开；每条边画两遍（宽的透明命中区 + 细的可见虚线），因为虚线本身断续，鼠标落在线段空隙里就 hover 不到",
+      "level": "L5"
+    },
+    {
+      "text": "语义边图层压在节点**上面**（独立图层，z-index 3）——语义边横跨泳道，压在下面会被节点卡片盖住看不见，鼠标命中的也是卡片不是线，hover 拿不到理由",
+      "level": "L5"
+    },
+    {
+      "text": "前端渲染真验（真浏览器 + 真实组件 + 固定数据，12 例）：藏掉语义边一端 → 该边消失；藏掉无关节点 → 该边坐标**原封不动**（不只是数量对）；全藏 → 一条不剩",
+      "level": "L5"
+    },
+    {
+      "text": "端到端真跑（真 Dataset / 真 ToolBox / 真 AgentTeam / 真 ReAct 循环 + 真数据）：4 条分支（3 顶层 + 1 孙层），3/4 个分支真读到原话，产出 2 条 shared-session 语义边，标签「都读过「赵小刚」的聊天」",
+      "level": "L5"
+    },
+    {
+      "text": "端到端抓到并修掉一个**迭代 11 就存在**的真 bug：Branch.__init__ 已经 parent.children.append(self)，agent_team 拿到二次委派结果后又 br.children.extend(kids) → 孙分支在树里出现两次 → 前端会画出重复节点",
+      "level": "L5"
+    },
+    {
+      "text": "core/agent_team.py 与 core/agent_engine.py 零新增第三方依赖（话题词用已有的 core.analytics.extract_keywords，带缓存）",
+      "level": "L1"
+    }
+  ],
+  "not_run": [
+    "语义边在浅色主题下的配色对比度——本轮渲染测试跑在默认主题下",
+    "分支数超过 20 条时的语义边视觉噪音表现——端到端最多跑出 4 条分支",
+    "同一个人在**群聊**里的分支是否会被连上——本轮只验了私聊会话，群聊的 sender 语义不同（群成员名 vs 联系人名）",
+    "真实模型自主委派时产生的语义边分布——本轮用脚本化 LLM 决策构造场景，真模型会不会派两个子代理读同一个人未验",
+    "语义边在历史回看界面（histDetail）里的呈现——本轮只做了落盘与当前轮的分支树，历史详情区未加分支树渲染",
+    "Windows 显示缩放 150% 下语义边的虚线密度——只验了 100% 缩放"
+  ],
+  "evidence": [
+    "core/agent_team.py",
+    "core/agent_engine.py",
+    "gui/server.py",
+    "gui/assets/v2/views-branch.js",
+    "gui/assets/v2/app.css",
+    "tests/test_semantic_links.py",
+    "tests/test_semantic_edge_render.py",
+    "tests/e2e/lancer/e2e_iter12.py",
+    "docs/benchmark-lancer.md"
+  ]
+}

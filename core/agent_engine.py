@@ -220,6 +220,10 @@ class AgentRun:
         # 阶段契约判定结果（core/pipeline.py）。
         # 没有它就只是一段文本答案；有了它，每个阶段的状态码可机械核验。
         self.contract: dict = {}
+        # 跨分支的语义关联（迭代 12）：哪些分支查的是同一件事。
+        # 跟父子树线不同——树线说的是「谁派的谁」，
+        # 语义线说的是「这两个分支的结论指向同一处」。
+        self.semantic_links: list[dict] = []
         # 模型路由记录（迭代 8）：这一轮实际用了哪些模型。
         # collectModel = 跑 ReAct 循环的模型；writeModel = 写最终答案的模型。
         # distinct = 两者是否真的不同（Lancer 的 distinct_configured_model 谓词）。
@@ -260,6 +264,8 @@ class AgentRun:
             "inferences": self.inferences,
             # 子树结算状态（迭代 11）
             "settlement": self.settlement,
+            # 跨分支语义关联（迭代 12）
+            "semanticLinks": self.semantic_links,
         }
 
 
@@ -773,6 +779,10 @@ class InsightAgent:
         # 而结算只关心分支树，不受答案文本影响，顺序无关。
         run.settlement = _settlement_of(run)
         run.answer = _settlement_note(run)
+        # 语义关联（迭代 12）：分支跑完之后才算——
+        # 判据依赖证据（quote 类证据的 sessionId、目标文本的话题词），
+        # 跑到一半算出来的关联是不完整的。
+        run.semantic_links = _semantic_links_of(run)
         return run
 
     # ------------------------------------------------------------ 成文
@@ -1349,6 +1359,25 @@ def _settlement_of(run: AgentRun) -> dict:
         "pending": shown,
         "accepted": len([b for b in all_br if getattr(b, "accepted_by", "")]),
     }
+
+
+def _semantic_links_of(run: AgentRun) -> list[dict]:
+    """算跨分支的语义关联（迭代 12）。
+
+    对标 Lancer `processTreeRoutes` 的跨泳道虚线，但判据是墨溯自己的：
+    两个分支查的是不是同一件事（同一个人 / 同一话题）。
+
+    失败一律返回空列表——**语义线是锦上添花**，
+    算不出来绝不能让整轮洞察挂掉。
+    """
+    try:
+        from core.agent_team import semantic_links
+    except Exception:
+        return []
+    try:
+        return semantic_links(list(run.branches or []))
+    except Exception:
+        return []
 
 
 def _inference_marks(run: AgentRun) -> list[str]:

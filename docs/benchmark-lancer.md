@@ -43,6 +43,7 @@ Lancer 完全没有真实数据能力（它的数据只有自己的会话记录�
 | **分支落盘追溯** | `.lancer/branch-reports/<sha>.json` + 重启重建 | 无（`AgentRun` 只在内存，任务淘汰即失） | 缺 | **P0** |
 | **子树结算** | 三层递进（终态 + 子分支递归结算 + 无 pending 回执） | ✅ **迭代 11**：`branch_settled()` / `settle_children()` 真实接线到 `_settlement_of()`；未结算如实报警并点名分支 | 无缺口 | — |
 | **显式接受（附加层）** | `orchestrator-accepted:` 文本标记 → 接受证据 | ✅ **迭代 11**：`mosu-accepted:` 程序化正则提取，落到 `acceptedBy`；**刻意不参与结算判定**（Lancer 全仓无提示词教模型写它） | 无缺口（定位为加分信息） | — |
+| **跨泳道语义边** | `processTreeRoutes()`：reference / retry 两类虚线，跨泳道连接事件 | ✅ **迭代 12**：虚线独立图层 + 独立配色 + hover 说明理由；判据是墨溯自己的（都读过同一个人 / 同一话题），锚点读不到整条丢弃 | 无缺口（**抄纪律不抄判据**） | — |
 | **证据账本** | 8 种 kind + severity + git 快照 | ✅ **迭代 10**：证据带 `source`（db/message/agent/model）+ `status`（verified/reported）+ 结构化 `scope`（口径四字段）+ 推断标注独立成 `inferences`；数字审计分主代理实测 / 子代理转述两池 | 无缺口（只抄「来源可核验」，不抄 severity / 编排生命周期） | — |
 | **流式反馈** | 事件溯源 + callId upsert + 50ms 节流 | 900ms 轮询 `/api/task` | 差距明显 | P1 |
 | **统一订阅通道** | 单条 `state-changed` 广播全量快照 | ✅ 派活通道 NDJSON 事件流（迭代 9：全局单调 seq + `since` 游标 + 凭证脱敏），GUI 侧洞察共用同一本日志 | 部分有（前端未接入实时渲染） | P1 |
@@ -899,6 +900,116 @@ acceptedBy / acceptReason          模型表态：父级写了 mosu-accepted:   
 ### L5 报告
 
 `docs/verification/iter11-branch-settlement.json`（15 条 claims + 7 条 not_run）
+
+## 六之七、迭代 12 详细记录：跨分支语义锚点光线
+
+### 起点：墨溯的分支树只有「谁派的谁」
+
+迭代 4 抄来了 Lancer 的**树线**（父子关系）+ 泳道分列，
+但 Lancer 的树上其实有**两类线**：
+
+| 线 | Lancer 的来源 | 说的是 |
+|---|---|---|
+| 树线（实线） | 父子关系 | **谁派的谁**（编排关系） |
+| 语义边（虚线） | `event.reference` / `event.retryTarget` | **这两条线指向同一件事**（内容关系） |
+
+墨溯只有第一类。用户看到的分支树里，
+「三个子代理都在查同一个人」这件事**完全看不出来**——
+三根平行的线，看不出它们其实在查同一件事。
+
+### 读透的 Lancer 文件
+
+| 文件 | 读了什么 | 抄了什么 |
+|---|---|---|
+| `process-curve-routes.ts`（201 行） | `processTreeRoutes()`（持久语义边）vs `processCurveRoutes()`（瞬态飞行曲线）；`readCurveAnchor(root, key, origin)` | 端点绑**语义标识**而非坐标；读不到锚点返回 `null` |
+| `process-tree.tsx:441` | `strokeDasharray={route.kind === "retry" ? "2 2" : "4 4"}` | 虚线（视觉上与实线树线分开） |
+| `process-types.ts` | `ProcessEvent` 的 `reference` / `retryTarget` 字段 | 判据的**来源** |
+
+Lancer 原文注释（抄下来了，写在代码里当依据）：
+
+> `No coordinate-based pairing; a clipped anchor cannot be replaced by a nearby node.`
+>
+> `The live shell hides the authored relay strip. Its visible lane-head model carries the same semantic key; never let a hidden duplicate mask that chip.`
+
+### 🔴 第一遍读错了：差点把「模型写标记」当成判据
+
+Lancer 的语义边来自**事件流里的显式引用**——
+`event.reference` 指向另一个事件。墨溯**没有等价的东西**：
+子代理之间不会互相引用事件。
+
+所以第一版我下意识地想抄成「模型在结论里写 `mosu-referenced: <分支id>`」，
+然后让程序去解析这个串当判据。
+
+**这是迭代 11 刚踩过的同一个坑**：Lancer 全仓 3 处代码引用
+`orchestrator-accepted:`，但**0 处提示词教模型写它**——
+照抄成门槛 = 永远为假 = 白实现。
+
+所以这一轮明确：**抄纪律，不抄判据**。
+
+### 墨溯自己的判据（全部程序可算，不靠模型自报）
+
+| 判据 | 依据 | 为什么是它 |
+|---|---|---|
+| `shared-session` | 两个分支的 **quote 类证据**里出现同一个 `sessionId` | 都真读到了同一个人的原话 |
+| `shared-topic` | 两个分支 **目标文本**（goal）里共同的话题词（2 ≤ 重叠 ≤ 8） | 同一件事的不同角度 |
+
+**为什么 shared-session 只看 quote 类证据**（第一版真实踩到）：
+`find_contact` 会为**搜到的每个会话**产一条 stat 证据——
+那只说明「搜到了这个人」，不是「读了这个人的消息」。
+把 stat 算进去 → 「查了张」的分支和任何分支都连上 → 满屏假线。
+
+**为什么砍掉第三种判据 `time-overlap`**：
+并行委派下三个子代理两两时间都重叠 → 每对都连 → 纯噪音。
+噪音会稀释真正有信息的线，用户看多了就不信这层标记了。
+**假关系比没线更糟。**（砍掉的理由写进代码注释，防止后人加回来）
+
+**为什么标签用人名不用 sessionId**：
+sessionId 是 `wxid_xxx` / 群 username，用户看不懂「都查过 wxid_xxx」。
+标签取 quote 证据里的 `sender`。
+
+### 墨溯与 Lancer 的差异（有意为之）
+
+- Lancer 语义边来自事件流显式引用 → 墨溯无等价物 → **判据全换成自己的**
+- Lancer 语义边画在**树的可滚动坐标系**里 → 墨溯是静态布局，
+  一次算 + rAF 持续重算（有脏检查，不产生重渲染）
+- Lancer 的语义边在**树的同一层** → 墨溯把语义边**单独一层、压在节点上面**
+  （语义边横跨泳道，压在下面会被卡片盖住看不见，hover 也命中不到线）
+
+### 端到端抓到的真问题
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | **孙分支在树里出现两次** → 前端画重复节点 | `Branch.__init__` 已经 `parent.children.append(self)`，`agent_team` 拿到二次委派结果后又 `br.children.extend(kids)` | extend 前按 id 去重（**迭代 11 就存在的 bug，迭代 12 才抓到**） |
+| 2 | 语义边自环（`from == to`） | 构造 `Branch(parent=P)` 会自动挂进 `P.children`，摊平整棵树时同一分支出现两次 | `_all_branches()` 按 id 去重 + 自环显式跳过 |
+| 3 | `attach_semantic_links(None, None)` 崩 | 没防 None | `links or []` |
+| 4 | 语义线 hover 不触发 | 连线层 `pointer-events:none` + 语义边横穿节点卡片 → 命中的是卡片不是线 | 语义边拆成**独立图层压在节点上面** + 单独的宽命中区路径 |
+| 5 | 语义边只按 stat 证据就连上 → 满屏假线 | 第一版 `_branch_sessions()` 取了所有证据的 sessionId | 收紧为只取 `kind == "quote"` |
+
+### 端到端实测结果（真引擎 + 真数据 + 脚本化 LLM 决策）
+
+| 项 | 结果 |
+|---|---|
+| 三层委派 | 4 条分支（3 顶层 + 1 孙层），真 AgentTeam + 真 ReAct 循环 |
+| quote 证据 | 3/4 个分支真读到了原话（`read_timeline` → `kind="quote"`） |
+| 语义边 | 2 条 `shared-session`，标签「都读过「赵小刚」的聊天」 |
+| 判据不误连 | stat-only 分支**没被 shared-session 连上** |
+| 无自环 / 无父子边 | ✅ |
+| 落盘 | `semanticLinks` 进 `~/.mosu/runs/*.json` |
+| GUI 下发 | 分支 dict 带 `semanticLinks`，字段齐全（from/to/kind/label/color） |
+| 前端渲染 | 12 例全绿（真浏览器 + 真实组件 + 固定数据）+ 端到端真浏览器渲染真数据 |
+| 全量回归 | 1296 passed / 17 skipped / 0 failed |
+
+**为什么用「脚本化 LLM 决策」**：真模型不保证会派两个子代理去读**同一个人**——
+那样测出来的「语义边成立」是**碰巧**，不是能力。
+只替换「模型下一步调哪个工具」这一步，其余全走真实路径。
+
+脚本派发也有个坑：一开始按「第几次调用」派脚本，
+并行子代理的创建顺序不确定 → 竞态 → 每次跑结果可能不同。
+改成按 **goal 文本**匹配规则派发，与线程调度无关。
+
+### L5 报告
+
+`docs/verification/iter12-semantic-edges.json`（12 条 claims + 5 条 not_run）
 
 ---
 

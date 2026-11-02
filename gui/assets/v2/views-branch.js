@@ -72,6 +72,8 @@
     setup(props) {
       const rootEl = ref(null);
       const edges = ref([]);
+      const semEdges = ref([]);
+      const semHover = ref(null);
       let raf = 0;
       let loop = 0;
 
@@ -109,6 +111,8 @@
             // 颜色优先用后端给的；后端没给（老落盘记录）才走兜底
             color: b.laneColor || laneFallback(b.lane),
             parentId: b.parentId || parentId || null,
+            // 跨分支语义关联（迭代 12）：后端挂好的，摊平成边时要靠它
+            semanticLinks: b.semanticLinks || [],
           };
           nodes.push(node);
           if (node.parentId) {
@@ -126,6 +130,44 @@
       };
 
       const flat = computed(() => flatten(props.branches, null, 1));
+
+      // ---------------------------------------------------------------- 语义边
+      /**
+       * 跨分支的语义关联（迭代 12）。
+       *
+       * 后端在每个分支上挂了 `semanticLinks`（两端都挂一份），
+       * 这里把它摊平成「边」列表并**去重**——同一对分支在后端只算一条，
+       * 但两端各挂了一份，直接遍历会画两条重合的线。
+       *
+       * 为什么语义边要单独一层、单独一种样式：
+       *   树线（实线）说的是「谁派的谁」——编排关系；
+       *   语义线（虚线）说的是「这两个分支查的是同一件事」——内容关系。
+       *   两者混在一层里，用户会分不清。
+       */
+      const semanticEdges = computed(() => {
+        const seen = new Set();
+        const out = [];
+        for (const n of flat.value.nodes) {
+          const links = n.semanticLinks || [];
+          for (const lk of links) {
+            if (!lk || !lk.from || !lk.to) continue;
+            const key = lk.from < lk.to
+              ? lk.from + "->" + lk.to
+              : lk.to + "->" + lk.from;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push({
+              id: key,
+              from: lk.from,
+              to: lk.to,
+              kind: lk.kind || "",
+              label: lk.label || "",
+              color: lk.color || "#94a3b8",
+            });
+          }
+        }
+        return out;
+      });
 
       // 顶层分支数 = 虚拟根派出去的路数
       const topCount = computed(
@@ -184,6 +226,7 @@
         const root = rootEl.value;
         if (!root) {
           edges.value = [];
+          semEdges.value = [];
           return;
         }
         // 整个组件不可见（切到别的 tab）→ 别算了，省 CPU
@@ -191,6 +234,7 @@
         const rr = root.getBoundingClientRect();
         if (!rr.width && !rr.height) {
           if (edges.value.length) edges.value = [];
+          if (semEdges.value.length) semEdges.value = [];
           return;
         }
         const out = [];
@@ -202,6 +246,27 @@
             id: link.from + "->" + link.to,
             d: cubicPath(a, b),
             color: link.color,
+            a, b,
+          });
+        }
+        // 语义边：同一套锚点纪律——
+        // 任一端读不到锚点就整条丢弃，绝不画到邻近节点上。
+        //
+        // 这条纪律对语义边比对树线更重要：
+        // 树线画错，用户会看出「这个点连错人了」；
+        // 语义线画错，用户会以为「这两个分支真的有关系」——
+        // 假关系比没线更糟。
+        const sout = [];
+        for (const link of semanticEdges.value) {
+          const a = readAnchor("branch:" + link.from);
+          const b = readAnchor("branch:" + link.to);
+          if (!a || !b) continue;   // ← 锚点缺失：放弃这条线
+          sout.push({
+            id: link.id,
+            d: cubicPath(a, b),
+            color: link.color,
+            label: link.label,
+            kind: link.kind,
             a, b,
           });
         }
@@ -223,10 +288,28 @@
                      Math.abs(e.b.x - n.b.x) < EPS &&
                      Math.abs(e.b.y - n.b.y) < EPS;
             })) {
-          return;
+          // 树线没动，但语义边可能动了（数据变了）→ 单独判一次
+          const sold = semEdges.value;
+          const sameSem = sold.length === sout.length &&
+            sold.every((e, i) => {
+              const n = sout[i];
+              return e.id === n.id &&
+                     Math.abs(e.a.x - n.a.x) < EPS &&
+                     Math.abs(e.a.y - n.a.y) < EPS &&
+                     Math.abs(e.b.x - n.b.x) < EPS &&
+                     Math.abs(e.b.y - n.b.y) < EPS;
+            });
+          if (sameSem) return;
         }
         edges.value = out.map((e) => ({
           id: e.id, d: e.d, color: e.color, a: e.a, b: e.b,
+        }));
+        semEdges.value = sout.map((e) => ({
+          id: e.id, d: e.d, color: e.color, a: e.a, b: e.b,
+          label: e.label, kind: e.kind,
+          // 提示框锚点：两端中点
+          mx: (e.a.x + e.b.x) / 2,
+          my: (e.a.y + e.b.y) / 2,
         }));
       }
 
@@ -284,8 +367,14 @@
         rootEl,
         lanes,
         edges,
+        semEdges,
+        semHover,
         topCount,
         nodeKey: (n) => n.id,
+        // 语义边 hover：显示「这两个分支为什么有关系」
+        semTip: (e) => (e ? e.label : ""),
+        onSemEnter: (e) => { semHover.value = e; },
+        onSemLeave: () => { semHover.value = null; },
         statusText: (n) => {
           if (n.status === "failed") return "失败";
           if (n.status === "running") return "进行中";
@@ -308,11 +397,39 @@
     },
     template: `
     <div class="v2-bt" ref="rootEl">
-      <!-- 连线层：SVG 铺在节点下面 -->
+      <!-- 连线层（树线）：SVG 铺在节点下面。
+           树线是**编排关系**，视觉上属于"背景"，所以压在卡片下。 -->
       <svg class="v2-bt-lines" aria-hidden="true">
         <path v-for="e in edges" :key="e.id" class="v2-bt-line"
               :d="e.d" :style="{ stroke: e.color }"></path>
       </svg>
+
+      <!-- 语义边图层（迭代 12）：独立的一层，**压在节点上面**。
+
+           为什么必须单独一层、且必须在上面：
+           - 语义边是**跨泳道**的：两个同层分支在同一行，
+             连线必然横穿中间那些节点卡片。
+           - 压在下面 → 线被卡片盖住，几乎看不见，
+             而且鼠标命中的是卡片不是线 → hover 拿不到理由。
+           - 压在上面 → 线横跨卡片，一眼看出「这是跨越关系，
+             不是树的一部分」——虚线 + 弱化配色正好传达这一点。
+
+           每条边画两遍：一条宽的透明「命中区」收 hover，
+           一条细的可见虚线。命中区必须单独画——
+           虚线本身是断续的，鼠标落在线段之间的空隙里就 hover 不到。 -->
+      <svg class="v2-bt-sem-layer" aria-hidden="true">
+        <path v-for="e in semEdges" :key="'h' + e.id" class="v2-bt-sem-hit"
+              :d="e.d"
+              @mouseenter="onSemEnter(e)" @mouseleave="onSemLeave()"></path>
+        <path v-for="e in semEdges" :key="'s' + e.id" class="v2-bt-sem-line"
+              :d="e.d" :style="{ stroke: e.color }"></path>
+      </svg>
+
+      <!-- 语义边提示：hover 时说明「这两个分支为什么有关系」 -->
+      <div v-if="semHover" class="v2-bt-sem-tip"
+           :style="{ left: semHover.mx + 'px', top: semHover.my + 'px' }">
+        {{ semTip(semHover) }}
+      </div>
 
       <!-- 虚拟根：代表主代理。只有一层分支时，靠它把「树」的拓扑画出来 -->
       <div class="v2-bt-root" data-anchor-key="branch:root" data-branch-id="root">
