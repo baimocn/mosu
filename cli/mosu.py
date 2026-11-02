@@ -115,6 +115,243 @@ def cmd_status(args, ds: Dataset):
         emit(info, args.format)
 
 
+# ---------------------------------------------------------------- models
+def _print_model_catalog_table(cat: dict) -> None:
+    """模型目录的 table 输出：按家族分组，带三态与「当前」标记。
+
+    为什么自己画而不是走 emit()：目录是**两层结构**（家族 → 模型），
+    emit() 的表格渲染是单层 list[dict]，塞不下这个层级。
+    """
+    cur = cat.get("current") or {}
+    eps = cat.get("endpoints") or []
+    pats = cat.get("enabledPatterns") or []
+    print("\n  墨溯 · 模型目录")
+    print(f"  当前模型 : {cur.get('model') or '（未配置）'}")
+    print(f"  当前地址 : {cur.get('baseUrl') or '（无）'}")
+    print(f"  端点     : {len(eps)} 个 · 模型 {cat.get('totalModels', 0)} 个"
+          f"（可用 {cat.get('availableModels', 0)} 个）")
+    print(f"  启用名单 : {'、'.join(pats) if pats else '（全部启用）'}")
+    act = cat.get("active") or {}
+    for fam in cat.get("families") or []:
+        models = fam.get("models") or []
+        if not models:
+            continue
+        print(f"\n  [{fam.get('badge')}] {fam.get('label')}"
+              f"  {fam.get('count', 0)}/{fam.get('modelCount', 0)} 可用")
+        for m in models:
+            mark = "✓" if m.get("available") else "·"
+            here = ""
+            if (act.get("endpointId") == m.get("providerId")
+                    and act.get("modelId") == m.get("modelId")):
+                here = "  ← 当前"
+            print(f"    {mark} {m.get('modelId')}  [{m.get('stateLabel')}]"
+                  f"  ({m.get('providerName')}){here}")
+    print()
+
+
+def cmd_models(args, ds):
+    """模型目录（CLI 侧）——GUI 那套模型选择器的等价命令行入口。
+
+    迭代 13 补：迭代 6 只做了 GUI 入口，CLI 侧一个命令都没有。
+    于是「写脚本 / 跑 CI / 用派活通道调模型」这些非 GUI 场景
+    既看不见当前在用哪个模型，也切不了模型——
+    GUI 能干的事 CLI 干不了，等于把能力锁在鼠标后面。
+
+    子命令：
+        list                          目录总览（家族分组 + 三态 + 当前模型）
+        endpoints                     端点列表
+        use <端点ID> <模型ID>         切换活跃端点与模型
+        enabled --pattern <规则>     设启用名单（可重复）
+        enabled --show                只看当前名单，不改
+        enabled --all                 清空名单 = 全部启用
+        probe --base-url <地址>       探测端点支持的模型
+        endpoint add <端点ID>         新增/更新端点
+        endpoint rm <端点ID>          删除端点
+    """
+    from core.llmconfig import (
+        delete_endpoint, load_endpoints, load_model_catalog,
+        save_endpoint, set_active, set_enabled_models,
+    )
+
+    sub = getattr(args, "models_cmd", None) or "list"
+    arg1 = (getattr(args, "arg1", "") or "").strip()
+    arg2 = (getattr(args, "arg2", "") or "").strip()
+
+    # ------------------------------------------------------------ list
+    if sub == "list":
+        cat = load_model_catalog()
+        if args.format == "table":
+            _print_model_catalog_table(cat)
+        else:
+            emit(cat, args.format, raw=cat)
+        return
+
+    # ------------------------------------------------------------ endpoints
+    if sub == "endpoints":
+        eps = load_endpoints()
+        if args.format == "table":
+            print()
+            if not eps:
+                print("  还没有配置任何端点。用 mosu models endpoint add 添加。\n")
+                return
+            for e in eps:
+                print(f"  {e.get('id')}  {e.get('label') or e.get('id')}")
+                print(f"    地址 : {e.get('baseUrl') or '—'}")
+                print(f"    Key  : {'已配置' if e.get('apiKey') else '未配置'}")
+                print(f"    模型 : {'、'.join(e.get('models') or []) or '—'}")
+            print()
+        else:
+            emit(eps, args.format, raw={"endpoints": eps, "count": len(eps)})
+        return
+
+    # ------------------------------------------------------------ use
+    if sub == "use":
+        eid, mid = arg1, arg2
+        if not eid or not mid:
+            raise ValueError("用法: mosu models use <端点ID> <模型ID>")
+        # set_active 找不到端点会抛 ValueError → main 接住后 sys.exit，
+        # 用户看到一行干净的中文提示，而不是一整段 traceback。
+        res = set_active(eid, mid)
+        cat = load_model_catalog()
+        if args.format == "table":
+            print(f"\n  ✅ 已切换：{res.get('modelId')}  （端点 {res.get('endpointId')}）")
+            print(f"     地址：{cat.get('current', {}).get('baseUrl')}\n")
+        else:
+            emit({**res, "catalog": cat}, args.format,
+                 raw={**res, "catalog": cat})
+        return
+
+    # ------------------------------------------------------------ enabled
+    if sub == "enabled":
+        if getattr(args, "show", False):
+            cat = load_model_catalog()
+            pats = cat.get("enabledPatterns") or []
+            if args.format == "table":
+                print()
+                if pats:
+                    for p in pats:
+                        print(f"  {p}")
+                else:
+                    print("  （全部启用）")
+                print()
+            else:
+                emit({"patterns": pats}, args.format, raw={"patterns": pats})
+            return
+        pats = [str(p).strip() for p in (getattr(args, "patterns", None) or [])
+                if str(p).strip()]
+        if getattr(args, "enable_all", False):
+            # --all 是**显式**的清空动作。
+            pats = []
+        elif not pats:
+            # 既没给规则、也没给 --all → **只读**，不改配置。
+            #
+            # 为什么不能「不带参数 = 清空」：那意味着敲一次命令就抹掉名单，
+            # 而用户大概率只是想看看当前有哪些规则。
+            # 破坏性操作必须显式（--all），跟 GUI 里「全部启用」是一个按钮、
+            # 不可能误触的设计对齐。
+            if args.format == "table":
+                cur = load_model_catalog()
+                cur_pats = cur.get("enabledPatterns") or []
+                print()
+                if cur_pats:
+                    for p in cur_pats:
+                        print(f"  {p}")
+                else:
+                    print("  （全部启用）")
+                print()
+            else:
+                cur = load_model_catalog()
+                emit({"patterns": cur.get("enabledPatterns") or []},
+                     args.format, raw={"patterns": cur.get("enabledPatterns") or []})
+            return
+        saved = set_enabled_models(pats)
+        cat = load_model_catalog()
+        if args.format == "table":
+            print(f"\n  ✅ 启用名单已更新：{len(saved)} 条规则")
+            for p in saved:
+                print(f"     {p}")
+            if not saved:
+                print("     （空 = 全部启用）")
+            print(f"     可用模型 {cat.get('availableModels', 0)}/"
+                  f"{cat.get('totalModels', 0)}\n")
+        else:
+            emit({"patterns": saved, "catalog": cat}, args.format,
+                 raw={"patterns": saved, "catalog": cat})
+        return
+
+    # ------------------------------------------------------------ probe
+    if sub == "probe":
+        from core.model_catalog import probe_models
+        base = (getattr(args, "base_url", "") or "").strip()
+        key = (getattr(args, "api_key", "") or "").strip()
+        if not base:
+            raise ValueError("用法: mosu models probe --base-url <地址> [--api-key KEY]")
+        r = probe_models(base, key)
+        if args.format == "table":
+            print()
+            if r.get("ok"):
+                print(f"  ✅ 探测成功，{len(r.get('models') or [])} 个模型")
+                for m in r.get("models") or []:
+                    print(f"     {m}")
+            else:
+                print(f"  ❌ 探测失败：{r.get('error')}")
+                if r.get("hint"):
+                    print(f"     {r.get('hint')}")
+            print()
+        else:
+            emit(r, args.format, raw=r)
+        return
+
+    # ------------------------------------------------------------ endpoint
+    if sub == "endpoint":
+        act = arg1
+        eid = arg2
+        if act == "add":
+            models = [str(m).strip() for m in (getattr(args, "models", None) or [])
+                      if str(m).strip()]
+            ep = {
+                "id": eid,
+                "label": (getattr(args, "label", "") or "").strip() or eid,
+                "baseUrl": (getattr(args, "base_url", "") or "").strip(),
+                # Key 传空 = 不改动（首次新增则为空 = 端点状态「未配置」）。
+                # 明文 Key 走命令行会留在 shell 历史里，所以文档推荐
+                # 先 add 再用 GUI 填，或用环境变量注入。
+                "apiKey": (getattr(args, "api_key", "") or "").strip(),
+                "provider": (getattr(args, "provider", "") or "").strip(),
+                "models": models,
+            }
+            if not eid:
+                raise ValueError("用法: mosu models endpoint add <端点ID> "
+                                 "--base-url <地址> [--api-key KEY] [--model M]...")
+            if not ep["baseUrl"]:
+                raise ValueError("用法: mosu models endpoint add <端点ID> "
+                                 "--base-url <地址> [--api-key KEY] [--model M]...")
+            eps = save_endpoint(ep)
+            cat = load_model_catalog()
+            if args.format == "table":
+                print(f"\n  ✅ 端点已保存：{eid}（共 {len(eps)} 个端点）\n")
+            else:
+                emit({"saved": True, "endpoints": eps, "catalog": cat},
+                     args.format, raw={"saved": True, "endpoints": eps,
+                                       "catalog": cat})
+            return
+        if act == "rm":
+            if not eid:
+                raise ValueError("用法: mosu models endpoint rm <端点ID>")
+            eps = delete_endpoint(eid)
+            cat = load_model_catalog()
+            if args.format == "table":
+                print(f"\n  ✅ 端点已删除：{eid}（剩余 {len(eps)} 个）\n")
+            else:
+                emit({"deleted": True, "endpoints": eps, "catalog": cat},
+                     args.format, raw={"deleted": True, "endpoints": eps,
+                                       "catalog": cat})
+            return
+        raise ValueError("用法: mosu models endpoint add|rm <端点ID>")
+
+    not_implemented("models", f"子命令缺失: {sub}")
+
+
 # ---------------------------------------------------------------- init / config
 def cmd_init(args, ds: Dataset):
     patch = {}
@@ -1345,6 +1582,46 @@ def build_parser():
     p.add_argument("--default-limit", dest="default_limit", type=int)
     p.set_defaults(func=cmd_config)
 
+    # 模型目录（迭代 13 补：迭代 6 只做了 GUI 入口，CLI 侧零命令）
+    #
+    # 为什么用 parents=[common2] 而不是 common：模型目录跟微信数据无关，
+    # 不该要 --db-path / --key。common2 只有 --limit/--format/--quiet。
+    #
+    # 位置参数的设计（arg1 / arg2 两个槽位在不同子命令下含义不同）：
+    # argparse 的位置参数是**按顺序**分配的，nargs="*" 又只能放最后，
+    # 所以「use 要两个位置参数、enabled 要 N 个规则、endpoint 要动作+ID」
+    # 三种形状没法用同一套位置参数表达。
+    # 与其塞 5 个语义重叠的可选位置参数（argparse 自己都说不清），
+    # 不如固定两个槽位、由子命令自己解释——argparse 只负责把字符串收进来，
+    # 语义解释权交给命令函数（这是 CLI 该有的分工）。
+    p = sub.add_parser("models", help="模型目录：端点、家族分组、三态、启用名单",
+                       parents=[common2])
+    p.add_argument("models_cmd", nargs="?", default="list",
+                   choices=["list", "endpoints", "use", "enabled", "probe",
+                            "endpoint"],
+                   help="list=目录总览 endpoints=端点列表 "
+                        "use=切换活跃模型 enabled=设启用名单 probe=探测端点模型 "
+                        "endpoint=端点增删")
+    p.add_argument("arg1", nargs="?", default="",
+                   help="use:端点ID / endpoint:动作(add|rm)")
+    p.add_argument("arg2", nargs="?", default="",
+                   help="use:模型ID / endpoint:端点ID")
+    p.add_argument("--pattern", dest="patterns", action="append", default=[],
+                   help="enabled 用：启用规则，可重复（如 --pattern 'deepseek-*'）")
+    p.add_argument("--show", action="store_true",
+                   help="enabled --show：只看当前名单，不改（默认行为也是只读）")
+    p.add_argument("--all", dest="enable_all", action="store_true",
+                   help="enabled --all：清空名单 = 全部启用")
+    p.add_argument("--base-url", dest="base_url", default="",
+                   help="probe / endpoint add 用：接口地址")
+    p.add_argument("--api-key", dest="api_key", default="",
+                   help="probe / endpoint add 用：API Key（明文，慎用）")
+    p.add_argument("--label", default="", help="endpoint add 用：端点显示名")
+    p.add_argument("--provider", default="", help="endpoint add 用：provider 名")
+    p.add_argument("--model", dest="models", action="append", default=[],
+                   help="endpoint add 用：模型 id，可重复")
+    p.set_defaults(func=cmd_models)
+
     # 注意：--db-path/--key 已由 common 提供，这里不重复定义（同 option string 会冲突）
     p = sub.add_parser("account", help="多账号管理", parents=[common])
     p.add_argument("account_cmd", nargs="?",
@@ -1560,7 +1837,12 @@ def main():
         sys.exit(str(e))
     # dispatch 是**纯客户端**命令：它只跟派活服务端说话，不碰本地数据。
     # 所以不该要求 db-path / key，也不该因为找不到数据目录就报错退出。
-    if args.cmd == "dispatch":
+    #
+    # models 同理：它只读写 ~/.mosu/config.json 里的 LLM 配置，
+    # 跟微信数据库毫无关系。所以放在同一处短路——
+    # 否则用户「只是想看看现在用的哪个模型」，却先被要求配好微信数据库密钥，
+    # 完全是两件事。
+    if args.cmd in ("dispatch", "models"):
         try:
             _rc = args.func(args, None)
         except ValueError as e:

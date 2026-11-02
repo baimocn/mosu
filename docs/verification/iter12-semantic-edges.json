@@ -2,7 +2,7 @@
   "title": "迭代 12：跨分支语义锚点光线（对标 Lancer process-curve-routes / processTreeRoutes）",
   "level": "L5",
   "date": "2026-11-03",
-  "commit": "PENDING",
+  "commit": "1e0dd2e",
   "claims": [
     {
       "text": "抄纪律不抄判据：Lancer 的语义边来自事件流里的显式引用（event.reference / event.retryTarget），墨溯没有等价物（子代理之间不互相引用事件），所以判据全换成墨溯自己的——都是程序可算的，不靠模型自报",

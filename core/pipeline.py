@@ -291,7 +291,7 @@ def _mechanical_summary(stage_id: str, status: str, facts: dict[str, Any]) -> st
     """
     bits = [f"stage={stage_id}", f"status={status}"]
     for key in ("calls", "evidence", "quotes", "numbers", "unsourced",
-                "collectModel", "writeModel", "model", "distinct"):
+                "delegated", "collectModel", "writeModel", "model", "distinct"):
         if key in facts:
             bits.append(f"{key}={facts[key]}")
     return " ".join(bits)
@@ -354,23 +354,38 @@ def evaluate(run: dict) -> dict[str, Any]:
     }
 
     # probe：关键阶段。跑了但一条数据都没有 → EMPTY
+    #
+    # **判据要看证据，不只看主代理的工具调用**（迭代 13 修的真 bug）：
+    # 原来判据是「主代理调过 probe 类工具吗」。但在多代理委派场景下，
+    # 主代理只调了 delegate_tasks（归到 orchestrate 阶段），
+    # 数据是**子代理**查的——证据池里有 stat 证据，
+    # 阶段却判成 MISSING（未执行），契约把一次成功的回答判成「没通过」。
+    #
+    # 委派是合法的取证路径。阶段关心的是「有没有拿到东西」，
+    # 不是「谁拿的」——所以判据改成「调用过 **或** 有对应证据」。
     probe_calls = by_stage.get("probe") or []
     probe_ev = [e for e in evidence if e.get("kind") == "stat"]
-    if not probe_calls:
+    delegated = bool(by_stage.get("orchestrate"))
+    if not probe_calls and not probe_ev:
         probe_state = _status("MISSING")
     elif not probe_ev:
+        # 调了但没数据 → EMPTY。主代理自己调了却空，跟「全靠子代理、
+        # 但子代理也没数据」是两回事，但都不该放行。
         probe_state = _status("EMPTY")
     else:
         probe_state = _status("OK")
     stage_states["probe"] = {
         "status": probe_state,
-        "facts": {"calls": len(probe_calls), "evidence": len(probe_ev)},
+        "facts": {"calls": len(probe_calls), "evidence": len(probe_ev),
+                  "delegated": delegated},
     }
 
     # read：非关键，但「引用了具体话语却没有原文」要拦
+    #
+    # 同上：子代理读到的 quote 证据也算「读过了」。
     read_calls = by_stage.get("read") or []
     quote_ev = [e for e in evidence if e.get("kind") == "quote"]
-    if not read_calls:
+    if not read_calls and not quote_ev:
         read_state = _status("SKIPPED")
     elif not quote_ev:
         read_state = _status("EMPTY")

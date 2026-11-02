@@ -113,6 +113,28 @@ mosu init --db-path <dir> --key <hex>
 mosu config show
 mosu config set --db-path <dir>
 
+# 模型目录（多端点 + 家族分组 + 三态 + 启用名单）
+# 不需要微信数据库：模型目录与聊天数据无关
+mosu models list                              # 目录总览（家族徽标 / 可用状态 / 当前模型）
+mosu models endpoints                         # 端点列表
+mosu models use <端点ID> <模型ID>              # 切换活跃端点与模型（同步回写扁平字段）
+mosu models enabled                           # 只看当前启用名单（**只读**）
+mosu models enabled --show                    # 同上，显式写法
+mosu models enabled --pattern 'deepseek-*'    # 设启用规则（可重复 --pattern）
+mosu models enabled --pattern 'ep_x/glm-5'    # 规则两种写法：模型名 / 端点ID/模型名
+mosu models enabled --all                     # 清空名单 = 全部启用（破坏性操作，必须显式）
+mosu models probe --base-url https://api.openai.com/v1 --api-key <key>   # 探测端点支持的模型
+mosu models endpoint add ep_a --base-url https://api.deepseek.com/v1 \
+       --label 深度求索 --api-key <key> --model deepseek-chat   # 新增/更新端点
+mosu models endpoint rm ep_a                  # 删除端点
+mosu models list --format json                # 结构化输出（给脚本用）
+```
+启用名单的三态：`可用`（有 Key 且在名单里）/ `未启用`（端点通了但被名单过滤）/
+`未配置`（端点没配 Key）。**端点没 Key 时优先显示「未配置」**——
+那种情况改名单也没用，标「未启用」会误导用户。
+`mosu models use` 会同步回写 `baseUrl` / `model` 扁平字段，
+bot 与 agent 读的就是扁平字段——不回写等于没切。
+
 # MCP Server（stdio，给 AI 客户端用）
 mosu mcp serve            # 起服务，日志走 stderr，协议走 stdin/stdout
 mosu mcp selftest         # 不启服务，把每个工具跑一遍

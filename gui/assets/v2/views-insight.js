@@ -20,13 +20,79 @@
   const M = global.Mosu;
   const { ref, computed, onMounted, nextTick, watch } = Vue;
 
+  /* ======================================================================
+     阶段契约条（迭代 13 抽成独立组件）
+
+     为什么抽出来：原来这段模板**内联**在当前轮次的 <template v-else> 里，
+     而契约又会被**落盘**（~/.mosu/runs/*.json 里的 record.contract）——
+     于是出现了「落盘了但历史回看界面从不渲染它」的漂移：
+     迭代 7 的报告把这条记成 not_run，一直没人补，
+     根因不是「忘了写」，是**同一份 UI 写了两遍的必然结果**。
+
+     抽成组件后，当前轮次和历史回看**共用同一份模板**——
+     以后改契约 UI 只改一处，不可能再漂移。
+     ====================================================================== */
+  const ContractStrip = {
+    props: {
+      // 契约对象（core/pipeline.py 的 evaluate 产物）
+      contract: { type: Object, default: null },
+      // 标题：当前轮次叫「验收环节」，历史回看叫「当时的验收环节」
+      title: { type: String, default: "验收环节" },
+      // 历史回看用更紧凑的样式
+      compact: { type: Boolean, default: false },
+    },
+    template: `
+    <div v-if="contract && contract.stages && contract.stages.length"
+         class="v2-ia-contract"
+         :class="{blocked: !contract.okToProceed, compact: compact}">
+      <div class="v2-ia-steps-head">
+        <span class="v2-ia-steps-title">{{ title }}</span>
+        <span class="v2-ia-steps-count">
+          {{ contract.okToProceed ? "全部通过" : "有环节未通过" }}
+        </span>
+      </div>
+      <div class="v2-ia-contract-stages">
+        <div v-for="s in contract.stages" :key="s.id"
+             class="v2-ia-cstage"
+             :class="{bad: !s.status.okToProceed, skip: s.status.code === 'SKIPPED'}"
+             :data-stage-id="s.id"
+             :data-status-code="s.status.code"
+             :data-ok-to-proceed="String(s.status.okToProceed)">
+          <span class="v2-ia-cstage-dot"></span>
+          <span class="v2-ia-cstage-label">{{ s.label }}</span>
+          <span class="v2-ia-cstage-code">{{ s.status.label }}</span>
+          <span class="v2-ia-cstage-sum">{{ s.summary }}</span>
+        </div>
+      </div>
+      <div v-if="!contract.okToProceed" class="v2-ia-contract-warn">
+        <div v-for="s in contract.stages" :key="'w' + s.id"
+             v-show="!s.status.okToProceed && s.status.hint"
+             class="v2-ia-contract-warn-row">
+          <b>{{ s.label }}</b>：{{ s.status.hint }}
+        </div>
+      </div>
+      <div v-if="(contract.forbidden || []).some(f => f.violated)"
+           class="v2-ia-contract-forbid">
+        <div class="v2-ia-contract-forbid-title">违反的禁止项</div>
+        <div v-for="f in contract.forbidden" :key="f.id"
+             v-show="f.violated" class="v2-ia-contract-forbid-row">
+          <b>{{ f.text }}</b>
+          <span v-if="f.detail">—— {{ f.detail }}</span>
+        </div>
+      </div>
+    </div>`,
+  };
+
   const Insight = {
     props: { route: { type: String, default: "insight" } },
     // 子组件必须**在本视图里**注册，不能指望父组件（App）注册——
     // Vue 的局部组件注册是**向下**可见的：App 注册了，App 的子组件里用不了。
     // 踩过这个坑：只在上层注册 → <branch-tree> 成了未知标签，
     // **Vue 静默忽略不报错**，页面看着正常但分支树永远不出现。
-    components: { "branch-tree": global.MosuV2.BranchTree },
+    components: {
+      "branch-tree": global.MosuV2.BranchTree,
+      "contract-strip": ContractStrip,
+    },
     template: `
     <div class="v2-page v2-scroll v2-ia">
       <div class="v2-page-head">
@@ -68,6 +134,14 @@
               <button class="v2-ia-hist-del" @click.stop="delHistory(h)">删</button>
             </div>
             <div v-if="histOpenId === h.id && histDetail" class="v2-ia-hist-detail">
+              <!-- 阶段契约（迭代 13 补）：契约早就落盘了（record.contract），
+                   但历史详情区**从来没渲染过它**——
+                   于是「当时哪些环节过了、哪些没过」在回看时完全看不到，
+                   用户只能看到一段答案文本。
+                   现在与当前轮次共用同一个 <contract-strip> 组件。 -->
+              <contract-strip :contract="histDetail.contract"
+                              title="当时的验收环节" compact></contract-strip>
+
               <!-- 结算状态（迭代 11）：历史回看也要看得见
                    「这轮有没有分支的结论没进答案」——
                    只看一段答案文本，用户没法知道当时漏了什么。 -->
@@ -176,45 +250,15 @@
 
         <!-- 回答 -->
         <template v-else>
-          <!-- 阶段契约（对标 Lancer PROCESS.json）：这条回答过了哪些环节、哪些没过 -->
-          <div v-if="t.contract && t.contract.stages && t.contract.stages.length"
-               class="v2-ia-contract"
-               :class="{blocked: !t.contract.okToProceed}">
-            <div class="v2-ia-steps-head">
-              <span class="v2-ia-steps-title">验收环节</span>
-              <span class="v2-ia-steps-count">
-                {{ t.contract.okToProceed ? "全部通过" : "有环节未通过" }}
-              </span>
-            </div>
-            <div class="v2-ia-contract-stages">
-              <div v-for="s in t.contract.stages" :key="s.id"
-                   class="v2-ia-cstage"
-                   :class="{bad: !s.status.okToProceed, skip: s.status.code === 'SKIPPED'}"
-                   :data-stage-id="s.id"
-                   :data-status-code="s.status.code"
-                   :data-ok-to-proceed="String(s.status.okToProceed)">
-                <span class="v2-ia-cstage-dot"></span>
-                <span class="v2-ia-cstage-label">{{ s.label }}</span>
-                <span class="v2-ia-cstage-code">{{ s.status.label }}</span>
-                <span class="v2-ia-cstage-sum">{{ s.summary }}</span>
-              </div>
-            </div>
-            <div v-if="!t.contract.okToProceed" class="v2-ia-contract-warn">
-              <div v-for="s in t.contract.stages" :key="'w' + s.id"
-                   v-show="!s.status.okToProceed && s.status.hint"
-                   class="v2-ia-contract-warn-row">
-                <b>{{ s.label }}</b>：{{ s.status.hint }}
-              </div>
-            </div>
-            <div v-if="(t.contract.forbidden || []).some(f => f.violated)"
-                 class="v2-ia-contract-forbid">
-              <div class="v2-ia-contract-forbid-title">违反的禁止项</div>
-              <div v-for="f in t.contract.forbidden" :key="f.id"
-                   v-show="f.violated" class="v2-ia-contract-forbid-row">
-                <b>{{ f.text }}</b>
-                <span v-if="f.detail">—— {{ f.detail }}</span>
-              </div>
-            </div>
+          <!-- 阶段契约（对标 Lancer PROCESS.json）：这条回答过了哪些环节、哪些没过。
+               用独立组件（迭代 13）：与历史回看共用同一份模板，不会再漂移。 -->
+          <contract-strip :contract="t.contract"></contract-strip>
+
+          <!-- 契约判定失败（迭代 13 补）：后端会兜底成空契约、不让整轮挂掉，
+               但**必须让用户看见**——不然「没有验收信息」和「全部通过」
+               在界面上长得一模一样。 -->
+          <div v-if="t.contractFailed" class="v2-ia-contract-missing">
+            验收环节未生成（契约判定异常，本轮答案未经过环节校验）
           </div>
 
           <!-- 交叉核验：答案由谁写的、跟查数据的是不是同一个模型 -->
@@ -482,6 +526,9 @@
           branches: [],
           // 阶段契约：跑完才有值，先占位（Vue 响应式要求字段预先存在）
           contract: {},
+          // 契约判定是否失败（迭代 13）：跑完后才知道，先占 false。
+          // 跑的时候不该显示「验收环节未生成」——那是跑完之后才可能的结论。
+          contractFailed: false,
           // 子树结算状态（迭代 11）：分支跑完 ≠ 结算，
           // 没结算的分支结论没进答案，必须让用户看见
           settlement: {},
@@ -534,6 +581,13 @@
                 turn.inferences = res.inferences || [];
                 // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
                 turn.contract = res.contract || {};
+                // 契约判定失败时后端兜底成空 dict（不让整轮挂掉），
+                // 但**静默**是另一回事：用户看到「什么都没有」，
+                // 会以为「全部通过」或「这轮没有验收信息」。
+                // 这里显式标记出来，让界面能提示「验收环节没生成」。
+                turn.contractFailed = !(
+                  turn.contract && turn.contract.stages
+                  && turn.contract.stages.length);
                 // 分支树：主代理派的子代理各查各的
                 turn.branches = res.branches || [];
                 // 子树结算状态（迭代 11）：分支跑完 ≠ 结算。
@@ -649,6 +703,10 @@
             turn.inferences = res.inferences || [];
             // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
             turn.contract = res.contract || {};
+            // 同上：契约缺失要显式标记，不能静默
+            turn.contractFailed = !(
+              turn.contract && turn.contract.stages
+              && turn.contract.stages.length);
             turn.branches = res.branches || [];
             // 子树结算状态（迭代 11）
             turn.settlement = res.settlement || {};

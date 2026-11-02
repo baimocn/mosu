@@ -2177,15 +2177,13 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         """模型目录：家族分组 + 三态 + 端点列表。
 
         端点的 apiKey 不回传明文，只给 hasKey 布尔值。
+        current 字段由 core.llmconfig.load_model_catalog() 统一组装，
+        这里不再手工塞——手工塞只覆盖这一个接口，
+        别的接口（activate / endpoint）返回的 catalog 就会缺 current，
+        前端切完模型徽标就认不出来了（迭代 13 实测抓到的真 bug）。
         """
-        from core.llmconfig import load_llm_config, load_model_catalog
-        cat = load_model_catalog()
-        cfg = load_llm_config()
-        cat["current"] = {"baseUrl": cfg["baseUrl"], "model": cfg["model"],
-                          "source": cfg["source"],
-                          "activeEndpoint": cfg.get("activeEndpoint", ""),
-                          "activeModel": cfg.get("activeModel", "")}
-        return cat
+        from core.llmconfig import load_model_catalog
+        return load_model_catalog()
 
     def api_models_probe(payload: dict) -> dict:
         """探测端点支持的模型列表（GET {baseUrl}/models）。"""
@@ -2224,6 +2222,20 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         from core.llmconfig import load_model_catalog, set_enabled_models
         pats = set_enabled_models(payload.get("patterns") or [])
         return {"patterns": pats, "catalog": load_model_catalog()}
+
+    def api_models_enabled_get() -> dict:
+        """读当前启用名单（迭代 13 补）。
+
+        原来只有 POST 写、没有 GET 读，前端接不上：
+        UI 要显示「现在启用了哪些模型」，得先能读回当前值。
+
+        注意签名：**不接参数**——JSON_ROUTES 里的 GET handler
+        统一是无参的（见 api_llm_get）。带一个必填参数会直接 500。
+        """
+        from core.llmconfig import load_model_catalog
+        cat = load_model_catalog()
+        return {"patterns": list(cat.get("enabledPatterns") or []),
+                "catalog": cat}
 
     # ------------------------------------------------------ 阶段模型（迭代 8）
     def api_stage_models() -> dict:
@@ -2304,6 +2316,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
         "/api/key/selftest": (api_key_selftest, False),
         "/api/llm": (api_llm_get, False),
         "/api/models": (api_models, False),
+        "/api/models/enabled": (api_models_enabled_get, False),
         "/api/stage-models": (api_stage_models, False),
         "/api/personas": (api_personas, False),
         "/api/moments": (api_moments, True),

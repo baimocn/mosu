@@ -213,7 +213,15 @@ def set_enabled_models(patterns: list[str]) -> list[str]:
 
 
 def load_model_catalog() -> dict:
-    """组装当前配置下的完整模型目录（家族分组 + 三态 + 端点列表）。"""
+    """组装当前配置下的完整模型目录（家族分组 + 三态 + 端点列表 + current）。
+
+    **current 在这里统一组装**（而不是只在 /api/models 接口里手工塞）：
+    前端 activate() 会用返回的 catalog 整体替换本地状态，
+    如果某个接口返回的 catalog 少了 current 键，
+    切换模型后「当前模型」那枚家族徽标就退回 "?"——
+    用户看到的是「刚点的模型，徽标却认不出来」。
+    所以凡是返回 catalog 的接口都必须过这里，字段天然一致。
+    """
     from core.dataset import load_keyvault
     from core.model_catalog import build_catalog
     file_cfg = load_keyvault().get("llm") or {}
@@ -227,7 +235,19 @@ def load_model_catalog() -> dict:
                 active_ep, active_model = e["id"], e["models"][0]
                 break
     patterns = file_cfg.get("enabledModels") or []
-    return build_catalog(eps, patterns, active_ep, active_model)
+    cat = build_catalog(eps, patterns, active_ep, active_model)
+    # 当前生效的模型（前端「当前模型」条的数据源）。
+    # 放在这里而不是各接口里，是为了让**所有**返回 catalog 的接口
+    # 字段完全一致——前端不用管是哪个接口来的。
+    cfg = load_llm_config()
+    cat["current"] = {"baseUrl": cfg["baseUrl"], "model": cfg["model"],
+                      "source": cfg["source"],
+                      "activeEndpoint": cfg.get("activeEndpoint", ""),
+                      "activeModel": cfg.get("activeModel", "")}
+    # 启用名单：前端要显示「当前启用了哪些模型」并能编辑，
+    # 没有这个字段 UI 入口无从读起（迭代 13 补上）。
+    cat["enabledPatterns"] = [str(p) for p in (patterns or [])]
+    return cat
 
 
 # --------------------------------------------------------------------------

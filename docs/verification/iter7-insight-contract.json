@@ -22,14 +22,36 @@
   "not_run": [
     "每阶段绑定不同模型（Lancer 的 stage.model + handoff 的 distinct_configured_model）——本轮只抄契约层，模型分工留给迭代 8",
     "CLI 侧（mosu insight 之类）输出阶段契约——本轮只做了 GUI 入口与 core 模块，CLI 未暴露契约",
-    "契约判定失败时的前端表现——已用 except 兜底，但未在真机里构造「pipeline.evaluate 抛异常」验证界面不白屏",
     "阶段带在浅色主题下的配色对比度——本轮只在暗色主题下验过",
     "Windows 显示缩放 150% 下的阶段带排版——只验了 100% 缩放",
-    "契约判定在 231k 条消息全量库上的耗时——本次真机跑的是单会话小范围，未做全量压测",
-    "多代理分支（delegate_tasks）场景下的阶段归类——子代理的工具调用会混进主轨迹，本轮未构造多分支真实场景",
-    "落盘历史回看界面上展示阶段契约——contract 已写进落盘文件，但历史详情面板还没渲染它",
-    "forbidden 第 4 条（引用具体话语但没读过原文）的召回率——判定逻辑有单测，但未在真实语料上评估误报率"
+    "契约判定在 231k 条消息全量库上的耗时——本次真机跑的是单会话小范围，未做全量压测"
   ],
+  "resolved_in_iter13": [
+    {
+      "item": "契约判定失败时的前端表现",
+      "how": "迭代 13 把判定逻辑抽成模块级 agent_engine._evaluate_contract()（原来埋在 run() 的 try/except 里，端到端根本触达不到）。端到端真打坏 pipeline.evaluate 后调产品这份函数，验兜底结构带 error + stages 为空 + okToProceed=False；再在真浏览器里 mock 空契约，验页面不白屏、答案正文照样显示、界面显式提示「验收环节未生成」、契约带不渲染空壳、无 JS 错误。",
+      "evidence": "tests/e2e/lancer/e2e_iter13b.py（B1 组 9 断言）",
+      "also_changed": "兜底不再用空 dict {}——空契约跟「这轮没做判定」在界面上长得一样，用户会误以为答案经过校验。改成带 error 的结构，前端显式提示。"
+    },
+    {
+      "item": "落盘历史回看界面上展示阶段契约",
+      "how": "契约早就落盘（record.contract），但历史详情面板从没渲染过它——根因是同一份 UI 内联写了两遍。迭代 13 抽成 ContractStrip 组件，当前轮次与历史回看共用同一份模板，从结构上杜绝漂移。端到端真落一条带契约的记录 → 真浏览器开历史面板 → 点开 → 验契约带渲染、阶段行与落盘一致、未通过阶段带 bad 标记、禁止项渲染、标题为「当时的验收环节」。",
+      "evidence": "tests/e2e/lancer/e2e_iter13b.py（B2 组 8 断言）",
+      "also_changed": "tests/e2e/lancer/e2e_iter7.py 里写死「4 阶段 / 4 条 forbidden」的断言改成跟 core.pipeline.STAGES / FORBIDDEN 走——迭代 8/10 已经加到 5 阶段 / 6 条，那条回归测试其实一直在失效（没人跑它所以没人发现）。"
+    },
+    {
+      "item": "多代理分支（delegate_tasks）场景下的阶段归类",
+      "how": "迭代 13 抓到一个真 bug：阶段判定只看主代理的工具调用。多代理委派时主代理只调 delegate_tasks（归到 orchestrate 阶段），数据是子代理查的 → probe 判 MISSING、read 判 SKIPPED、okToProceed=False → 一次成功的多代理回答被判成「没通过」。判据改成「调用过 **或** 有对应证据」。端到端 8 断言，含反向验证「委派了但啥也没查到 → 仍判 MISSING，门禁没放松」。",
+      "evidence": "tests/e2e/lancer/e2e_iter13b.py（B4 组 8 断言）"
+    },
+    {
+      "item": "forbidden 第 4 条的召回率",
+      "how": "用真库真工具（read_timeline / chat_stats）收集 48 条真实 quote 证据 + 6 条 stat 证据，构造 A/B/C/D 四类样本对照判定全对，并量化盲区（读过原文但引号内容是编的 → 不报错）与触发率（4/9）。",
+      "evidence": "tests/e2e/lancer/e2e_iter13b.py（B3 组 9 断言）",
+      "known_blind_spot": "第 4 条只判「有没有引号」+「有没有 quote 证据」，不校验引号内容是否真在证据里——伪造引用查不出来。这是**已知漏报**，不是本轮新引入的。"
+    }
+  ],
+
   "evidence": [
     "core/pipeline.py",
     "core/agent_engine.py",

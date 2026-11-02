@@ -399,7 +399,7 @@ python .cache/audit/e2e_mcp_all.py    # 12 个工具 + 错误信息可读性
 ## 项目结构
 
 ```
-cli/mosu.py            CLI 入口（13 组命令）
+cli/mosu.py            CLI 入口（22 组命令）
 core/
   sqlcipher4.py        SQLCipher 4 解密核心（页布局/密钥派生/HMAC 校验）
   dataset.py           统一数据层：定位账号 → 快照 → 解密 → 跨分片索引 → 查询
@@ -522,7 +522,7 @@ You are responsible for your own keys and for using exported data lawfully.
 ### Project layout
 
 ```
-cli/mosu.py     CLI entry (16 command groups)
+cli/mosu.py     CLI entry (22 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
 tests/          offline test suite (1296 cases)

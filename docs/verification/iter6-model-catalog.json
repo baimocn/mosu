@@ -20,16 +20,41 @@
     { "text": "反向验证：6 条纪律逐条破坏，破坏实现后测试真的会红", "level": "L2" }
   ],
   "not_run": [
-    "未配置端点的模型列表探测（GET /models）——本轮探测逻辑已实现但只测了错误分支，没连真实 OpenAI 兼容端点跑通成功分支",
-    "启用名单（enabledModels）的 UI 入口——后端接口 /api/models/enabled 已实现，前端未接入，无人能从界面设置",
     "模型选择器在浅色主题下的配色对比度——本轮只在暗色主题下验过",
     "Windows 显示缩放 150% 下的家族徽标与徽章排版——只验了 100% 缩放",
     "端点数超过 9 个、或模型数超过 200 个时的列表性能与滚动——未构造大数据量",
-    "同一模型 id 挂在两个端点下时前端徽标的归属判定——后端按活跃端点精确匹配，前端反查逻辑已实现但未在真机端到端里构造该场景",
-    "切换模型后 bot/agent 端到端用新模型回答一次真实提问——只验了配置读取生效，未发真实推理请求比对答案风格",
-    "删除端点后若有进程正持有该端点的 LlmClient 连接——未构造并发场景",
-    "墨溯 CLI 侧（mosu config / mosu llm 之类）的模型目录命令——本轮只做了 GUI 入口，CLI 未加"
+    "删除端点后若有进程正持有该端点的 LlmClient 连接——未构造并发场景"
   ],
+  "resolved_in_iter13": [
+    {
+      "item": "未配置端点的模型列表探测（GET /models）成功分支",
+      "how": "连本机真实 OpenAI 兼容网关（8787 = WorkBuddy Console，带真 Key）跑通成功分支，不 mock。先验凭据本身有效（真 GET /models 返回 38 个模型），再真调 core.model_catalog.probe_models()，验墨溯探测结果与网关原始列表同集；接口层 POST /api/models/probe 也真跑通。",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A1 组 5 断言）"
+    },
+    {
+      "item": "启用名单（enabledModels）的 UI 入口",
+      "how": "迭代 13 补上完整链路：后端加 GET /api/models/enabled 读接口（原来只有 POST 写、没有 GET 读，前端接不上）、catalog 带 enabledPatterns 字段；前端加 textarea + 「保存名单」/「全部启用」按钮。端到端真浏览器填 → 保存 → 验配置文件真写入 → 验 GET 读回 → 验模型三态真变（被过滤的变「未启用」）→ 验前端 disabled 属性 → 点「全部启用」验清空。",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A2 组 9 断言）"
+    },
+    {
+      "item": "同一模型 id 挂在两个端点下时前端徽标的归属判定",
+      "how": "构造两个端点都挂 deepseek-chat 的场景，**在浏览器里点** ep_b 的那个来激活（用 HTTP 脚本激活测不到前端状态更新——那是测试设计错误不是产品 bug），验徽标显示 DS、当前模型条显示「端点B · deepseek-chat」、列表两条并存且只有 ep_b 打勾。",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A4 组 7 断言）",
+      "bug_found": "激活接口返回的 catalog 缺 current 字段 → 前端用返回值整体替换本地状态后，当前模型徽标退回 \"?\"。修法：current 收敛到 core.llmconfig.load_model_catalog() 统一组装，所有返回 catalog 的接口字段天然一致。"
+    },
+    {
+      "item": "切换模型后 bot/agent 端到端用新模型回答一次真实提问",
+      "how": "真构造 LlmClient() 读 GUI 刚切的配置 → 真 chat() 发一条（真网关返回，~2 秒）→ 验模型名进了请求体。额外验了墨溯铁律「env 优先级高于 GUI 设置」。",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A3 组 6 断言）",
+      "bug_found": "e2e_iter7.py 的断言还写死「4 阶段 / 4 条 forbidden」，而迭代 8/10 已加到 5 阶段 / 6 条 → 那条回归测试一直在失效。改成跟 core.pipeline.STAGES / FORBIDDEN 走。"
+    },
+    {
+      "item": "墨溯 CLI 侧的模型目录命令",
+      "how": "新增 `mosu models` 子命令组（迭代 6 只做了 GUI 入口，CLI 零命令 → 写脚本/跑 CI/派活通道既看不见也切不了模型）。子命令：list（目录总览）/ endpoints（端点列表）/ use（切换）/ enabled（启用名单）/ probe（探测）/ endpoint add|rm（端点增删）。端到端 42 断言全绿，含：目录总览真出家族分组与三态、切换后扁平字段同步回写（bot/agent 读的就是扁平字段，不回写等于没切）、启用名单真写且三态真变、--all 显式清空（不带 --all 的空跑是只读，不误清）、端点增删后目录同步、--format json 输出是纯 JSON、没密钥库时也能跑（模型目录与微信数据无关）、CLI 改完 GUI 立刻读到（同一份配置）。",
+      "evidence": "tests/e2e/lancer/e2e_iter13c.py（C 组 42 断言）"
+    }
+  ],
+
   "evidence": [
     "tests/e2e/lancer/e2e_iter6.py",
     "tests/test_model_catalog.py",

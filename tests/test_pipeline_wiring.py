@@ -73,10 +73,18 @@ class TestAgentEngineWiring(unittest.TestCase):
 
         反了的话，契约会拿「提示文本里的数字」当答案的数字来自证，
         永远判成「有出处」——自己给自己签通过。
+
+        迭代 13：判定逻辑搬进了模块级 _evaluate_contract()（为了让端到端
+        能真打坏它再验兜底），所以「调 evaluate 的位置」和「拼审计的位置」
+        不再在同一个函数里。**不能比源文本的下标**——
+        那样断言的是「代码长什么样」，不是「顺序对不对」。
+        真正要锁的是**运行顺序**：契约判定发生在审计提示之前。
+        所以这里找的是两处**调用点**在 run() 里的相对位置。
         """
         src = _read("core/agent_engine.py")
-        i_eval = src.index("pipeline.evaluate(")
-        i_audit = src.index("run.answer = _audit_numbers(run)")
+        run_body = src[src.index("def run(self, question"):src.index("def _compose(")]
+        i_eval = run_body.index("run.contract = _evaluate_contract(run)")
+        i_audit = run_body.index("run.answer = _audit_numbers(run)")
         self.assertLess(i_eval, i_audit,
                         "契约判定必须在审计提示之前（否则会自证）")
 
@@ -87,12 +95,23 @@ class TestAgentEngineWiring(unittest.TestCase):
         self.assertIn("_unsourced_numbers(run)", src)
 
     def test_contract_failure_does_not_break_run(self):
-        """契约判定抛异常不能连带整轮失败。"""
+        """契约判定抛异常不能连带整轮失败，且**不能静默**。
+
+        迭代 13 改了两处：
+        1. 判定逻辑搬进模块级 _evaluate_contract()（端到端要能真打坏它）
+        2. 兜底不再用空 dict `{}`——空契约跟「这轮没做契约判定」在界面上
+           长得一模一样，用户会以为答案经过校验。改成带 error 的结构。
+        所以断言也跟着改：查的是**兜底结构带 error**，不是查字面量 `{}`。
+        """
         src = _read("core/agent_engine.py")
-        idx = src.index("pipeline.evaluate(")
-        block = src[max(0, idx - 400):idx + 600]
+        idx = src.index("def _evaluate_contract(")
+        block = src[idx:idx + 1600]
         self.assertIn("except Exception", block)
-        self.assertIn('run.contract = {}', block)
+        # 兜底必须带 error（可诊断）+ stages 为空（前端不画空壳）
+        self.assertIn('"error"', block)
+        self.assertIn('"stages": []', block)
+        # 且不能是「run.contract = {}」这种静默兜底
+        self.assertNotIn("run.contract = {}", block)
 
     def test_audit_numbers_still_appends_note(self):
         """既有行为不能丢：审计提示仍要拼在答案后面。"""
@@ -184,11 +203,17 @@ class TestCssWiring(unittest.TestCase):
         self.assertIn(".v2-ia-cstage.skip .v2-ia-cstage-dot", css)
 
     def test_summary_uses_mono_font(self):
-        """机械摘要用等宽字体——它是标识与计数，不是叙述。"""
+        """机械摘要用等宽字体——它是标识与计数，不是叙述。
+
+        锚定**基规则**（行首就是 .v2-ia-cstage-sum），
+        不是任何含这个类名的选择器——否则哪天加了个
+        `.v2-ia-contract.compact .v2-ia-cstage-sum` 修饰符，
+        第一个匹配就变成修饰符，检查的就不再是基规则了。
+        """
         css = _read("gui/assets/v2/app.css")
-        idx = css.index(".v2-ia-cstage-sum")
-        block = css[idx:idx + 300]
-        self.assertIn("font-mono", block)
+        m = re.search(r"^\.v2-ia-cstage-sum\s*\{(.*?)\}", css, re.S | re.M)
+        self.assertIsNotNone(m, "找不到 .v2-ia-cstage-sum 基规则")
+        self.assertIn("font-mono", m.group(1))
 
 
 class TestRunsWiring(unittest.TestCase):

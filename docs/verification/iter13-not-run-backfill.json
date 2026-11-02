@@ -1,0 +1,98 @@
+{
+  "title": "迭代 13：补迭代 6/7 报告的 not_run 项（多为功能缺口）+ 抓 5 个真 bug",
+  "level": "L5",
+  "date": "2026-11-04",
+  "commit": "PENDING",
+  "claims": [
+    { "text": "启用名单有 UI 入口了：后端加 GET /api/models/enabled 读接口（原来只有 POST 写、没有 GET 读，前端接不上），catalog 带 enabledPatterns；前端加 textarea + 「保存名单」/「全部启用」按钮", "level": "L5" },
+    { "text": "CLI 侧有模型目录命令了：新增 mosu models 子命令组（list / endpoints / use / enabled / probe / endpoint add|rm），写脚本、跑 CI、派活通道不再只能点界面", "level": "L5" },
+    { "text": "CLI 切模型后扁平字段同步回写（baseUrl / model），bot/agent 的 LlmClient 读的就是扁平字段——不回写等于没切", "level": "L5" },
+    { "text": "CLI 的 mosu models 不依赖微信数据库：没 db-path / key 也能跑（模型目录与微信数据毫无关系，不该被数据库卡住）", "level": "L5" },
+    { "text": "CLI 与 GUI 读同一份配置：CLI 改完启用名单，GUI 的 /api/models 立刻读到（验过不是两份配置打架）", "level": "L5" },
+    { "text": "契约判定失败不再静默：兜底成带 error 的结构 + 前端显式提示「验收环节未生成」；空契约跟「这轮没做判定」在界面上长得一样，用户会误以为答案经过校验", "level": "L5" },
+    { "text": "契约判定逻辑抽成模块级 agent_engine._evaluate_contract()，端到端能真打坏产品代码再验兜底（原来埋在 run() 的 try/except 里，外部根本触达不到）", "level": "L5" },
+    { "text": "历史回看真渲染阶段契约：抽出 ContractStrip 组件，当前轮次与历史回看共用同一份模板——原来同一份 UI 内联写了两遍，必然漂移", "level": "L5" },
+    { "text": "多代理分支下阶段归类不再误判：判据从「主代理调过某工具吗」改成「调用过 **或** 有对应证据」——委派是合法取证路径", "level": "L5" },
+    { "text": "门禁没被放松：反向验证「委派了但啥也没查到」→ probe 仍判 MISSING、okToProceed=False", "level": "L5" },
+    { "text": "forbidden 第 4 条在真实语料上的表现已量化：真库真工具收 48 条 quote 证据 + 6 条 stat 证据，四类样本判定全对，触发率 4/9", "level": "L5" },
+    { "text": "连真实 OpenAI 兼容网关跑通了模型列表探测的成功分支（迭代 6 只测了错误分支）：墨溯探测结果与网关原始列表同集", "level": "L5" },
+    { "text": "同一模型 id 挂在两个端点下时前端徽标归属正确：在浏览器里点 ep_b 激活 → 徽标 DS、当前模型条显示「端点B · deepseek-chat」、只有 ep_b 打勾", "level": "L5" },
+    { "text": "切换模型后真发了一次推理请求（真网关，~2 秒），并验了墨溯铁律「env 优先级高于 GUI 设置」", "level": "L5" },
+    { "text": "e2e_iter7.py 的过期断言已修：原来写死「4 阶段 / 4 条 forbidden」，而迭代 8/10 已加到 5 阶段 / 6 条 → 那条回归测试一直在失效（没人跑它所以没人发现）", "level": "L2" },
+    { "text": "全量回归 1279 passed / 17 skipped / 0 failed；本轮三组端到端 35 + 38 + 42 = 115 条断言全绿", "level": "L5" }
+  ],
+  "bugs_found": [
+    {
+      "id": "iter13-bug-1",
+      "symptom": "切换模型后「当前模型」徽标退回 ?",
+      "root_cause": "api_models() 手工塞 current，而 activate / endpoint_save / enabled 返回的 catalog 来自 load_model_catalog()（不含 current）→ 前端用返回值整体替换本地状态后字段丢了",
+      "fix": "把 current 组装收敛进 core.llmconfig.load_model_catalog()，所有返回 catalog 的接口字段天然一致",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A4 组）"
+    },
+    {
+      "id": "iter13-bug-2",
+      "symptom": "bug-1 一直没人看见",
+      "root_cause": "mode=\"bar\" 从未在任何页面挂载（只有 settings.js 挂了 mode=\"full\"）→ 那套「当前模型徽标」代码在真机上从来没渲染过一次",
+      "fix": "full 模式也显示当前模型条（作为状态指示，不响应点击展开）",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A4 组）"
+    },
+    {
+      "id": "iter13-bug-3",
+      "symptom": "e2e_iter7.py 的回归测试一直在失败",
+      "root_cause": "断言写死 len(stages) == 4 / len(forb) == 4，而迭代 8/10 已加到 5 阶段 / 6 条 forbidden；没人跑它所以没人发现。一条失效的回归测试比没有更糟——给人「已覆盖」的错觉",
+      "fix": "改成从 core.pipeline.STAGES / FORBIDDEN 读，不写死数字",
+      "evidence": "tests/e2e/lancer/e2e_iter13.py（A5 组）"
+    },
+    {
+      "id": "iter13-bug-4",
+      "symptom": "契约判定失败完全静默",
+      "root_cause": "except: run.contract = {} 吞掉异常 → 「契约判定炸了」和「这轮没做契约判定」在界面上完全一样",
+      "fix": "兜底成带 error 的结构 + 前端显式提示「验收环节未生成」；判定抽成模块级 _evaluate_contract() 供端到端真打坏",
+      "evidence": "tests/e2e/lancer/e2e_iter13b.py（B1 组）"
+    },
+    {
+      "id": "iter13-bug-5",
+      "symptom": "多代理委派时一次成功的回答被判成「没通过」",
+      "root_cause": "阶段判定只看主代理的工具调用。多代理场景下主代理只调 delegate_tasks（归到 orchestrate 阶段），数据是子代理查的 → probe 判 MISSING、read 判 SKIPPED、okToProceed=False。原判据默认「主代理干所有活」，那是单代理时代的假设",
+      "fix": "判据改成「调用过 **或** 有对应证据」——阶段关心的是「有没有拿到东西」，不是「谁拿的」；反向验证门禁没放松",
+      "evidence": "tests/e2e/lancer/e2e_iter13b.py（B4 组）"
+    },
+    {
+      "id": "iter13-bug-6",
+      "symptom": "C 组端到端第一条失败：mosu models enabled 空跑会清掉启用名单",
+      "root_cause": "我写了「破坏性操作必须显式」的原则，但实现上「不带 --all 的空跑」仍然走 set_enabled_models([])",
+      "fix": "既没给 --pattern 也没给 --all 时走只读分支（只显示当前名单）；--all 才是显式清空",
+      "evidence": "tests/e2e/lancer/e2e_iter13c.py（C3.10）"
+    }
+  ],
+  "test_design_lessons": [
+    "A4 第一版失败是我的测试设计错了：用 HTTP 脚本激活 ep_b → 服务端变了但前端 catalog 不知道 → 徽标显示的是旧的 ep_a。要测「前端拿到新 catalog 后归属判定对不对」，必须**在浏览器里点**。测试失败不总是产品的错，但每次都得先判清楚是哪边的错",
+    "C3.3 第一版失败也是测试构造错了：加的两个端点都没配 Key → 三态判定按优先级全落到「未配置」（STATE_UNCONFIGURED 在名单过滤之前）。这才是对的——端点没 Key 时标「未启用」会误导用户去改名单（改了也没用）",
+    "B3.1/B3.2 第一版收集到 0 条证据：ds.sessions() 返回的字段名是 sessionId，脚本取的是 username/id → _resolve 找不到会话 → 工具返回空证据。**空数据不能拿来判召回率**——症状看起来像门禁太严，其实是测试自己没拿到数据"
+  ],
+  "not_run": [
+    "浅色主题下的模型选择器与契约条配色对比度——仍未验",
+    "Windows 显示缩放 150% 下的家族徽标与阶段带排版——仍未验",
+    "端点数超过 9 个、或模型数超过 200 个时的列表性能与滚动——仍未构造大数据量",
+    "删除端点后若有进程正持有该端点的 LlmClient 连接——仍未构造并发场景",
+    "契约判定在 231k 条消息全量库上的耗时——仍未做全量压测",
+    "CLI 侧（mosu insight 之类）输出阶段契约——仍未暴露（洞察的契约仍只在 GUI 与 API 侧可见）",
+    "每阶段绑定不同模型（Lancer 的 stage.model + handoff 的 distinct_configured_model）——迭代 8 已做角色分工，但每阶段独立模型绑定仍未做"
+  ],
+  "evidence": [
+    "tests/e2e/lancer/e2e_iter13.py",
+    "tests/e2e/lancer/e2e_iter13b.py",
+    "tests/e2e/lancer/e2e_iter13c.py",
+    "tests/e2e/lancer/e2e_iter7.py",
+    "core/llmconfig.py",
+    "core/pipeline.py",
+    "core/agent_engine.py",
+    "core/model_catalog.py",
+    "cli/mosu.py",
+    "gui/server.py",
+    "gui/assets/v2/views-models.js",
+    "gui/assets/v2/views-insight.js",
+    "gui/assets/v2/app.css",
+    "docs/benchmark-lancer.md"
+  ]
+}

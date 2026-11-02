@@ -740,22 +740,7 @@ class InsightAgent:
         #
         # 契约判定也**不改变**答案：它只产出一个可核验的结构（stages/gates），
         # 答案里该提醒什么仍由 _audit_numbers 决定。两件事分开做、各管各的。
-        try:
-            from core import pipeline
-            run.contract = pipeline.evaluate({
-                "steps": run.steps,
-                "evidence": run.evidence,
-                "answer": run.answer,
-                "toolNumbers": run.tool_numbers,
-                "branchNumbers": run.branch_numbers,
-                "branches": run.branches,
-                "unsourcedNumbers": _unsourced_numbers(run),
-                "modelRouting": run.model_routing,
-            })
-        except Exception:
-            # 契约判定失败**不能连带整轮失败**——答案已经算出来了。
-            # 契约是附加的验收信息，不是主链路。
-            run.contract = {}
+        run.contract = _evaluate_contract(run)
 
         # ---- 显式接受标记（迭代 11）
         #
@@ -1154,6 +1139,43 @@ def _is_structural(text: str, n: str) -> bool:
         return True
     # 纯数字被引号包起来当编号（如「第 3 段」）——不豁免，保守报
     return False
+
+
+def _evaluate_contract(run: AgentRun) -> dict:
+    """跑阶段契约判定，失败时兜底成带 error 的结构。
+
+    为什么单独抽成模块级函数（迭代 13）：
+    原来这段 try/except 埋在 AgenticRunner.run() 里，
+    外部**根本触达不到**——想测「契约判定炸了会怎样」，
+    只能在外面临时复刻一遍逻辑，那测的是复刻品，不是产品代码。
+    抽出来之后，端到端能直接把 pipeline.evaluate 打坏、
+    调**产品这份**函数，验真正的兜底行为。
+
+    失败时**不能连带整轮失败**：答案已经算出来了，
+    契约是附加的验收信息，不是主链路。
+    但也**不能静默**（迭代 13 补）：原来这里直接吞掉异常，
+    结果是「契约判定炸了」和「这轮没做契约判定」在界面上完全一样——
+    用户以为答案经过校验，其实没有。
+    现在兜底成带 error 的结构，前端能显示「验收环节未生成」。
+    """
+    try:
+        from core import pipeline
+        return pipeline.evaluate({
+            "steps": run.steps,
+            "evidence": run.evidence,
+            "answer": run.answer,
+            "toolNumbers": run.tool_numbers,
+            "branchNumbers": run.branch_numbers,
+            "branches": run.branches,
+            "unsourcedNumbers": _unsourced_numbers(run),
+            "modelRouting": run.model_routing,
+        })
+    except Exception as e:                       # noqa: BLE001
+        return {
+            "error": f"{type(e).__name__}: {e}",
+            "stages": [], "gates": [], "forbidden": [],
+            "okToProceed": False,
+        }
 
 
 def _unsourced_numbers(run: AgentRun) -> list[str]:

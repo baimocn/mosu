@@ -23,8 +23,14 @@
     },
     template: `
     <div class="v2-mp" :class="'mode-' + mode">
-      <!-- 当前模型条 -->
-      <div class="v2-mp-current" v-if="mode==='bar'">
+      <!-- 当前模型条
+           注意：**full 模式也显示**（迭代 13 改）。
+           原来只在 bar 模式显示，而 bar 模式压根没在任何页面挂载
+           （只有 settings.js 挂了 mode="full"）→
+           这套「当前模型徽标」代码从来没在真机上渲染过一次，
+           于是「切换后徽标认不出当前模型」这个 bug 一直没人看见。
+           用户在设置页选模型时，最需要知道的就是「现在在用哪个」。 -->
+      <div class="v2-mp-current" v-if="mode==='bar' || currentLabel">
         <button class="v2-mp-current-btn" @click="open = !open"
                 :title="currentTitle">
           <span class="v2-mp-current-badge"
@@ -138,6 +144,23 @@
               <span class="v2-hint" v-if="probeHint">{{ probeHint }}</span>
             </div>
           </div>
+
+          <!-- 启用名单（迭代 13 补：原来后端接口有、前端零入口，
+               没人能从界面设置「只启用哪几个模型」）。
+               留空 = 全部启用。支持 * / provider/* / provider/model 三种写法。 -->
+          <div class="v2-mp-enabled">
+            <div class="v2-mp-enabled-head">
+              <span>启用名单</span>
+              <span class="v2-hint">留空 = 全部启用。支持 deepseek-* 、 ep_x/* 、 ep_x/deepseek-chat</span>
+            </div>
+            <textarea class="v2-input" v-model="enabledText" rows="3"
+                      placeholder="留空即全部启用&#10;deepseek-*&#10;ep_ab12/glm-5"></textarea>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button class="v2-btn primary" :disabled="busy" @click="saveEnabled">保存名单</button>
+              <button class="v2-btn ghost" :disabled="busy" @click="clearEnabled">全部启用</button>
+              <span class="v2-hint" v-if="enabledHint">{{ enabledHint }}</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>`,
@@ -151,6 +174,9 @@
       const editingId = ref("");
       const probeHint = ref("");
       const form = ref({ label: "", baseUrl: "", apiKey: "", modelsText: "" });
+      // 启用名单（迭代 13 补）
+      const enabledText = ref("");
+      const enabledHint = ref("");
 
       const families = computed(() => (catalog.value && catalog.value.families) || []);
       const endpoints = computed(() => (catalog.value && catalog.value.endpoints) || []);
@@ -218,8 +244,53 @@
       async function load() {
         try {
           const d = await M.api.get("/api/models");
-          if (d && !d.error) catalog.value = d;
+          if (d && !d.error) {
+            catalog.value = d;
+            // 启用名单跟着 catalog 一起带回来（迭代 13）：
+            // 后端把 enabledPatterns 放进 catalog，前端一次 GET 就拿到。
+            enabledText.value = (d.enabledPatterns || []).join("\n");
+          }
         } catch (e) { /* 忽略 */ }
+      }
+
+      // 保存启用名单（迭代 13）。
+      //
+      // 为什么按行拆而不是按逗号：模型 id 里可能带逗号吗？不会，
+      // 但**用户习惯按行粘贴**（从文档里复制一行一个），
+      // 按行拆最符合直觉；逗号分隔的也一并接受，两种写法混用不会出错。
+      function _parsePatterns(text) {
+        const out = [];
+        for (const line of String(text || "").split(/[\n,]/)) {
+          const s = line.trim();
+          if (s) out.push(s);
+        }
+        return out;
+      }
+
+      async function saveEnabled() {
+        busy.value = true;
+        enabledHint.value = "";
+        try {
+          const pats = _parsePatterns(enabledText.value);
+          const d = await M.api.post("/api/models/enabled", { patterns: pats });
+          if (d.error) throw new Error(d.error);
+          if (d.catalog) catalog.value = d.catalog;
+          enabledText.value = (d.patterns || []).join("\n");
+          enabledHint.value = pats.length
+            ? "已启用 " + pats.length + " 条规则"
+            : "已恢复为全部启用";
+          M.toast.ok(enabledHint.value);
+        } catch (e) {
+          enabledHint.value = "保存失败：" + e.message;
+          M.toast.err(enabledHint.value);
+        } finally {
+          busy.value = false;
+        }
+      }
+
+      async function clearEnabled() {
+        enabledText.value = "";
+        await saveEnabled();
       }
 
       async function activate(m) {
@@ -322,6 +393,8 @@
         currentLabel, famId, query, open, busy, showForm, editingId, form,
         probeHint, badgeStyle, isActive, activate, probe, saveEndpoint,
         removeEndpoint, editEndpoint, resetForm, load, M,
+        // 启用名单（迭代 13 补）——模板里调了必须在 setup 里 return
+        enabledText, enabledHint, saveEnabled, clearEnabled,
       };
     },
   };

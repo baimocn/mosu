@@ -78,9 +78,13 @@ class TestAgentEngineWiring(unittest.TestCase):
         self.assertIn("不构成交叉核验", body)
 
     def test_model_routing_passed_to_contract(self):
-        """契约判定必须拿到 modelRouting（否则 compose 阶段永远 SKIPPED）。"""
+        """契约判定必须拿到 modelRouting（否则 compose 阶段永远 SKIPPED）。
+
+        迭代 13：判定逻辑搬进了模块级 _evaluate_contract()，
+        所以「传参」这件事发生在那个函数里，不在 run() 里。
+        """
         src = _read("core/agent_engine.py")
-        body = src[src.index("def run(self, question"):src.index("def _compose(")]
+        body = src[src.index("def _evaluate_contract("):]
         self.assertIn('"modelRouting": run.model_routing', body)
 
     def test_evidence_pack_collected_from_tool_results(self):
@@ -104,10 +108,16 @@ class TestAgentEngineWiring(unittest.TestCase):
         self.assertLess(i_compose, i_audit)
 
     def test_contract_before_audit_still_holds(self):
-        """迭代 7 的顺序铁律不能被迭代 8 破坏。"""
+        """迭代 7 的顺序铁律不能被迭代 8 破坏。
+
+        迭代 13：判定搬进 _evaluate_contract()，所以比的是 run() 里
+        **调用点**的相对位置（契约判定在审计提示之前），
+        不是源文本里函数定义的下标。
+        """
         src = _read("core/agent_engine.py")
-        i_eval = src.index("pipeline.evaluate(")
-        i_audit = src.index("run.answer = _audit_numbers(run)")
+        run_body = src[src.index("def run(self, question"):src.index("def _compose(")]
+        i_eval = run_body.index("run.contract = _evaluate_contract(run)")
+        i_audit = run_body.index("run.answer = _audit_numbers(run)")
         self.assertLess(i_eval, i_audit)
 
 

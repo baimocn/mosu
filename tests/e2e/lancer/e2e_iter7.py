@@ -200,11 +200,20 @@ def main():
               f"gates={len(contract.get('gates') or [])}")
 
         stages = contract.get("stages") or []
-        check(results, "契约含四个阶段", len(stages) == 4,
-              f"{[s.get('id') for s in stages]}")
+        # 阶段数**从代码定义读**，不写死数字。
+        #
+        # 为什么：迭代 8 加了 compose 阶段，这里原来还写着 == 4，
+        # 于是这条端到端**一直在失败**（没人跑它所以没人发现）——
+        # 一条失效的回归测试比没有更糟：它给人「已覆盖」的错觉。
+        # 改成跟 core.pipeline.STAGES 走，以后再加阶段也不会再失效。
+        from core.pipeline import FORBIDDEN, STAGES
+        expect_stage_ids = [s["id"] for s in STAGES]
+        check(results, "契约阶段数与 core.pipeline.STAGES 一致",
+              len(stages) == len(STAGES),
+              f"{len(stages)} vs 定义 {len(STAGES)}")
         check(results, "阶段 id 与契约定义一致",
-              [s.get("id") for s in stages] == ["scope", "probe", "read", "verify"],
-              str([s.get("id") for s in stages]))
+              [s.get("id") for s in stages] == expect_stage_ids,
+              f"{[s.get('id') for s in stages]} vs 定义 {expect_stage_ids}")
 
         print("\n[3] 状态码带机器可判的推进条件")
         check(results, "顶层有 okToProceed 且是布尔",
@@ -243,7 +252,10 @@ def main():
 
         print("\n[6] forbidden 清单 —— 每条都有判定结果")
         forb = contract.get("forbidden") or []
-        check(results, "禁止项都判了", len(forb) == 4, f"{len(forb)} 条")
+        # 同上：条数从代码定义读，不写死。
+        check(results, "禁止项条数与 core.pipeline.FORBIDDEN 一致",
+              len(forb) == len(FORBIDDEN),
+              f"{len(forb)} vs 定义 {len(FORBIDDEN)}")
         check(results, "每条都有 id/text/violated",
               all(("id" in f and "text" in f and "violated" in f) for f in forb))
         check(results, "有违规的必须给 detail",
@@ -291,17 +303,18 @@ def main():
                 # 所以「前端忘了 turn.contract = res.contract」它测不出来。
                 # 这里走真链路：真后端 → 真 HTTP → 真前端代码路径。
                 check(results, "阶段带内容与后端契约一致（非空、非占位）",
-                      pg.locator(".v2-ia-cstage").count() == 4
+                      pg.locator(".v2-ia-cstage").count() == len(STAGES)
                       and len(pg.locator(".v2-ia-cstage-sum").first.inner_text()) > 5,
                       pg.locator(".v2-ia-cstage-sum").first.inner_text()
                       if pg.locator(".v2-ia-cstage-sum").count() else "(无)")
-                check(results, "阶段带含四个阶段行",
-                      pg.locator(".v2-ia-cstage").count() == 4,
+                check(results, "阶段带行数与契约阶段数一致",
+                      pg.locator(".v2-ia-cstage").count() == len(STAGES),
                       f"{pg.locator('.v2-ia-cstage').count()} 行")
                 codes = pg.eval_on_selector_all(
                     ".v2-ia-cstage",
                     "els => els.map(e => e.getAttribute('data-status-code'))")
-                check(results, "每个阶段带状态码", all(codes) and len(codes) == 4,
+                check(results, "每个阶段带状态码",
+                      all(codes) and len(codes) == len(STAGES),
                       str(codes))
                 okflags = pg.eval_on_selector_all(
                     ".v2-ia-cstage",

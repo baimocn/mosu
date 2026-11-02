@@ -1045,6 +1045,24 @@
   border-left: 2px solid var(--success);
 }
 .v2-ia-contract.blocked { border-left-color: var(--warn); }
+
+/* 契约判定失败提示（迭代 13 补）。
+   为什么单独一个样式：契约缺失时**不能静默**——
+   「没有验收信息」和「全部通过」在界面上长得一样的话，
+   用户会误以为这轮经过校验。用 warn 色 + 虚线边，与「未通过」区分开。 */
+.v2-ia-contract-missing {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px dashed var(--warn);
+  background: var(--bg-inset);
+  color: var(--warn);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+}
+
+/* 历史回看里的契约条：容器窄、行数多，用紧凑排版。
+   修饰符规则本体在**基规则之后**（见文件下方的 .compact 变体）。 */
 .v2-ia-contract-stages {
   display: flex; flex-direction: column; gap: 2px;
 }
@@ -1084,6 +1102,16 @@
   font-family: var(--font-mono); font-size: var(--fs-11);
   color: var(--text-4);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 紧凑变体（历史回看）——放在基规则**之后**。
+   CSS 优先级上 .compact 变体特异性更高，顺序其实不影响生效；
+   放后面是为了让「基规则 → 变体」的阅读顺序成立，
+   也让按基类名 grep 的检查先撞上基规则而不是变体。 */
+.v2-ia-contract.compact { padding: var(--sp-2) var(--sp-3); }
+.v2-ia-contract.compact .v2-ia-cstage { font-size: var(--fs-11); line-height: 1.55; }
+.v2-ia-contract.compact .v2-ia-cstage-sum {
+  font-size: 10px;
+  word-break: break-all;
 }
 .v2-ia-contract-warn {
   margin-top: var(--sp-2);
@@ -1703,6 +1731,20 @@
   color: #fff; font-size: 9px; font-weight: 700;
 }
 .v2-mp-caret { color: var(--text-4); font-size: 10px; }
+
+/* full 模式下的当前模型条（迭代 13 加）。
+   bar 模式下它是唯一的入口，full 模式下它是**状态指示**——
+   所以 full 模式下不响应点击展开（面板本来就常开），
+   只作为「现在在用哪个模型」的说明条。 */
+.v2-mp.mode-full .v2-mp-current { margin-bottom: var(--sp-3); }
+.v2-mp.mode-full .v2-mp-current-btn {
+  cursor: default;
+  background: var(--bg-inset);
+  border-style: dashed;
+}
+.v2-mp.mode-full .v2-mp-current-btn:hover { border-color: var(--border); }
+.v2-mp.mode-full .v2-mp-caret { display: none; }
+.v2-mp.mode-full .v2-mp-current-name { font-weight: 600; }
 .v2-mp.mode-bar .v2-mp-panel { display: none; }
 .v2-mp.mode-bar .v2-mp-panel.open {
   display: flex; flex-direction: column; gap: var(--sp-3);
@@ -1757,6 +1799,24 @@
   padding: var(--sp-4);
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--bg-inset);
+}
+
+/* 启用名单（迭代 13 补） */
+.v2-mp-enabled {
+  margin-top: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+.v2-mp-enabled-head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  flex-wrap: wrap; margin-bottom: var(--sp-2);
+  font-size: var(--fs-12); font-weight: 600; color: var(--text-1);
+}
+.v2-mp-enabled-head .v2-hint { font-weight: 400; }
+.v2-mp-enabled textarea {
+  font-family: var(--font-mono); font-size: var(--fs-11);
+  resize: vertical;
 }
 
 /* --------------------------------------------------------------- 响应式 */
