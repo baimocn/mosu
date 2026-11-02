@@ -9,14 +9,27 @@
      Lancer 用 `OrchestrationChildThread` 记录父子关系，
      墨溯用 `Branch` 记录同样的关系，但执行体是**独立 ReAct 循环**
      而不是独立 Pi 会话（墨溯没有 Pi）。
-  2. **回执状态机**：子分支跑完只产生 `reported` 回执，
-     父级核对后才升级 `accepted`。这是 Lancer 防止「半成品被当结论」
-     的关键机制——不能省。
+  2. **回执状态机**：子分支跑完先产生 `reported` 状态，
+     它的返回**确实回喂给直接父**之后才转 `accepted`。
+     这是 Lancer 防止「半成品被当结论」的关键机制——不能省。
+     Lancer 的实现在 `app-store.ts:3586`：投递确认后把证据状态
+     从 reported 翻成 accepted；结算判据在 `branch-return-batch.ts:37`。
   3. **预算准入**：并发数 / 深度 / 节点数 / token 四维限额。
      Lancer 的 `TaskAdmission.reserve()` 在**第一个 await 之前**占位，
      避免并发超订——这个细节很关键，照抄。
   4. **子树结算**：孙分支必须先被直接父消费，才向上一级回传。
      否则会出现「日志瀑布」：每层都把孙层的原始日志原样转发。
+
+Lancer 还有一个**平行**机制，墨溯也抄了，但要分清两者不是一回事：
+  - Lancer `explicitAcceptanceEvidenceFromParentMessage`
+    （`app-store-orchestration.ts:1929`）：父会话文本里写
+    `orchestrator-accepted: <childId> <理由>` → 产生一条
+    `orchestrator_acceptance` 证据（status=accepted）。
+    **它不是结算门槛**，只是「父级明确说了采纳」的额外证据。
+    墨溯对应 `mosu-accepted:` 标记 + `consume_branch()`。
+    关键：**结算门槛永远不能依赖模型自觉写标记**——
+    Lancer 全仓没有任何提示词教模型写这个字符串（只有 3 处代码引用），
+    照抄成门槛 = 结算永远为假 = 白实现。
 
 没抄什么（有意不做）：
   - Lancer 的分支是独立 Pi 会话 + Git worktree 隔离；
@@ -33,6 +46,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -115,8 +129,23 @@ BRANCH_COMPLETE = "complete"
 BRANCH_FAILED = "failed"
 
 # 回执状态（对应 Lancer 的 evidence.status）
-RECEIPT_REPORTED = "reported"   # 子分支跑完了，但父级还没核对
-RECEIPT_ACCEPTED = "accepted"   # 父级核对通过，可以当结论用
+#
+# 关键：Lancer 的 `accepted` 是**投递确认**，不是「模型说采纳了」。
+#   - branch-return.ts:29  子分支跑完 → 证据 status="reported"
+#   - app-store.ts:3586    报告确实送达父会话 → status 翻成 "accepted"
+#   - branch-return-batch.ts:37  结算判据：没有 pending(reported) 的回执
+# 也就是说 Lancer 的结算门槛是**程序判定的**，不依赖模型自觉。
+RECEIPT_REPORTED = "reported"   # 分支跑完了，但返回还没回喂给直接父
+RECEIPT_ACCEPTED = "accepted"   # 返回已回喂给直接父（Lancer 的投递确认）
+
+# 显式接受标记（对应 Lancer 的 `orchestrator-accepted:`）
+#
+# 这是**平行的第二层语义**：父级明确表态「我采纳这条」。
+# 它**不是**结算门槛（Lancer 全仓没有任何提示词教模型写这个串），
+# 但它比「收到了」更强——能区分「父级看了并采信」和「父级只是收到了」。
+# 墨溯用 `mosu-accepted:` 前缀，程序化正则提取，不靠模型自报字段。
+ACCEPT_MARKER = "mosu-accepted:"
+_ACCEPT_RE = re.compile(r"^\s*mosu-accepted:\s*(.+)$", re.IGNORECASE)
 
 # 泳道调色板（对应 Lancer 的 ProcessLane.color）
 #
@@ -166,7 +195,21 @@ class Branch:
         self.lane = (parent.lane if parent is not None
                      else (lane if lane is not None else 0))
         self.status = BRANCH_QUEUED
+        # 回执状态：reported（跑完未送达父级）→ accepted（已回喂给直接父）
         self.receipt = RECEIPT_REPORTED
+        # 结算用（迭代 11）：本分支的返回被**直接父级**消费的时刻。
+        # Lancer 的 settled() 语义是「子树只有在直接父消费了后代返回之后才结算」，
+        # 所以光看 status=complete 不够——跑完了但父级没看，还不算结算。
+        self.consumed_by: str = ""     # 消费方的分支 id（顶层则是主代理）
+        self.consumed_at: float = 0.0
+        # 显式接受（迭代 11）：父级在结论里写 `mosu-accepted: <分支id>` 时的记录。
+        # 这跟 consumed_by 是**两件不同的事**：
+        #   consumed_by = 程序判定的「送达」（结算门槛）
+        #   accepted_by = 父级明确表态「我采信这条」（语义层，锦上添花）
+        # 分开是因为把两者混成一个会让「送达即采信」的假象糊过去。
+        self.accepted_by: str = ""
+        self.accepted_at: float = 0.0
+        self.accept_reason: str = ""
         self.report = ""            # 子代理的结论
         self.evidence: list[dict] = []
         self.steps: list[dict] = []
@@ -184,6 +227,19 @@ class Branch:
         """本分支的泳道颜色。同一泳道恒定，全链路继承。"""
         return lane_color(self.lane)
 
+    @property
+    def settled(self) -> bool:
+        """本分支的子树是否已结算（见模块级 branch_settled）。"""
+        return branch_settled(self)
+
+    @property
+    def accepted(self) -> bool:
+        """父级是否**显式表态**采信了本分支的结论。
+
+        跟 `receipt`（送达）分开：送达是程序判定的必然，显式接受是父级主动说的。
+        """
+        return bool(self.accepted_by)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -196,6 +252,15 @@ class Branch:
             "laneColor": lane_color(self.lane),
             "status": self.status,
             "receipt": self.receipt,
+            # 结算信息（迭代 11）：前端要能看出「这条分支的返回被谁消费了」
+            "consumedBy": self.consumed_by,
+            "consumedAt": round(self.consumed_at, 3),
+            "settled": self.settled,
+            # 显式接受（迭代 11）：父级主动说「我采信这条」
+            "accepted": self.accepted,
+            "acceptedBy": self.accepted_by,
+            "acceptedAt": round(self.accepted_at, 3),
+            "acceptReason": self.accept_reason,
             "report": self.report,
             "evidence": self.evidence,
             "steps": self.steps,
@@ -359,6 +424,13 @@ class AgentTeam:
                             "tool_call_id": call.get("id"),
                             "content": payload,
                         })
+                        # **送达点在 payload 回喂之后**（Lancer 同款）：
+                        # app-store.ts:3586 是在分支报告**确实送达父会话**后
+                        # 才把回执从 reported 翻成 accepted。
+                        # 消费方是 br（直接父），不是主代理——
+                        # 混成 "main" 就等于跳过了「直接父消费」这一环。
+                        for kid in kids:
+                            consume_branch(kid, br.id)
                         continue
                     res = box.run(name, args)
                     # 子代理的数字也要进审计范围——否则父代理用它给的数字
@@ -396,6 +468,14 @@ class AgentTeam:
 
             br.report = (answer or "（子代理没有给出可显示的内容）")[:MAX_REPORT_CHARS]
             br.status = BRANCH_COMPLETE
+            # 子代理对自己派出的孙分支也可以**显式表态接受**
+            # （对标 Lancer 的 orchestrator-accepted）。
+            # 提取是程序化的（正则扫文本），不靠模型自报字段。
+            if br.children:
+                try:
+                    apply_accept_marks(answer or "", br.children, br.id)
+                except Exception:
+                    pass
         except Exception as e:  # noqa: BLE001 —— 子代理失败不能让整棵树崩
             br.status = BRANCH_FAILED
             br.error = f"{type(e).__name__}: {e}"
@@ -553,17 +633,141 @@ def branch_payload(branches: list[Branch]) -> dict:
     }
 
 
-def settle_children(branches: list[Branch]) -> bool:
-    """子树结算：所有子分支都处理完了才返回 True。
+def branch_settled(br: Branch) -> bool:
+    """单个分支的子树是否已结算。
 
-    对标 Lancer 的 `settled()`：
+    对标 Lancer 的 `settled()`（`branch-return-batch.ts:29-39`）：
       "A subtree settles only after its immediate parent consumed the descendant returns."
 
-    墨溯的简化版——子代理本身不派孙分支（深度上限 2 且孙层无派发工具），
-    所以结算退化成「所有直接子分支都终态」。
-    保留这个函数是为了语义正确：父代理在汇总前应确认子树已收敛。
+    Lancer 的真实判据是**三层**，不是一个布尔：
+      ① 自身终态（complete / failed）
+      ② 每个直接子分支自己也 settled（递归）
+      ③ 每个直接子分支**没有 pending 的回执**——即它的返回已经被
+         直接父消费掉了（Lancer 的 pending = evidence 里 status 仍是 "reported"
+         的 branch-return 记录；投递给父会话后翻成 "accepted"）
+
+    墨溯一一对应：
+      ① br.status in (BRANCH_COMPLETE, BRANCH_FAILED)
+      ② all(branch_settled(c) for c in br.children)
+      ③ all(c.receipt == RECEIPT_ACCEPTED for c in br.children)
+
+    为什么 ③ 不能省：分支跑完了但父级没看它的返回，
+    那份返回就还没被纳入上层结论——此时说「已结算」是假的。
+    Lancer 特意把「跑完」和「被消费」分成两件事，就是防这个。
+
+    注意：**结算门槛是程序判定的**（送达即算），
+    不依赖模型自觉写什么标记——这是照抄 Lancer 的关键。
+    「父级显式表态采信」是另一层（accepted_by），不参与结算。
     """
-    return all(b.status in (BRANCH_COMPLETE, BRANCH_FAILED) for b in branches)
+    if br.status not in (BRANCH_COMPLETE, BRANCH_FAILED):
+        return False
+    if not all(branch_settled(c) for c in br.children):
+        return False
+    return all(c.receipt == RECEIPT_ACCEPTED for c in br.children)
+
+
+def settle_children(branches: list[Branch]) -> bool:
+    """子树结算：所有分支都跑完 **且** 它们的返回都被直接父消费过。
+
+    迭代 11 之前这个函数只是「所有子分支都终态」，
+    注释还写着「子代理本身不派孙分支」——**那是错的**：
+    `_sub_delegate` 真的能派孙分支（孙层拿得到 delegate_tasks 工具）。
+    注释与实现脱节，导致这个函数定义完就没人调用——
+    结算语义从来没真正落地过。
+    """
+    return all(branch_settled(b) for b in branches)
+
+
+def consume_branch(br: Branch, by: str) -> None:
+    """标记「某分支的返回已被消费方收到」——**送达**，不是「采信」。
+
+    `by` 是消费方的标识：子分支的 id，或主代理（传 "main"）。
+
+    这是 Lancer 的**回执状态机**（`reported → accepted`）：
+    `app-store.ts:3586` 在分支报告确实送达父会话后，
+    把该报告的 evidence status 从 "reported" 翻成 "accepted"；
+    `branch-return-batch.ts:37` 据此判定子树是否结算。
+
+    墨溯之前定义了 `RECEIPT_ACCEPTED` 常量却从没赋值过——
+    意味着「父级核对」这个环节在代码里根本不存在。
+
+    幂等：重复送达不重复改写首次消费方。
+    """
+    if br.receipt == RECEIPT_ACCEPTED:
+        return          # 已送达过，不重复改写（幂等）
+    br.receipt = RECEIPT_ACCEPTED
+    br.consumed_by = by
+    br.consumed_at = time.time()
+
+
+def consume_tree(branches: list[Branch], by: str = "main") -> None:
+    """把一批分支标记为「已被消费方收到」。
+
+    同时把它们的**子分支**也标记为被**它们自己**消费——
+    因为子分支的返回已经通过父分支的结论传递上去了
+    （父分支的 payload 里带着孙分支的结果）。
+    """
+    for br in branches:
+        consume_branch(br, by)
+        for c in br.children:
+            consume_branch(c, br.id)
+
+
+def parse_accept_marks(text: str) -> list[tuple[str, str]]:
+    """从一段文本里提取「显式接受」标记。
+
+    对标 Lancer 的 `explicitAcceptanceEvidenceFromParentMessage`
+    （`app-store-orchestration.ts:1929`）——它用正则
+    `/^orchestrator-accepted:\\s*(\\S+)\\s*(.*)$/i` 逐行扫描父会话文本，
+    命中就产出一条 `orchestrator_acceptance` 证据。
+
+    墨溯用 `mosu-accepted:` 前缀（跟 Lancer 的 `orchestrator-accepted:` 同思路），
+    同样**程序化提取，不靠模型自报字段**——这是迭代 10
+    「分级由程序判，不由模型说」的延续。
+
+    返回 [(分支id, 理由), ...]，按出现顺序。
+    """
+    out: list[tuple[str, str]] = []
+    for line in (text or "").split("\n"):
+        m = _ACCEPT_RE.match(line)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        if not rest:
+            continue
+        # 第一段是分支 id，其余是理由（可选）
+        parts = rest.split(None, 1)
+        bid = parts[0].strip()
+        reason = parts[1].strip() if len(parts) > 1 else ""
+        out.append((bid, reason))
+    return out
+
+
+def apply_accept_marks(text: str, branches: list[Branch],
+                       by: str = "") -> list[Branch]:
+    """把文本里的接受标记落到对应分支上。
+
+    `by` 是表态方（顶层是主代理，子层是父分支 id）。
+    返回被显式接受的分支列表。
+
+    幂等：同一条分支被接受多次，只记第一次。
+    """
+    marks = parse_accept_marks(text)
+    if not marks:
+        return []
+    by_id = {b.id: b for b in branches}
+    hit: list[Branch] = []
+    for bid, reason in marks:
+        br = by_id.get(bid)
+        if br is None:
+            continue          # 标记指向不存在的分支 → 忽略（模型可能编了个 id）
+        if br.accepted_by:
+            continue          # 已表态过，不覆盖（幂等）
+        br.accepted_by = by or "main"
+        br.accepted_at = time.time()
+        br.accept_reason = reason
+        hit.append(br)
+    return hit
 
 
 # ------------------------------------------------------------------ 工具实现

@@ -112,6 +112,11 @@ python cli/mosu.py sessions
   答得不够格会明确挂出来而不是糊过去；
   同时逐条检查六条禁止项（数字没出处、统计冒充原话、空手作答、没读原文就引用原话、
   成文模型与取证模型是同一个、数字证据没带口径）
+- **子树结算**：分支**跑完 ≠ 结算**——结算要求「返回确实被直接父消费过」
+  （三层递进判据：终态 + 子分支递归结算 + 无未送达回执）。
+  没结算的分支，那份结论**根本没进上面的答案**，会明确挂出来并点名是哪几条，
+  不是笼统说一句「可能不完整」；前端另标「已回传」（送达，程序判定）
+  与「已采信」（父级明确表态）——两件事分开摆，不混成「已核对」
 - **阶段模型路由（交叉核验）**：取证与成文**可以绑不同的模型**——
   取证模型跑工具查数据，成文模型只拿**证据包**（不含取证者的自述）写最终答案，
   两个模型互为独立判断，谓词 `distinct_configured_model`；
@@ -148,7 +153,7 @@ pip install -r requirements.txt
 - Node.js：仅"语音 SILK → MP3"转码需要
 - ffmpeg：可选，导出语音为 mp3 时需要
 
-测试（全离线，1225 例）：
+测试（全离线，1262 例）：
 
 ```bash
 python -m unittest discover -s tests -v
@@ -413,7 +418,7 @@ gui/
   server.py            GUI 控制台 HTTP 服务（/api/chat、/api/status、/api/log）
   index.html           单页前端（Vue3 本地 vendor，离线可用）
   vendor/              Vue 3 运行时（随仓库分发，不依赖 CDN）
-tests/                 离线测试（1225 例）
+tests/                 离线测试（1262 例）
 scripts/
   install_pi_mcp.py    把墨溯挂到 Pi harness（安装 + 体检）
 docs/                  模块文档（洞察四模块）、AI 角色、命令速查、媒体格式、SQLCipher 参数
@@ -426,7 +431,7 @@ docs/                  模块文档（洞察四模块）、AI 角色、命令速
 - [x] CLI 命令集 + 五种输出格式
 - [x] MCP Server（12 工具）
 - [x] 画像蒸馏（个人画像 + 单联系人深度画像）
-- [x] 离线测试套件（1225 例）
+- [x] 离线测试套件（1262 例）
 - [x] 增量导出（按最后导出时间续跑）
 - [x] 多账号切换（account 命令组 + `--wxid` 临时指定）
 - [x] 数字分身服务（bot：云端 LLM + RAG 风格锚点 + 规则硬校验）
@@ -520,7 +525,7 @@ You are responsible for your own keys and for using exported data lawfully.
 cli/mosu.py     CLI entry (16 command groups)
 core/           decryption / parsing / analytics / bot / wechat channel / GUI server
 gui/            local web console (single-page Vue3, local vendor, offline-ready)
-tests/          offline test suite (1225 cases)
+tests/          offline test suite (1262 cases)
 docs/           CLI reference, media format, GUI & WeChat channel guides
 ```
 

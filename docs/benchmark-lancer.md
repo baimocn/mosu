@@ -38,10 +38,11 @@ Lancer 完全没有真实数据能力（它的数据只有自己的会话记录�
 | **数据层** | 只有自己的会话 JSONL | SQLCipher4 自研解密 + 23 万条真实消息 | **墨溯更强** | — |
 | **编排工具** | extension 注入 `create_child_thread` / `list_threads` / `read_thread` / `send_message_to_thread` | 无 | 缺 | **P0** |
 | **分支树** | `OrchestrationChildThread` + 5 态状态机 + 父子双向索引 | 无 | 缺 | **P0** |
-| **回执协议** | `reported → accepted`，父级显式接受 | 无 | 缺 | **P0** |
+| **回执协议** | `reported → accepted`，**投递确认**（报告送达父会话才翻状态） | ✅ **迭代 11**：`consume_branch()` 程序化标记送达，孙分支的送达方是**直接父**（不跳级） | 无缺口 | — |
 | **预算准入** | 4 维（并发/深度/节点/token），首个 await 前占位防超订 | 单维 MAX_STEPS=8 | 缺 | **P0** |
 | **分支落盘追溯** | `.lancer/branch-reports/<sha>.json` + 重启重建 | 无（`AgentRun` 只在内存，任务淘汰即失） | 缺 | **P0** |
-| **子树结算** | 孙分支须先被直接父消费，才向上一级回传 | 无 | 缺 | P1 |
+| **子树结算** | 三层递进（终态 + 子分支递归结算 + 无 pending 回执） | ✅ **迭代 11**：`branch_settled()` / `settle_children()` 真实接线到 `_settlement_of()`；未结算如实报警并点名分支 | 无缺口 | — |
+| **显式接受（附加层）** | `orchestrator-accepted:` 文本标记 → 接受证据 | ✅ **迭代 11**：`mosu-accepted:` 程序化正则提取，落到 `acceptedBy`；**刻意不参与结算判定**（Lancer 全仓无提示词教模型写它） | 无缺口（定位为加分信息） | — |
 | **证据账本** | 8 种 kind + severity + git 快照 | ✅ **迭代 10**：证据带 `source`（db/message/agent/model）+ `status`（verified/reported）+ 结构化 `scope`（口径四字段）+ 推断标注独立成 `inferences`；数字审计分主代理实测 / 子代理转述两池 | 无缺口（只抄「来源可核验」，不抄 severity / 编排生命周期） | — |
 | **流式反馈** | 事件溯源 + callId upsert + 50ms 节流 | 900ms 轮询 `/api/task` | 差距明显 | P1 |
 | **统一订阅通道** | 单条 `state-changed` 广播全量快照 | ✅ 派活通道 NDJSON 事件流（迭代 9：全局单调 seq + `since` 游标 + 凭证脱敏），GUI 侧洞察共用同一本日志 | 部分有（前端未接入实时渲染） | P1 |
@@ -164,6 +165,7 @@ Lancer 的核心不等式，逐条抄：
 | **8** | 阶段模型路由（`core/llmconfig.py` + `core/agent_engine.py`）：取证 / 成文双角色 + `distinct_configured_model` 谓词 | 配了不同模型 → 成文真跑且谓词成立；配同名 → 明确点破不假装；不配置 → 行为一字不变 | ✅ 完成 |
 | **9** | 派活通道补齐 Lancer Control API 的三样：`stream`（NDJSON 事件流 + `since` 游标 + 凭证脱敏）/ `tail` / `stop`（协作式取消） | 订阅端实时看到工具轨迹；`stop` 真打断且 `wait` 看到 `cancelled`；空闲时明确报 `NOT_CANCELLABLE` | ✅ 完成 |
 | **10** | 证据账本升级（对标 `OrchestrationEvidenceRecord`）：来源区分 / 口径 / 数字分池 / 推断标注 | 每条证据带 source+status+scope；口径随查询条件变；推断句与事实句分开摆；非文本消息不产空白证据 | ✅ 完成 |
+| **11** | 子树结算 + 回执协议（对标 `settled()` / `branch-return` / `orchestrator-accepted`）：投递确认式回执 / 三层递进结算 / 显式接受独立层 | 送达点真在 payload 回喂之后；孙分支送达方是直接父；未结算如实报警；结算落盘可回看 | ✅ 完成 |
 
 ### 迭代 1 实测记录（补充）
 
@@ -789,6 +791,114 @@ Lancer 的证据账本在 `apps/desktop/contracts/desktop-state.ts:120-161`，�
 | 推断标注 | 第二轮标出 4 条，含模型自报的「要说判断：这不是闹别扭的那种冷淡…」 |
 | 不误标 | 事实句「10-22 08:45 他说我基本上都没去」不标；澄清提问不标 |
 | 落盘 | 第二轮 inferences 落盘一致（1 vs 1），87 条 quote 带全文 |
+
+---
+
+## 六之六、迭代 11 详细记录：子树结算 + 回执协议
+
+### 起点：墨溯的「结算」是空的
+
+迭代 11 开始前，`core/agent_team.py` 里有两样东西：
+
+- `settle_children()` —— 定义了，**从未被调用**
+- `RECEIPT_ACCEPTED` —— 常量定义了，**一次都没被赋值过**
+
+更糟的是 `settle_children` 上方的注释写着「子代理本身不派孙分支」——
+**那是错的**。`_sub_delegate` 真的能派孙分支（孙层拿得到 `delegate_tasks` 工具），
+`can_delegate(depth)` 控制的是深度上限。
+
+也就是说：「父级核对」和「子树结算」这两件事在代码里**根本不存在**，
+只是能力矩阵上写着「有」。
+
+### 读 Lancer 读出了什么（第一遍读错了，第二遍才对）
+
+Lancer 的相关代码分散在四个文件：
+
+| 文件 | 位置 | 作用 |
+|---|---|---|
+| `orchestration/branch-return.ts` | 29 | 子分支跑完 → 产出一条 `worker_report` 证据，`status="reported"` |
+| `application/app-store.ts` | 3586 | 报告**确实送达父会话**后 → 状态翻成 `"accepted"` |
+| `orchestration/branch-return-batch.ts` | 29-39 | `settled()` 的三层判据 |
+| `orchestration/app-store-orchestration.ts` | 1929 | `explicitAcceptanceEvidenceFromParentMessage`，扫父文本找 `orchestrator-accepted:` |
+
+Lancer 的 `settled()` 原文判据是**三层**：
+
+```ts
+const settled = (child) => {
+  if (child.supervisionLoop?.gate === "stop") return true;
+  if (seen.has(child.id) || !["complete", "failed"].includes(child.status)) return false;
+  return childrenOf(children, {...}).every(
+    (c) => settled(c) && (c.supervisionLoop?.gate === "stop" || pending(c).length === 0),
+  );
+};
+```
+
+其中 `pending(c)` = `c.evidence.filter(e => e.toolName === BRANCH_RETURN_TOOL && e.status === "reported")`。
+
+**第一遍我读错的地方**：我以为结算门槛是「父代理在文本里写接受标记」。
+照着这个理解实现，会得到一个**永远为假**的结算——因为 Lancer 全仓
+**没有任何提示词**教模型写 `orchestrator-accepted:`（只有 3 处代码引用，0 处 prompt）。
+照抄成门槛 = 把能力押在模型自觉上 = 白实现。
+
+**第二遍读对的结论**：Lancer 的 `accepted` 是**投递确认**（报告送到了），
+`orchestrator-accepted:` 是**平行的另一条证据源**（父级明确表态）。
+两者不是一回事。
+
+### 抄了什么 / 没抄什么
+
+| Lancer 的 | 墨溯的 | 为什么 |
+|---|---|---|
+| `settled()` 三层递进 | `branch_settled()` 同款三层 | 直接抄，这是判据不是风格 |
+| 送达确认（`app-store.ts:3586`） | `consume_branch()` 在 **payload 回喂进 messages 之后**才标 | 送达点必须真在回喂之后。早标 = 自己给自己签字 |
+| 回执由**直接父**消费 | 孙分支的 `consumedBy` 是它的直接父 id，**不是 main** | 混成 main 就跳过了「直接父消费」这一环，语义就废了 |
+| `orchestrator-accepted:` 文本标记 | `mosu-accepted:` 同样程序化正则提取 | 抄思路（迭代 10 的「分级由程序判」延续） |
+| — | **显式接受不参与结算判定** | Lancer 自己都没这么干。照抄成门槛 = 结算永远为假 |
+| — | **前端措辞「已回传」而非「已核对」** | 「核对」是人的动作，程序只能说「送到了」 |
+
+### 关键设计：送达 vs 采信是**两件事**
+
+```
+receipt = reported → accepted      程序判定：返回确实进了上层的上下文   ← 结算门槛
+acceptedBy / acceptReason          模型表态：父级写了 mosu-accepted:   ← 加分信息
+```
+
+混成一个字段的后果是「送达即采信」——用户看到「已核对」，
+实际只是「送到了」，中间差着一次真正的核对。分开摆才是诚实的。
+
+单元测试 `test_acceptance_does_not_affect_settlement` 把这条钉死：
+**显式采信了但没送达 → 仍然不结算**。
+
+### 端到端抓到的真问题
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `settlement` 落不了盘 | `gui/server.py` 的 `save_run` 调用没带这个字段（跟迭代 10 的 `inferences` 一模一样的坑） | 补字段 + 端到端反查 |
+| 2 | 徽标 title 恒显示「直接父」 | `flatten()` 没把 `acceptedBy` 传进 node，模板里 `n.acceptedBy` 恒 undefined | 补传字段（前端渲染测试抓到的） |
+| 3 | 结算判定漏掉「父分支自己没跑完」 | 初版用「pending 为空」当 settled 判据，父分支 running 但子分支都已送达时会误判为已收敛 | 改用 `settle_children()` 的三层判据 |
+
+### 端到端实测结果（真引擎 + 真数据 + 脚本化 LLM 决策）
+
+| 项 | 结果 |
+|---|---|
+| 三层委派 | 9 条分支（3 顶层 + 6 孙层），`Branch.depth` 达 2 |
+| 送达状态 | 9/9 全部 accepted，无 pending |
+| 送达方归属 | 孙分支的 `consumedBy` 是直接父 id，非 main |
+| 送达时序 | 主代理第二次调用时上下文已有 1 条 tool 结果；子代理上下文也有孙分支结果 |
+| 结算 | `settled=True`，total=9，consumed=9 |
+| 未结算报警 | 构造未送达场景 → 答案里出现「⚠️ 分支未结算」并点名分支 id |
+| 落盘 | `settlement` 字段进 `~/.mosu/runs/*.json`，历史回看可读 |
+| 前端渲染 | 17 例全绿（真浏览器 + 真实组件 + 固定数据） |
+| 全量回归 | 1262 passed / 17 skipped / 0 failed |
+
+**为什么用「脚本化 LLM 决策」而不是纯真模型**：真模型不保证会派孙分支——
+它可能一层都不派。那样测出来的「结算通过」是**碰巧**，不是能力。
+所以只替换模型的「决定调哪个工具」这一步，其余全走真实路径：
+真 Dataset / 真 ToolBox / 真 AgentTeam / 真 ReAct 循环 / 真 settle_children。
+核心逻辑一行没改，固定住的恰恰是端到端该固定的那部分。
+
+### L5 报告
+
+`docs/verification/iter11-branch-settlement.json`（15 条 claims + 7 条 not_run）
 
 ---
 

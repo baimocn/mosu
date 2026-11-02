@@ -59,6 +59,9 @@ SYSTEM = """你在帮用户分析他/她自己的微信聊天记录。这是**�
   或者几个子任务有先后依赖（那还是要你自己按顺序查）。
   派之前先自己确认这些人存在（find_contact），别派一堆查不到的任务。
   子代理回来的结论你要**核对**再用——它可能查偏了。
+  核对完，如果你明确采信了某几条子代理的结论，可以在答案最后单独起一行写
+  `mosu-accepted: <分支id>`（分支id在委派结果里，形如 bxxxxxxxx），
+  写不写都不影响你的答案——这只是让用户知道哪几条你真正采信了。
 
 # 硬规矩
 1. **数字必须来自工具返回的内容**。你自己算出来的百分比、总数、排名都不算数。
@@ -177,6 +180,9 @@ SUBAGENT_SYSTEM = """你是主助手派出的子助手，负责**一个**具体�
 - 说清你查了哪段时间、哪个会话。
 - **总共控制在 500 字以内**——你的结果会被汇总进主助手的回答，
   写太长会把主助手的上下文冲爆，等于白干。
+- 如果你派了子代理、并且明确采信了其中某几条，可以在最后单独起一行写
+  `mosu-accepted: <分支id>`（分支id在委派结果里，形如 bxxxxxxxx）。
+  写不写都行，不写不会有人罚你——这只是多一层信息。
 - 中文。"""
 
 
@@ -207,6 +213,10 @@ class AgentRun:
         self.branch_numbers: set[str] = set()      # 子代理转述
         # 推断类句子（模型的主观判断）。跑完时填。
         self.inferences: list[str] = []
+        # 子树结算（迭代 11）：分支树是否已收敛。
+        # settled=False 说明有分支跑完了但返回没被父级消费——
+        # 那部分结论没进最终答案，不能当「都查完了」说。
+        self.settlement: dict = {}
         # 阶段契约判定结果（core/pipeline.py）。
         # 没有它就只是一段文本答案；有了它，每个阶段的状态码可机械核验。
         self.contract: dict = {}
@@ -248,6 +258,8 @@ class AgentRun:
             "cancelReason": self.cancelReason,
             # 推断类句子（模型的判断，不是查出来的事实）
             "inferences": self.inferences,
+            # 子树结算状态（迭代 11）
+            "settlement": self.settlement,
         }
 
 
@@ -578,6 +590,23 @@ class InsightAgent:
                 if name == "delegate_tasks" and self.team is not None:
                     payload, branches = self._run_delegate(args, on_step)
                     run.branches.extend(branches)
+                    # **回执 + 结算**（迭代 11，对标 Lancer 的 settled()）：
+                    #
+                    # Lancer 的门槛是**投递确认**，不是「模型说采纳了」：
+                    #   branch-return.ts:29  子分支跑完 → 回执 status="reported"
+                    #   app-store.ts:3586    报告确实送达父会话 → 翻成 "accepted"
+                    #   branch-return-batch.ts:37  没有 pending(reported) 的回执
+                    #                                    ⇒ 子树才算结算
+                    #
+                    # 所以「送达点」在 payload 回喂进模型上下文的那一刻，
+                    # 不是分支跑完的那一刻——早标就成了假结算。
+                    # （真正的标记在下面 messages.append 之后。）
+                    #
+                    # 分成两层（别混）：
+                    #   receipt=accepted  —— 程序判定的「送达」，结算门槛
+                    #   accepted_by       —— 主代理在最终答案里写
+                    #                        `mosu-accepted: <分支id>` 表明态
+                    # 后者是**语义层**，不参与结算判定。
                     # 子代理工具返回里的数字要进审计范围——
                     # 否则父代理引用子代理给的数字，会被误判成「没有出处」。
                     #
@@ -612,6 +641,16 @@ class InsightAgent:
                         "tool_call_id": call.get("id"),
                         "content": payload,
                     })
+                    # **送达点**：payload 已经进了模型的上下文，
+                    # 这才算「父级消费了后代返回」（Lancer 在
+                    # submitComposerToSession 成功后才把回执翻成 accepted）。
+                    # 标早了就成假结算——分支还没进上下文就标 accepted，
+                    # 等于自己给自己签字。
+                    try:
+                        from core.agent_team import consume_tree
+                        consume_tree(branches, "main")
+                    except Exception:
+                        pass
                     continue
 
                 res = self.box.run(name, args)
@@ -712,12 +751,28 @@ class InsightAgent:
             # 契约是附加的验收信息，不是主链路。
             run.contract = {}
 
+        # ---- 显式接受标记（迭代 11）
+        #
+        # 主代理可以在结论里写 `mosu-accepted: <分支id> <理由>` 表态采信某条分支。
+        # 提取是**程序化正则**（对标 Lancer 的 explicitAcceptanceEvidenceFromParentMessage），
+        # 不靠模型自报字段。
+        #
+        # 注意：这一层**不参与结算判定**。Lancer 的结算门槛是「送达确认」，
+        # 而 Lancer 全仓没有任何提示词教模型写 orchestrator-accepted ——
+        # 照抄成门槛 = 结算永远为假 = 白实现。
+        # 所以这里是**加分信息**：模型愿意表态就记，不表态也不影响结算。
+        _apply_accept_marks(run)
+
         # 推断标注要在审计提示**之前**算：
         # _audit_numbers 会往答案尾巴上追加提示文本，
         # 而提示文本本身含数字（「2814」会写进提醒里），
         # 先追加再算推断，会把提示里的句子误判成模型的推断。
         run.inferences = _inference_marks(run)
         run.answer = _audit_numbers(run)
+        # 结算状态要在**审计提示之后**算：审计提示会往答案尾巴追加文本，
+        # 而结算只关心分支树，不受答案文本影响，顺序无关。
+        run.settlement = _settlement_of(run)
+        run.answer = _settlement_note(run)
         return run
 
     # ------------------------------------------------------------ 成文
@@ -1184,6 +1239,116 @@ _INFER_WORDS = (
     "不能因此", "不能就此", "尚不能", "不好说", "说不准",
     "不一定", "不见得", "难以判断",
 )
+
+
+def _apply_accept_marks(run: AgentRun) -> None:
+    """从主代理的最终答案里提取「显式接受」标记，落到对应分支上。
+
+    对标 Lancer `explicitAcceptanceEvidenceFromParentMessage`
+    （`app-store-orchestration.ts:1929`）：逐行扫父会话文本，
+    命中 `orchestrator-accepted: <childId> <理由>` 就产出一条接受证据。
+
+    墨溯用 `mosu-accepted:` 前缀，同样**程序化正则提取**。
+
+    为什么这一层**不参与结算判定**：
+    Lancer 全仓**没有任何提示词**教模型写那个字符串（只有 3 处代码引用），
+    也就是说这条路径在 Lancer 实际运行中几乎不触发。
+    照抄成门槛 = 结算永远为假 = 白实现。
+    所以墨溯把它定位成**加分信息**：模型主动表态就记录下来，
+    前端可以显示「哪些分支被明确采信了」。
+
+    提取用**原始答案**（不是拼好审计提示的答案）——
+    提示文本本身不该被当成模型的表态。
+    """
+    ans = run.answer or ""
+    if not ans.strip():
+        return
+    try:
+        from core.agent_team import apply_accept_marks
+        apply_accept_marks(ans, list(run.branches or []), "main")
+    except Exception:
+        pass
+
+
+def _settlement_note(run: AgentRun) -> str:
+    """未结算的分支要如实告诉用户，不能默默当「都查完了」。
+
+    为什么：分支跑完但返回没被直接父消费，说明那份结论没进最终答案。
+    用户如果以为「所有角度都查过了」，就会基于不完整的结论下判断。
+
+    措辞上区分两件事：
+      - **没送达**（真缺口）：结论根本没进上层 → 必须报警
+      - 没被显式采信（不算缺口）：送达了，只是模型没写「我采纳这条」
+        → 不报警（那只是模型的表达习惯，不是数据缺失）
+    """
+    st = run.settlement or {}
+    if not st or st.get("settled"):
+        return run.answer or ""
+    pending = st.get("pending") or []
+    if not pending:
+        return run.answer or ""
+    ids = "、".join(str(x) for x in pending[:5])
+    more = f"（等 {len(pending)} 处）" if len(pending) > 5 else ""
+    note = (f"⚠️ 分支未结算：有 {len(pending)} 条分支的结论"
+            f"{ids}{more} 没被上层消费，这些角度的结论**没有进上面的答案**——"
+            f"不是查完了，是没纳入。")
+    ans = run.answer or ""
+    if not ans.strip():
+        return note
+    return ans + "\n\n---\n\n" + note
+
+
+def _settlement_of(run: AgentRun) -> dict:
+    """算分支树的结算状态（迭代 11，对标 Lancer 的 settled()）。
+
+    语义：**分支跑完 ≠ 结算**。结算要求「返回被直接父消费过」。
+    没结算的部分，那份结论就没进最终答案——
+    用户看到的「都查完了」是假的，必须如实说。
+
+    判据用 `settle_children()`（**程序判定**，Lancer 同款）：
+      ① 分支终态 ② 子分支递归结算 ③ 子分支的返回已被直接父消费
+    「显式接受」（父级写 mosu-accepted）**不参与**判定，只单列统计。
+
+    返回：
+        settled   —— 整棵树是否收敛
+        total     —— 分支总数（含孙分支）
+        consumed  —— 已被送达（回执 accepted）的分支数
+        pending   —— 未送达的分支 id 列表（最多 10 个，超出带 +N）
+        accepted  —— 被父级**显式表态采信**的分支数（语义层参考）
+    """
+    try:
+        from core.agent_team import (RECEIPT_ACCEPTED, settle_children)
+    except Exception:
+        return {}
+    roots = [b for b in (run.branches or []) if b.parent_id is None]
+    all_br: list = []
+
+    def _walk(brs):
+        for b in brs:
+            all_br.append(b)
+            _walk(getattr(b, "children", []) or [])
+
+    _walk(roots)
+    if not all_br:
+        return {"settled": True, "total": 0, "consumed": 0, "pending": [],
+                "accepted": 0}
+    consumed = [b for b in all_br if b.receipt == RECEIPT_ACCEPTED]
+    pending = [b.id for b in all_br if b.receipt != RECEIPT_ACCEPTED]
+    shown = pending[:10]
+    if len(pending) > 10:
+        shown = shown + [f"+{len(pending) - 10}"]
+    # 顶层分支全部结算 ⇒ 整棵树收敛。
+    # 用 settle_children 而不是「pending 为空」——
+    # 后者漏掉「父分支自己没跑完」这一层（父 running 时子都已送达，
+    # pending 为空但整棵树显然没收敛）。
+    settled = settle_children(roots)
+    return {
+        "settled": bool(settled),
+        "total": len(all_br),
+        "consumed": len(consumed),
+        "pending": shown,
+        "accepted": len([b for b in all_br if getattr(b, "accepted_by", "")]),
+    }
 
 
 def _inference_marks(run: AgentRun) -> list[str]:

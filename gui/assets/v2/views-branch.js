@@ -87,6 +87,19 @@
             goal: b.goal || "",
             status: b.status || "queued",
             receipt: b.receipt || "reported",
+            // 结算状态（迭代 11）：
+            //   settled      —— 子树是否收敛（程序判定：送达 + 终态）
+            //   accepted     —— 父级**显式表态**采信（模型写 mosu-accepted）
+            //   consumedBy   —— 返回被谁消费了（顶层是主代理，子层是直接父）
+            // 三者是不同的事，别混成一个「已核对」。
+            settled: b.settled === undefined ? false : !!b.settled,
+            accepted: b.accepted === undefined ? false : !!b.accepted,
+            // acceptedBy 必须一起传下来：徽标的 title 要区分
+            // 「主代理采信」和「直接父采信」——
+            // 只传 accepted 的话这里恒为 undefined，title 一律显示「直接父」。
+            acceptedBy: b.acceptedBy || "",
+            acceptReason: b.acceptReason || "",
+            consumedBy: b.consumedBy || "",
             report: b.report || "",
             error: b.error || "",
             steps: b.steps || [],
@@ -277,8 +290,19 @@
           if (n.status === "failed") return "失败";
           if (n.status === "running") return "进行中";
           if (n.status === "queued") return "排队中";
-          if (n.receipt === "accepted") return "已核对";
-          return "待核对";
+          // 「已送达」＝返回确实进了上层的上下文（程序判定）。
+          // 措辞用「已回传」而不是「已核对」——
+          // 「核对」是人的动作，程序只能说「送到了」。
+          if (n.receipt === "accepted") return "已回传";
+          return "待回传";
+        },
+        // 结算徽标（迭代 11）：父级显式表态采信了这条分支的结论。
+        // 没有徽标 ≠ 出错——模型不写接受标记是常态，不是缺口。
+        acceptBadge: (n) => (n.accepted ? "已采信" : ""),
+        acceptTitle: (n) => {
+          if (!n.accepted) return "";
+          const by = n.acceptedBy === "main" ? "主代理" : "直接父";
+          return by + "明确采信" + (n.acceptReason ? "：" + n.acceptReason : "");
         },
       };
     },
@@ -318,6 +342,8 @@
               <span>{{ n.steps.length }} 次查询</span>
               <span>{{ n.cost }} 秒</span>
               <span v-if="n.depth > 1" class="v2-bt-node-sub">子代理的子代理</span>
+              <span v-if="acceptBadge(n)" class="v2-bt-node-accept"
+                    :title="acceptTitle(n)">{{ acceptBadge(n) }}</span>
             </div>
             <div v-if="n.error" class="v2-bt-node-err">{{ n.error }}</div>
             <div v-else-if="n.report" class="v2-bt-node-report">{{ n.report }}</div>

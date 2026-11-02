@@ -28,6 +28,7 @@ python cli/mosu.py gui --port 8788 --no-browser
 | `e2e_iter8.py` | 迭代 8 阶段模型路由 | **L5** | 不配置时行为一字不变、**真跑两个不同模型**成文生效、`distinct_configured_model` 谓词成立、同名时明确点破、成文答案带「依据」标记、落盘带 modelRouting、前端交叉核验块与设置页真渲染 |
 | `e2e_iter9.py` | 迭代 9 派活通道 stream/tail/stop | **L5** | NDJSON 协议头且无 Content-Length、**先订阅后派活**真收到轨迹、全局单调 seq、`since` 游标补历史不重复、tail 拿答案、**stop 真打断**且 wait 看到 cancelled、空闲时明确报 NOT_CANCELLABLE、鉴权 401、流里无明文 key、**GUI 侧洞察进同一条流** |
 | `e2e_iter10.py` | 迭代 10 证据账本 | **L5** | 每条证据带 source 且**真的覆盖两种**（db + message）、数字证据带结构化口径且**随查询条件变**、quote 证据 source=message / status=verified / 带原文全文与定位、**非文本消息不产空白证据**、契约含 `no_stat_without_scope` 且未被违反、**推断标注非空且句句来自原文**、落盘 inferences 与响应一致、前端真渲染口径行与推断区 |
+| `e2e_iter11.py` | 迭代 11 子树结算 + 回执协议 | **L5** | **三层委派真跑**（9 条分支，孙层 `Branch.depth=2`）、**回执真的从 reported 变 accepted**（送达确认）、**送达点时序**（payload 回喂之后才标）、**孙分支送达方是直接父**（不跳级）、**结算判据真接线**（`settle_children` 在生产代码有调用点）、**显式接受不左右结算判定**（不变量）、未结算如实报警并点名分支、settlement 落盘、前端徽标与状态条真渲染 |
 
 > 迭代 8 的脚本有个特别要求：网关的模型列表里必须同时有
 > `deepseek-v4.1-flash` 与 `glm-5.3`（两个不同家族）。
@@ -59,6 +60,7 @@ python tests/e2e/lancer/e2e_iter7.py
 python tests/e2e/lancer/e2e_iter8.py
 python tests/e2e/lancer/e2e_iter9.py
 python tests/e2e/lancer/e2e_iter10.py
+python tests/e2e/lancer/e2e_iter11.py
 ```
 
 退出码：`0` 全通过；`1` 有断言失败。
@@ -86,6 +88,27 @@ python -m pytest tests/test_branch_tree_render.py -p no:typeguard -q
 ```
 
 固定数据 + 真浏览器，14 秒跑完，不依赖 GUI 服务。
+
+### 迭代 11 的特殊性：用「脚本化 LLM 决策」而不是纯真模型
+
+`e2e_iter11.py` 是唯一一个**不接 LLM 网关**的脚本。原因不是省事，
+是**真模型不保证会派孙分支**——它可能一层都不派，
+那样测出来的「三层委派跑通了、结算通过了」是**碰巧**，不是能力。
+
+所以这个脚本只替换模型的**决策层**（决定下一步调哪个工具），
+其余全走真实路径：
+
+- 真 `Dataset`（真 SQLite、真解密）
+- 真 `ToolBox`（真工具、真证据）
+- 真 `AgentTeam`（真线程池、真分支树、真泳道）
+- 真 `AgentEngine`（真 ReAct 循环、真回喂、真结算判定）
+- 真 `settle_children` / `consume_branch`（真函数）
+
+**核心逻辑一行没改**，固定住的恰恰是端到端该固定的那部分
+（否则每次跑结果都不一样，测不了）。
+
+顺带一提：这类脚本能跑出真模型跑不出的场景——
+「三层委派 + 逐层送达 + 结算收敛」在真模型下几乎撞不出来。
 
 ## 写新脚本的三条规矩
 

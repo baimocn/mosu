@@ -68,6 +68,20 @@
               <button class="v2-ia-hist-del" @click.stop="delHistory(h)">删</button>
             </div>
             <div v-if="histOpenId === h.id && histDetail" class="v2-ia-hist-detail">
+              <!-- 结算状态（迭代 11）：历史回看也要看得见
+                   「这轮有没有分支的结论没进答案」——
+                   只看一段答案文本，用户没法知道当时漏了什么。 -->
+              <div v-if="histDetail.settlement && histDetail.settlement.total"
+                   class="v2-ia-settle"
+                   :class="histDetail.settlement.settled ? 'ok' : 'warn'">
+                <template v-if="histDetail.settlement.settled">
+                  ✅ {{ histDetail.settlement.total }} 条分支的结论都已回传上层
+                </template>
+                <template v-else>
+                  ⚠️ 有 {{ (histDetail.settlement.pending || []).length }} 条分支的结论没被上层消费——
+                  这些角度**没有进上面的答案**
+                </template>
+              </div>
               <article class="v2-ia-answer small" v-html="rendered(histDetail)"></article>
             </div>
           </div>
@@ -252,6 +266,19 @@
             <div class="v2-ia-steps-head">
               <span class="v2-ia-steps-title">它派了 {{ t.branches.length }} 个子代理去查</span>
               <span class="v2-ia-steps-count">并行执行</span>
+            </div>
+            <!-- 结算状态（迭代 11）：分支跑完 ≠ 结算。
+                 结算要求「返回被直接父消费过」——没结算的部分，
+                 那份结论根本没进上面的答案，必须让用户看见。 -->
+            <div v-if="t.settlement && t.settlement.total"
+                 class="v2-ia-settle" :class="t.settlement.settled ? 'ok' : 'warn'">
+              <template v-if="t.settlement.settled">
+                ✅ {{ t.settlement.total }} 条分支的结论都已回传上层，这轮查完了
+              </template>
+              <template v-else>
+                ⚠️ 有 {{ (t.settlement.pending || []).length }} 条分支的结论没被上层消费——
+                这些角度**没有进上面的答案**，不是查完了，是没纳入
+              </template>
             </div>
             <branch-tree :branches="t.branches"></branch-tree>
           </div>
@@ -455,6 +482,9 @@
           branches: [],
           // 阶段契约：跑完才有值，先占位（Vue 响应式要求字段预先存在）
           contract: {},
+          // 子树结算状态（迭代 11）：分支跑完 ≠ 结算，
+          // 没结算的分支结论没进答案，必须让用户看见
+          settlement: {},
           cost: 0,
           pending: true,
           error: "",
@@ -506,6 +536,9 @@
                 turn.contract = res.contract || {};
                 // 分支树：主代理派的子代理各查各的
                 turn.branches = res.branches || [];
+                // 子树结算状态（迭代 11）：分支跑完 ≠ 结算。
+                // 没结算的分支，结论没进上面的答案——必须显示出来。
+                turn.settlement = res.settlement || {};
                 turn.cost = t.cost || 0;
                 turn.pending = false;
                 if (res.model) model.value = res.model;
@@ -617,6 +650,8 @@
             // 阶段契约：验收环节的判定结果（对标 Lancer PROCESS.json）
             turn.contract = res.contract || {};
             turn.branches = res.branches || [];
+            // 子树结算状态（迭代 11）
+            turn.settlement = res.settlement || {};
             turn.cost = res.cost || 0;
             turn.pending = false;
             if (res.model) model.value = res.model;

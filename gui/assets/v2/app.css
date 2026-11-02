@@ -1150,6 +1150,30 @@
 .v2-ia-steps-count {
   margin-left: auto; font-size: var(--fs-11); color: var(--text-4);
 }
+/* 子树结算状态条（迭代 11）
+   ok   = 全部分支结论都已回传上层，这轮真的查完了
+   warn = 有分支的结论没进答案——必须让用户看见，
+          否则用户以为「所有角度都查过了」 */
+.v2-ia-settle {
+  margin: var(--sp-2) 0;
+  padding: 6px 10px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+  color: var(--text-2);
+}
+.v2-ia-settle.ok {
+  border-color: color-mix(in srgb, var(--brand) 35%, transparent);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
+  color: var(--text-2);
+}
+.v2-ia-settle.warn {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  color: var(--text-2);
+}
 .v2-ia-step {
   display: flex; align-items: baseline; gap: var(--sp-2);
   font-size: var(--fs-12); line-height: 1.6;
@@ -1336,6 +1360,17 @@
   border-radius: var(--r-full);
   background: var(--bg-surface);
   border: 1px solid var(--border);
+}
+/* 「已采信」徽标（迭代 11）：父级**显式表态**采信了这条分支的结论。
+   跟状态标签分开——状态讲「跑到哪了」，徽标讲「上层认不认」。
+   没有徽标是常态（模型不一定写接受标记），不是错误。 */
+.v2-bt-node-accept {
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 40%, transparent);
+  color: var(--brand);
+  cursor: help;
 }
 .v2-bt-node-report {
   margin-top: 4px;

@@ -28,6 +28,7 @@
 
 跑法：python -m pytest tests/test_branch_tree_render.py -p no:typeguard -q
 """
+import json
 import pathlib
 import unittest
 
@@ -295,6 +296,125 @@ class TestBranchTreeRender(unittest.TestCase):
         off = abs(box["cx"] - box["px"])
         self.assertLess(off, 2.0,
                         f"虚拟根没居中：中心偏移 {off:.1f}px（父容器宽 {box['pw']:.0f}）")
+
+
+def _node(**kw) -> dict:
+    """构造一条分支数据（缺省字段不出现，模拟老落盘记录）。"""
+    base = {"id": "b1", "goal": "查一下", "status": "complete",
+            "report": "结论", "cost": 1, "depth": 1, "parentId": None,
+            "lane": 0, "laneColor": "#3b82f6", "steps": []}
+    base.update(kw)
+    return base
+
+
+class TestSettlementRendering(unittest.TestCase):
+    """结算状态在前端的呈现（迭代 11）。
+
+    要验三件事：
+      1. 「已回传」是**送达**（程序判定），不是「已核对」——
+         「核对」是人的动作，程序只能说「送到了」
+      2. 「已采信」徽标只在父级**显式表态**时出现，
+         而且要带理由（title）
+      3. 老落盘记录（没有 settled/accepted 字段）不能崩，
+         也不能凭空显示「已采信」
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:  # pragma: no cover
+            raise unittest.SkipTest("playwright 未安装，跳过前端渲染测试")
+        cls._pw = sync_playwright().start()
+        cls._browser = cls._pw.chromium.launch(headless=True)
+        cls._page = cls._browser.new_page(viewport={"width": 1440, "height": 900})
+        cls.errors = []
+        cls._page.on("pageerror", lambda e: cls.errors.append("PAGEERROR: " + str(e)))
+        cls._page.on("console", lambda m: cls.errors.append(f"{m.type}: {m.text}")
+                     if m.type == "error" else None)
+
+        html = _probe_html()
+        html = html.replace("__VUE__",
+                            (ROOT / "gui/vendor/vue.global.prod.js").as_uri())
+        html = html.replace("__BT__",
+                            (ROOT / "gui/assets/v2/views-branch.js").as_uri())
+        css = (ROOT / "gui/assets/v2/app.css").read_text(encoding="utf-8")
+        theme = (ROOT / "gui/assets/theme.css").read_text(encoding="utf-8")
+        html = html.replace("__APP_CSS__", "<style>" + theme + css + "</style>")
+        tmp = ROOT / ".cache" / "audit" / "_bt_settle_probe.html"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(html, encoding="utf-8")
+        cls._page.goto(tmp.as_uri(), wait_until="networkidle")
+        cls._page.wait_for_function("window.__BT_READY__ === true", timeout=15000)
+        cls._page.wait_for_timeout(600)
+        cls.probe = _Probe(cls._page)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls._browser.close()
+            cls._pw.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _set(self, branches: list):
+        """替换分支数据。
+
+        数据在 **Python 侧构造 dict 再 json.dumps**——
+        不要手写 JS 字面量（单引号不是合法 JSON，JSON.parse 会报
+        "Expected property name or '}'"，症状看起来像组件炸了）。
+        """
+        self.probe.pg.evaluate(
+            "raw => { window.__setBranches(JSON.parse(raw)); }",
+            json.dumps(branches, ensure_ascii=False))
+        self.probe.pg.wait_for_timeout(400)
+
+    def test_status_text_says_delivered_not_verified(self):
+        """「已回传」而不是「已核对」——措辞必须诚实。"""
+        self._set([_node(receipt="accepted", settled=True)])
+        txt = self.probe.pg.eval_on_selector(
+            ".v2-bt-node-status", "e => e.textContent.trim()")
+        self.assertEqual(txt, "已回传")
+        self.assertNotIn("核对", txt)
+
+    def test_pending_branch_shows_waiting(self):
+        self._set([_node(receipt="reported", settled=False)])
+        txt = self.probe.pg.eval_on_selector(
+            ".v2-bt-node-status", "e => e.textContent.trim()")
+        self.assertEqual(txt, "待回传")
+
+    def test_accepted_badge_appears_with_reason(self):
+        """父级显式采信 → 显示「已采信」徽标，且 title 带理由。"""
+        self._set([_node(receipt="accepted", settled=True, accepted=True,
+                        acceptedBy="main", acceptReason="数据对得上")])
+        self.assertEqual(self.probe.count(".v2-bt-node-accept"), 1)
+        badge = self.probe.pg.eval_on_selector(
+            ".v2-bt-node-accept", "e => e.textContent.trim()")
+        self.assertEqual(badge, "已采信")
+        title = self.probe.pg.eval_on_selector(
+            ".v2-bt-node-accept", "e => e.getAttribute('title')")
+        self.assertIn("数据对得上", title)
+        self.assertIn("主代理", title)
+
+    def test_no_badge_when_not_accepted(self):
+        """没表态就不显示徽标——徽标是加分项，不是状态。"""
+        self._set([_node(receipt="accepted", settled=True, accepted=False)])
+        self.assertEqual(self.probe.count(".v2-bt-node-accept"), 0)
+
+    def test_legacy_record_without_new_fields_does_not_crash(self):
+        """老落盘记录没有 settled/accepted 字段 → 不能崩，也不能显示徽标。"""
+        self._set([_node(receipt="accepted")])
+        self.assertEqual(self.probe.count(".v2-bt-node"), 1)
+        self.assertEqual(self.probe.count(".v2-bt-node-accept"), 0)
+        txt = self.probe.pg.eval_on_selector(
+            ".v2-bt-node-status", "e => e.textContent.trim()")
+        self.assertEqual(txt, "已回传")
+
+    def test_no_js_errors(self):
+        bad = [e for e in self.errors
+               if (e.startswith("PAGEERROR") or e.startswith("error"))
+               and "favicon" not in e]
+        self.assertEqual(bad, [], f"有 JS 错误：{bad[:5]}")
 
 
 if __name__ == "__main__":
