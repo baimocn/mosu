@@ -136,9 +136,23 @@
                   </div>
                   <!-- 文件 -->
                   <div v-else-if="m.kind==='file'" class="v2-bubble">📎 {{ m.fileName || '文件' }}</div>
+                  <!-- 表情：优先用本机已有的明文表情缓存（md5 命名）。
+                       微信 4.x 本地缓存本身是私有加密容器、解不出图。
+                       没缓存时 /api/media 会如实 404，@error 回退到文字占位——
+                       不把 404 伪造成 200 空图，控制台那条红是真实情况的忠实反映。 -->
+                  <div v-else-if="m.kind==='emoji'" class="v2-media" style="width:120px;min-height:60px">
+                    <img v-if="m.md5 && !m.emojiFailed" :src="'/api/media?md5='+m.md5"
+                         :alt="'表情'" @error="m.emojiFailed = true"
+                         style="max-width:120px;max-height:120px" />
+                    <span v-else style="color:var(--text-4);font-size:12px">
+                      [表情] 本地缓存无法解码为可显示图片
+                    </span>
+                  </div>
                   <!-- 其他 -->
                   <div v-else class="v2-bubble" style="color:var(--text-4)">[{{ m.kindText || m.kind }}]</div>
-                  <div class="v2-msg-time">{{ fmtTime(m.createTime) }}</div>
+                  <div class="v2-msg-time" :title="'消息时间 ' + fmtTimeFull(m.createTime)">
+                    {{ fmtTimeFull(m.createTime) }}
+                  </div>
                 </div>
               </div>
               <div v-if="hasMore" style="text-align:center;padding:16px 0">
@@ -232,6 +246,7 @@
       const searchResults = ref([]);
       const searchTotal = ref(0);
       const lb = ref({ show: false, src: "", meta: null });
+      const mid = ref(null);
 
       const sessions = computed(() => M.store.sessions);
 
@@ -278,14 +293,28 @@
             limit: 50,
             offset: offset.value,
           });
-          const list = d.messages || [];
+          // /api/messages 返回的是后端契约字段（content / direction / imgMd5 …），
+          // 而气泡模板用的是展示字段（text / mine / md5 …）。缺这层映射时
+          // highlight(undefined) 会渲染成空气泡，图片也一律落到「图片不可用」。
+          const list = (d.messages || []).map((m) => ({
+            ...m,
+            text: m.content || m.text || "",
+            mine: m.direction === "out",
+            md5: m.imgMd5 || m.md5 || "",
+            mediaOk: !!(m.imgMd5 || m.md5),
+            seconds: m.voiceMs ? Math.round(m.voiceMs / 1000) : 0,
+            voiceText: m.voiceText || "",
+            fileName: m.fileName || "",
+            kindText: m.title || "",
+            emojiFailed: false,
+          }));
           messages.value = offset.value === 0 ? list : messages.value.concat(list);
           hasMore.value = !!d.hasMore;
           offset.value += list.length;
           // 倒序时保持视口贴底
           await nextTick();
-          const mid = this.$refs.mid;
-          if (mid) mid.scrollTop = mid.scrollHeight;
+          const el = mid.value;
+          if (el) el.scrollTop = el.scrollHeight;
         } catch (e) {
           M.toast.err("加载消息失败：" + e.message);
         } finally {
@@ -381,12 +410,12 @@
 
       return {
         kw, filter, cur, messages, hasMore, loading, order, searching,
-        searchResults, searchTotal, lb, sessions, filtered, kindBreakdown, totalMessages,
+        searchResults, searchTotal, lb, mid, sessions, filtered, kindBreakdown, totalMessages,
         pick, loadMessages, loadMore, setOrder, runSearch, clearSearch,
         openHit, searchInCur, openContact, exportCur, openMedia,
         M, icon: (n) => global.MosuIcons[n] || "",
         avatarColor: M.avatarColor, initial: M.initial,
-        fmtTime: M.fmtTime, fmtDay: M.fmtDay, highlight: M.highlight,
+        fmtTime: M.fmtTime, fmtTimeFull: M.fmtTimeFull, fmtDay: M.fmtDay, highlight: M.highlight,
       };
     },
   };

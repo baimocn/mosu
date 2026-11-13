@@ -276,11 +276,16 @@
       async function loadHistory() {
         try {
           const d = await M.api.get("/api/exports", { limit: 10 });
-          history.value = (d.exports || d.items || []).map((x) => ({
-            name: x.name || x.filename || "导出",
-            path: x.path || x.dir || "",
-            size: M.fmtSize(x.size || 0),
-          }));
+          history.value = (d.exports || d.items || []).map((x) => {
+            // /api/exports 每条带 files:[{name,size}] 与 session；顶层没有 name。
+            // 以前读 x.name 恒为空，回退成目录路径，历史里全是「导出」+ 路径。
+            const f = (x.files && x.files[0]) || {};
+            return {
+              name: f.name || x.name || x.filename || x.session || "导出",
+              path: x.path || x.dir || "",
+              size: M.fmtSize(f.size || x.bytes || x.size || 0),
+            };
+          });
         } catch (e) { /* 忽略 */ }
       }
 
@@ -323,15 +328,37 @@
         }
       }
 
+      // /api/export 是异步任务：返回 {taskId, status:"running"}，产物要等
+      // /api/task 轮询到 done 才落盘。老版 views-data.js 的 poll 同款逻辑。
+      async function waitTask(tid) {
+        for (let i = 0; i < 1800; i++) {
+          await new Promise((r) => setTimeout(r, 1000));
+          let t;
+          try { t = await M.api.get("/api/task", { id: tid }); }
+          catch (e) { continue; }
+          if (t.status === "done") return t;
+          if (t.status === "error") throw new Error(t.error || "任务执行失败");
+        }
+        throw new Error("导出超时（30 分钟）");
+      }
+
       async function doExport() {
         busy.value = true;
         try {
-          const payload = Object.assign({}, form.value);
-          if (!payload.from) delete payload.from;
-          if (!payload.to) delete payload.to;
+          // 表单字段是 sessionId，后端契约是 session；直接原样 POST 会
+          // 触发「缺少 session（会话 wxid）」。dest / format / from / to 同名。
+          const payload = {
+            session: form.value.sessionId,
+            format: form.value.format,
+            dest: form.value.dest,
+          };
+          if (form.value.from) payload.from = form.value.from;
+          if (form.value.to) payload.to = form.value.to;
           const d = await M.api.post("/api/export", payload);
           if (d.error) throw new Error(d.error);
-          M.toast.ok("导出完成：" + (d.name || d.path || "已保存"));
+          if (!d.taskId) throw new Error("服务端没返回任务 ID");
+          const t = await waitTask(d.taskId);
+          M.toast.ok("导出完成：" + ((t.result && (t.result.filename || t.result.name || t.result.path)) || "已保存"));
           loadHistory();
         } catch (e) {
           M.toast.err("导出失败：" + e.message);
@@ -343,8 +370,13 @@
       async function doBatch() {
         busy.value = true;
         try {
-          const d = await M.api.post("/api/export", { batch: true, count: batch.value.count });
+          // 后端全库导出认 scope:"all" + topN，不认 batch/count
+          const d = await M.api.post("/api/export", {
+            scope: "all", topN: batch.value.count, dest: form.value.dest,
+          });
           if (d.error) throw new Error(d.error);
+          if (!d.taskId) throw new Error("服务端没返回任务 ID");
+          await waitTask(d.taskId);
           M.toast.ok("批量导出完成");
           loadHistory();
         } catch (e) {

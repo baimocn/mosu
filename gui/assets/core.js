@@ -143,6 +143,18 @@
     }
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
   }
+  /** 完整本地时间（秒级、带年份），给消息气泡等需要能逐条核对的地方用。
+   *  fmtTime 是给人看列表的简写；这里追求的是"数值可复核"，不省略秒与年份。 */
+  function fmtTimeFull(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    const off = -d.getTimezoneOffset();
+    const sign = off >= 0 ? "+" : "-";
+    const tz = `UTC${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
+    return `${date} ${hms} (${tz})`;
+  }
   function fmtDay(ts) {
     const d = new Date(ts * 1000);
     const now = new Date();
@@ -203,6 +215,6 @@
   global.Mosu = {
     api, toast, toasts, store, theme, setTheme, effectiveTheme, applyTheme,
     refreshStatus, refreshConfig, refreshSessions,
-    fmtTime, fmtDay, fmtNum, fmtSize, fmtDur, debounce, highlight, initial, avatarColor,
+    fmtTime, fmtTimeFull, fmtDay, fmtNum, fmtSize, fmtDur, debounce, highlight, initial, avatarColor,
   };
 })(window);

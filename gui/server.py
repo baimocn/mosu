@@ -498,6 +498,7 @@ def run_gui(corpus_path, port: int | None = None) -> None:
     # ---- 懒加载：解密很慢（4~10s），绝不能拖慢 GUI 启动 ----
     _ds = None
     _media = None
+    _emoticons = None
     _ds_err = None
     _moments_rows = None      # 朋友圈全量缓存（get_moments 首屏解析后填充）
     _moments_unsup = None     # 无 sns.db 时 True（缓存）
@@ -535,6 +536,35 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 from core.media import MediaStore
                 _media = MediaStore(get_ds().user_dir, ROOT / ".cache").build()
             return _media
+
+    def _emoticon_store():
+        """表情兜底链：本机明文缓存 → 微信加密缓存解密。索引一次。"""
+        nonlocal _emoticons
+        with _ds_lock:
+            if _emoticons is None:
+                from core.media import EmoticonStore, EncryptedEmoticonStore, find_emoticon_seed
+                plain = EmoticonStore()
+                user_dir = get_ds().user_dir
+                wxid = Path(user_dir).name.rsplit("_", 1)[0]
+                seed = find_emoticon_seed(wxid, _img_key_hex())
+                enc = EncryptedEmoticonStore(user_dir, seed=seed, wxid=wxid,
+                                             cache_dir=ROOT / ".cache")
+                _emoticons = (plain, enc)
+            return _emoticons
+
+    def _emoticon_bytes(md5: str):
+        """导出用：明文缓存 → 加密缓存解密，与 /api/media 同一条兜底链。"""
+        plain, enc = _emoticon_store()
+        return plain.get(md5) or enc.get(md5)
+
+    def _img_key_hex() -> str:
+        """账号配置里的 V2 图片 key（用于反查表情 seed），取不到返回空串。"""
+        try:
+            from core.dataset import resolve_account
+            _, acc = resolve_account()
+            return acc.get("imgKeyHex") or ""
+        except Exception:
+            return ""
 
     # ---- 运行时事件日志（迭代 9）-------------------------------------
     # GUI 侧的洞察与派活通道**必须共用同一本日志**。
@@ -763,6 +793,11 @@ def run_gui(corpus_path, port: int | None = None) -> None:
             got = store.get_thumb_image(md5) if thumb else store.get_full_image(md5)
             # 三种「取不到」要分开说，否则用户不知道该不该去找回来
             why = store.explain_missing(md5) if not got else ""
+            if not got:
+                # 微信 4.x 自定义表情的本地缓存是加密容器，MediaStore 索引不到。
+                # 兜底链：本机已有明文缓存 → 用 seed 解密微信加密缓存。
+                plain, enc = _emoticon_store()
+                got = plain.get(md5) or enc.get(md5)
         if not got:
             raise ValueError(f"取不到该图片（md5={md5}）：{why}")
         data, ext, source = got
@@ -993,7 +1028,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 media = MediaStore(ds.user_dir, ROOT / ".cache").build()
                 rows, names, self_id = ds.collect_session_rows(sess, from_ts, to_ts)
-                exp = ChatExporter(media, out_dir, voice_map={})
+                exp = ChatExporter(media, out_dir, voice_map={},
+                                   emoticon_getter=_emoticon_bytes)
                 exp.export(rows, names, self_id, title=sess["displayName"])
                 zip_bytes = _zip_dir(out_dir)
                 fname = f"{_safe_dirname(sess['displayName'])}.zip"
@@ -1038,7 +1074,8 @@ def run_gui(corpus_path, port: int | None = None) -> None:
                     rows, names, self_id = ds.collect_session_rows(sess, from_ts, to_ts)
                     if not rows:
                         continue
-                    exp = ChatExporter(media, sub, voice_map={})
+                    exp = ChatExporter(media, sub, voice_map={},
+                                       emoticon_getter=_emoticon_bytes)
                     exp.export(rows, names, self_id, title=sess["displayName"])
                     done.append({"session": sess["displayName"], "count": len(rows)})
                 zip_bytes = _zip_dir(out_dir)

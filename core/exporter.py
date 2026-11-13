@@ -94,14 +94,18 @@ def _fmt_day(ts: int) -> str:
 
 
 class ChatExporter:
-    def __init__(self, media: MediaStore, out_dir: str | os.PathLike, voice_map: dict | None = None):
+    def __init__(self, media: MediaStore, out_dir: str | os.PathLike, voice_map: dict | None = None,
+                 emoticon_getter=None):
         self.media = media
         self.out_dir = Path(out_dir)
         self.media_dir = self.out_dir / "media"
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.voice_map = voice_map or {}
+        # 可选：md5 → (字节, ".png", 来源) 的回调，用来把微信加密表情缓存
+        # 或本机明文表情缓存一并导出。不传则表情仍走文字占位（CLI 老行为）。
+        self.emoticon_getter = emoticon_getter
         self.stats = {"图片": 0, "图片缺失": 0, "视频": 0, "视频缺失": 0,
-                      "语音": 0, "语音可播": 0, "文件": 0, "表情": 0}
+                      "语音": 0, "语音可播": 0, "文件": 0, "表情": 0, "表情图片": 0}
 
     # ---------------------------------------------------------------- 媒体落地
     _IMG_EXTS = ("jpg", "jpeg", "png", "gif", "webp", "bmp")
@@ -128,6 +132,29 @@ class ChatExporter:
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
             dst.write_bytes(self._maybe_resize(data, ext))
+        except Exception:
+            return None
+        return rel
+
+    def _save_emoticon(self, md5: str) -> str | None:
+        """把表情明文图片落到 media/。与 _save_image 同构，但走表情兜底链。"""
+        if not self.emoticon_getter:
+            return None
+        prefix = f"media/e_{md5[:2]}/{md5}"
+        hit = self._cached_media(prefix, self._IMG_EXTS)
+        if hit:
+            return hit
+        got = self.emoticon_getter(md5)
+        if not got:
+            return None
+        data, ext = got[0], got[1].lstrip(".")
+        if ext not in self._IMG_EXTS:
+            return None
+        rel = f"{prefix}.{ext}"
+        dst = self.out_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dst.write_bytes(data)
         except Exception:
             return None
         return rel
@@ -233,8 +260,15 @@ class ChatExporter:
 
         if t == T_EMOJI:
             self.stats["表情"] += 1
+            # msgparse 把表情图片 md5 放在 emoji_md5；以前这里只输出文字占位，
+            # 导出 HTML 里表情全丢。有明文缓存就落盘成 <img>，取不到才回退。
+            md5 = (m.get("emoji_md5") or m.get("img_md5") or "").strip()
+            rel = self._save_emoticon(md5) if md5 else None
+            if rel:
+                self.stats["表情图片"] += 1
+                return f'<img class="media" src="{rel}" alt="表情" loading="lazy">'
             name = (m.get("text") or "").split(".")[-1]
-            return f'<div class="plain">[表情 {_esc(name)}]</div>'
+            return f'<div class="plain">[表情 {_esc(name)} · 本地无可显示图片]</div>'
 
         if t == T_APPMSG:
             self.stats["文件"] += 1

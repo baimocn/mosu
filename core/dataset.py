@@ -1001,7 +1001,10 @@ class Dataset:
             "type": m["type"],
             "kind": KIND_BY_TYPE.get(m["type"], "other"),
             "content": m.get("text") or "",
-            "imgMd5": m.get("img_md5"),
+            # 表情消息的图片 md5 在 msgparse 里叫 emoji_md5，图片消息叫 img_md5。
+            # 以前只取后者，自定义表情的 md5 全被丢掉，下游既拿不到图片，
+            # 也只能把 productid 当正文显示。
+            "imgMd5": m.get("img_md5") or m.get("emoji_md5"),
             "videoId": m.get("video_id"),
             "voiceMs": m.get("voice_ms"),
             "voiceText": m.get("voice_text"),

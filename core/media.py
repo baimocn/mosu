@@ -124,6 +124,327 @@ def sniff_ext(data: bytes) -> str:
     return "bin"
 
 
+class EmoticonStore:
+    """本地「已解密表情」目录：md5 命名、明文 GIF/PNG/JPG。
+
+    有些机器上已有一份从微信 CDN 下载好的明文表情（例如早前的导出产物），
+    文件名就是 md5。这里只读查找，不联网、不写文件、不猜密钥。
+    加密缓存的解密在 EncryptedEmoticonStore，两者由调用方按序兜底。
+
+    目录来源（按序）：
+      1. 环境变量 MOSU_EMOTICON_DIRS（os.pathsep 分隔）
+      2. 项目同级目录自动发现（<项目父目录>/*/Emojis）
+    不硬编码任何个人路径；找不到就返回 None，由调用方回退到占位文案。
+    """
+
+    EXTS = (".gif", ".png", ".jpg", ".jpeg", ".webp")
+
+    def __init__(self, dirs: list[Path] | None = None):
+        self.dirs = dirs if dirs is not None else self._discover()
+        self._index: dict[str, Path] | None = None
+
+    @staticmethod
+    def _discover() -> list[Path]:
+        dirs: list[Path] = []
+        env = os.environ.get("MOSU_EMOTICON_DIRS", "").strip()
+        if env:
+            dirs += [Path(p) for p in env.split(os.pathsep) if p.strip()]
+        # 项目根目录的**同级**目录下找 Emojis（不递归进无关深层目录）
+        try:
+            parent = Path(__file__).resolve().parent.parent.parent
+            dirs += [d for d in parent.glob("*/Emojis") if d.is_dir()]
+        except Exception:
+            pass
+        # 去重且只保留真实存在的目录
+        seen, out = set(), []
+        for d in dirs:
+            try:
+                key = str(d.resolve())
+                if key not in seen and d.is_dir():
+                    seen.add(key)
+                    out.append(d)
+            except Exception:
+                continue
+        return out
+
+    def _build(self) -> dict[str, Path]:
+        idx: dict[str, Path] = {}
+        for d in self.dirs:
+            try:
+                for p in d.rglob("*"):
+                    if not p.is_file() or p.suffix.lower() not in self.EXTS:
+                        continue
+                    stem = p.stem.lower()
+                    # 只认 32 位 hex，避免把无关图片当表情
+                    if len(stem) == 32 and all(c in "0123456789abcdef" for c in stem):
+                        idx.setdefault(stem, p)
+            except Exception:
+                continue
+        return idx
+
+    def get(self, md5: str | None) -> tuple[bytes, str, str] | None:
+        """返回 (明文图片字节, 扩展名, 来源标记)，找不到返回 None。"""
+        if not md5 or len(md5) != 32:
+            return None
+        if self._index is None:
+            self._index = self._build()
+        p = self._index.get(md5.lower())
+        if not p:
+            return None
+        try:
+            data = p.read_bytes()
+        except Exception:
+            return None
+        ext = "." + sniff_ext(data)
+        if ext == ".bin":
+            return None       # 不是可显示的图片，别把垃圾喂给 <img>
+        return (data, ext, "emoticon")
+
+
+class EncryptedEmoticonStore:
+    """微信 4.x 加密表情缓存的本地解密（只读）。
+
+    格式（社区对 Weixin.dll 的静态逆向，已在真实账号上实测 495/495 通过）：
+      整文件 AES-128-CBC，key = IV = MD5(f"{seed}{wxid}EMOTICON").digest()
+      PKCS#7 填充，密文长度必为 16 的倍数，无文件头。
+      与图片 V2 的 AES key 不同但同源 seed；seed 可只读扫进程内存得到，
+      也可离线穷举 0..2^32（MD5 单核约 190 万次/秒）。
+      wxid 要去掉账号目录末尾的 4 位 hex 后缀。
+
+    解密后的明文可能是 PNG/GIF/JPEG/WebP（直接可显示），也可能是
+    wxgf（微信私有 HEVC 容器）。后者用本机 ffmpeg 抽**首帧**转 PNG——
+    动画与 alpha 会丢，来源标记 emoticon-wxgf 明确写出这条限制，
+    不把静态首帧伪装成完整表情。ffmpeg 不可用或转码失败则回退占位。
+
+    目录：账号目录下 business/emoticon/{Persist,Thumb}、cache/*/Emoticon。
+    """
+
+    CACHE_SUBDIRS = ("business/emoticon/Persist", "business/emoticon/Thumb")
+
+    def __init__(self, user_dir: str | os.PathLike, seed: str | None = None,
+                 wxid: str | None = None,
+                 cache_dir: str | os.PathLike | None = None):
+        self.user_dir = Path(user_dir)
+        self.wxid = wxid or self._wxid_from_dir()
+        self.seed = seed
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+        self._key: bytes | None = None
+        self._index: dict[str, Path] | None = None
+
+    def _wxid_from_dir(self) -> str:
+        # 账号目录形如 wxid_xxxx_e027，派生用的是去掉 _xxxx 后缀的 wxid
+        name = self.user_dir.name
+        return name.rsplit("_", 1)[0] if "_" in name else name
+
+    def _derive(self, seed: str) -> bytes:
+        import hashlib
+        # MD5 是微信既定 KDF，不能换 SHA-256（换了与微信派生结果不符）
+        return hashlib.md5((str(seed) + self.wxid + "EMOTICON").encode()).digest()
+
+    def set_seed(self, seed: str) -> None:
+        self.seed = str(seed)
+        self._key = self._derive(self.seed)
+
+    def _key_ok(self, probe: Path) -> bool:
+        """用首个候选文件验证 key 真的能解出图片（不信任硬编码 key）。"""
+        if not self.seed:
+            return False
+        key = self._derive(self.seed)
+        try:
+            raw = probe.read_bytes()
+            if len(raw) % 16 or len(raw) < 32:
+                return False
+            dec = _aes_cbc_decrypt(key, raw)
+            return _strip_pkcs7(dec) is not None and sniff_ext(_strip_pkcs7(dec)) != "bin"
+        except Exception:
+            return False
+        finally:
+            self._key = key
+
+    def _build(self) -> dict[str, Path]:
+        idx: dict[str, Path] = {}
+        roots = [self.user_dir / s for s in self.CACHE_SUBDIRS]
+        cache_root = self.user_dir / "cache"
+        if cache_root.is_dir():
+            roots += [d for d in cache_root.glob("*/Emoticon") if d.is_dir()]
+        for d in roots:
+            if not d.is_dir():
+                continue
+            for p in d.rglob("*"):
+                if not p.is_file():
+                    continue
+                stem = p.stem.lower()
+                if len(stem) == 32 and all(c in "0123456789abcdef" for c in stem):
+                    idx.setdefault(stem, p)
+        return idx
+
+    def get(self, md5: str | None) -> tuple[bytes, str, str] | None:
+        if not md5 or len(md5) != 32 or not self.seed:
+            return None
+        if self._index is None:
+            self._index = self._build()
+        p = self._index.get(md5.lower())
+        if not p:
+            return None
+        if self._key is None:
+            self._key = self._derive(self.seed)
+        try:
+            raw = p.read_bytes()
+            if len(raw) % 16:
+                return None
+            dec = _strip_pkcs7(_aes_cbc_decrypt(self._key, raw))
+            if not dec:
+                return None
+            ext = sniff_ext(dec)
+            if ext != "bin":
+                return (dec, "." + ext, "emoticon-dec")
+            # wxgf：微信私有 HEVC 容器，浏览器不认。用 ffmpeg 抽首帧转 PNG。
+            # 注意这里只能得到**静态首帧**，动画/透明度会丢——如实标注，
+            # 不假装是完整表情。结果落磁盘缓存，避免每个 <img> 都跑一次 ffmpeg。
+            if dec[:4] == b"wxgf":
+                return self._wxgf_to_png(md5, dec)
+            return None
+        except Exception:
+            return None
+
+    def _wxgf_to_png(self, md5: str, dec: bytes) -> tuple[bytes, str, str] | None:
+        import shutil
+        import subprocess
+        import tempfile
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return None
+        cache = (self.cache_dir / "emoticon_wxgf") if self.cache_dir else None
+        if cache:
+            hit = cache / (md5.lower() + ".png")
+            try:
+                if hit.exists():
+                    return (hit.read_bytes(), ".png", "emoticon-wxgf")
+            except Exception:
+                pass
+        # WXGF 头之后是 Annex-B HEVC NALU；起始码 00 00 00 01 的位置即裸流起点
+        start = dec.find(b"\x00\x00\x00\x01")
+        if start < 0:
+            return None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                src, dst = Path(td) / "s.h265", Path(td) / "o.png"
+                src.write_bytes(dec[start:])
+                r = subprocess.run(
+                    [ffmpeg, "-y", "-loglevel", "error", "-f", "hevc",
+                     "-i", str(src), "-frames:v", "1", "-update", "1", str(dst)],
+                    capture_output=True, timeout=25)
+                if r.returncode != 0 or not dst.exists():
+                    return None
+                data = dst.read_bytes()
+            if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                return None
+            if cache:
+                try:
+                    cache.mkdir(parents=True, exist_ok=True)
+                    (cache / (md5.lower() + ".png")).write_bytes(data)
+                except Exception:
+                    pass
+            return (data, ".png", "emoticon-wxgf")
+        except Exception:
+            return None
+
+
+def _aes_cbc_decrypt(key: bytes, raw: bytes) -> bytes:
+    from Crypto.Cipher import AES
+    return AES.new(key, AES.MODE_CBC, key).decrypt(raw)
+
+
+def _strip_pkcs7(data: bytes) -> bytes | None:
+    if not data:
+        return None
+    pad = data[-1]
+    if not 1 <= pad <= 16 or data[-pad:] != bytes([pad]) * pad:
+        return None
+    return data[:-pad]
+
+
+def build_emoticon_getter(user_dir, cache_dir=None, wxid=None, img_key_hex=None):
+    """构造导出/接口共用的表情兜底回调：md5 → (字节, ".png", 来源)。
+
+    顺序与 /api/media 一致：本机明文缓存 → 微信加密缓存解密。
+    没有 seed（微信没运行且没配 MOSU_EMOTICON_SEED）时仍能用明文缓存那一路。
+    返回的闭包惰性建索引，第一次调用才有 IO。
+    """
+    user_dir = Path(user_dir)
+    _wxid = wxid or user_dir.name.rsplit("_", 1)[0]
+    _key_hex = img_key_hex
+    if _key_hex is None:
+        try:
+            from core.dataset import resolve_account
+            _, acc = resolve_account()
+            _key_hex = acc.get("imgKeyHex") or ""
+        except Exception:
+            _key_hex = ""
+    plain = EmoticonStore()
+    enc = EncryptedEmoticonStore(
+        user_dir, seed=find_emoticon_seed(_wxid, _key_hex), wxid=_wxid,
+        cache_dir=cache_dir)
+
+    def get(md5):
+        return plain.get(md5) or enc.get(md5)
+
+    return get
+
+
+def find_emoticon_seed(wxid: str, img_key_hex: str = "") -> str | None:
+    """只读扫微信进程内存找 seed，零误报判定。
+
+    判定式：md5(f"{seed}{wxid}").hexdigest()[:16] == 已知 V2 图片 key。
+    后者可从账号配置的 imgKeyHex 解出（bytes.fromhex 后是 ASCII 串）。
+    找不到返回 None——不猜、不硬编码、不联网。
+    """
+    import hashlib
+    import re
+
+    env = os.environ.get("MOSU_EMOTICON_SEED", "").strip()
+    if env:
+        return env
+    if not img_key_hex:
+        return None
+    try:
+        target = bytes.fromhex(img_key_hex).decode()
+    except Exception:
+        return None
+
+    try:
+        from core import keyfinder as kf
+    except Exception:
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Process Weixin -ErrorAction SilentlyContinue | "
+             "Select-Object -ExpandProperty Id"],
+            capture_output=True, text=True, timeout=10).stdout
+        pids = [int(x) for x in re.findall(r"\d+", out)]
+    except Exception:
+        return None
+
+    cand = re.compile(rb"(?<![0-9])(\d{8,12})(?![0-9])")
+    seen: set[str] = set()
+    for pid in pids:
+        try:
+            for _base, _prot, buf in kf.iter_regions(pid, max_region=256 * 1024 * 1024):
+                for m in cand.finditer(buf):
+                    s = m.group(1).decode()
+                    if s in seen:
+                        continue
+                    seen.add(s)
+                    # MD5 是微信既定 KDF，不能替换
+                    if hashlib.md5((s + wxid).encode()).hexdigest()[:16] == target:
+                        return s
+        except Exception:
+            continue
+    return None
+
+
 class MediaStore:
     """本地媒体文件索引 + 解密取字节。"""
 

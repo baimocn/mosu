@@ -586,7 +586,9 @@ class McpServer:
             except Exception as e:
                 log(f"语音跳过: {str(e)[:80]}")
         media = self.media()
-        exp = ChatExporter(media, out_dir, voice_map=voice_map)
+        from core.media import build_emoticon_getter
+        exp = ChatExporter(media, out_dir, voice_map=voice_map,
+                           emoticon_getter=build_emoticon_getter(ds.user_dir, ROOT / ".cache"))
         path = exp.export(rows, sender_names=names_map, self_id=0, title=sess["displayName"],
                           subtitle=f"{sess['sessionId']} · 共 {len(rows)} 条 · {ds.user_dir.name}")
         return {"session": sess["displayName"], "path": str(path), "count": len(rows),

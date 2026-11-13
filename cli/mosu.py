@@ -1177,7 +1177,9 @@ def cmd_export(args, ds: Dataset):
                     voice_map = VoiceStore(m0).prepare(rows, out_dir, ROOT / "scripts" / "silk_batch.cjs")
                 except Exception as e:
                     print(f"  [!] 语音跳过: {str(e)[:60]}", file=sys.stderr)
-            exp = ChatExporter(media, out_dir, voice_map=voice_map)
+            from core.media import build_emoticon_getter
+            exp = ChatExporter(media, out_dir, voice_map=voice_map,
+                               emoticon_getter=build_emoticon_getter(ds.user_dir, ROOT / ".cache"))
             path = exp.export(rows, sender_names=names, self_id=self_id, title=sess["displayName"],
                               subtitle=f"{sess['sessionId']} · 共 {len(rows)} 条 · {ds.user_dir.name}")
             added = len(rows) - (state.get("count") or 0) if state else len(rows)
